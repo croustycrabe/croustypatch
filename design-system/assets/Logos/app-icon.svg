@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <mask id="l"><rect width="408" height="267" fill="#fff"/><circle cx="108" cy="56" r="45" fill="#000"/></mask>
+    <mask id="r"><rect width="408" height="267" fill="#fff"/><circle cx="300" cy="56" r="45" fill="#000"/></mask>
+  </defs>
+  <rect x="3" y="3" width="94" height="94" rx="20" fill="#A44334" stroke="#1B2125" stroke-width="6"/>
+  <g transform="translate(17 28) scale(0.162)" fill="#EEEAE0">
+    <circle cx="58" cy="64" r="60" mask="url(#l)"/>
+    <circle cx="350" cy="64" r="60" mask="url(#r)"/>
+    <circle cx="147" cy="50" r="29"/>
+    <circle cx="261" cy="50" r="29"/>
+    <g fill="none" stroke="#EEEAE0" stroke-width="26" stroke-linecap="round">
+      <path d="M112 162 Q 70 214 88 254"/><path d="M152 200 Q 126 230 138 254"/>
+      <path d="M296 162 Q 338 214 320 254"/><path d="M256 200 Q 282 230 270 254"/>
+    </g>
+    <path d="M172 244 L204 206 L236 244 Z" stroke="#EEEAE0" stroke-width="18" stroke-linejoin="round"/>
+    <path d="M128 104 L280 104 L204 204 Z" stroke="#EEEAE0" stroke-width="28" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -1,0 +1,25 @@
+<!-- @dsCard group="Navigation" height=170 subtitle="underlined tabs with counts" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Tabs</title></head>
+<body class="cs-root">
+<div class="cs-tabs" role="tablist" style="max-width:640px">
+  <button class="cs-tab" role="tab" aria-selected="true">Overview</button>
+  <button class="cs-tab" role="tab" aria-selected="false">Deployments <span class="cs-count">12</span></button>
+  <button class="cs-tab" role="tab" aria-selected="false">Logs</button>
+  <button class="cs-tab" role="tab" aria-selected="false" aria-disabled="true">Billing</button>
+</div>
+<div style="margin-top:24px;max-width:640px"><p class="sec">Dark theme</p>
+<div data-theme="dark" class="cs-theme">
+<div class="cs-tabs" role="tablist">
+  <button class="cs-tab" role="tab" aria-selected="true">Overview</button>
+  <button class="cs-tab" role="tab" aria-selected="false">Deployments <span class="cs-count">12</span></button>
+  <button class="cs-tab" role="tab" aria-selected="false">Logs</button>
+</div>
+</div></div>
+</body>
+</html>

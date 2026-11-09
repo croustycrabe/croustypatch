@@ -1,0 +1,26 @@
+<!-- @dsCard group="Data" height=360 subtitle="code block with four highlight roles, inline code and kbd" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>CodeBlock</title></head>
+<body class="cs-root">
+<div class="cs-code" style="max-width:640px">
+  <div class="cs-code__bar"><span>src/main.rs</span><button class="cs-btn cs-btn--sm cs-btn--ghost"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M216,28H88A12,12,0,0,0,76,40V76H40A12,12,0,0,0,28,88V216a12,12,0,0,0,12,12H168a12,12,0,0,0,12-12V180h36a12,12,0,0,0,12-12V40A12,12,0,0,0,216,28ZM156,204H52V100H156Zm48-48H180V88a12,12,0,0,0-12-12H100V52H204Z"/></svg> Copy</button></div>
+<pre><code><span class="tk-com">// Start the API</span>
+<span class="tk-kw">fn</span> <span class="tk-fn">main</span>() {
+    <span class="tk-kw">let</span> port: <span class="tk-kw">u16</span> = <span class="tk-num">8080</span>;
+    <span class="tk-fn">println!</span>(<span class="tk-str">"listening on {port}"</span>);
+}</code></pre>
+</div>
+<p style="max-width:640px;margin:24px 0 0">Run <span class="cs-inline-code">cargo run --release</span> then press <span class="cs-kbd">Ctrl</span> <span class="cs-kbd">C</span> to stop.</p>
+<div style="margin-top:24px;max-width:640px"><p class="sec">Dark theme</p>
+<div data-theme="dark" class="cs-theme">
+<div class="cs-code"><pre><code><span class="tk-com">// Start the API</span>
+<span class="tk-kw">let</span> port: <span class="tk-kw">u16</span> = <span class="tk-num">8080</span>;
+<span class="tk-fn">println!</span>(<span class="tk-str">"listening on {port}"</span>);</code></pre></div>
+</div></div>
+</body>
+</html>

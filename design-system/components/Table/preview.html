@@ -1,0 +1,66 @@
+<!-- @dsCard group="Data" height=400 subtitle="dense data table with status, selection and sort" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Table</title></head>
+<body class="cs-root">
+<div class="cs-table-wrap" style="max-width:820px">
+<table class="cs-table">
+<thead><tr>
+  <th class="cs-cell-check"><label class="cs-check"><input type="checkbox" data-indeterminate aria-label="Select all"></label></th>
+  <th><button class="cs-th-sort" aria-sort="ascending">Service <svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M208.49,120.49a12,12,0,0,1-17,0L140,69V216a12,12,0,0,1-24,0V69L64.49,120.49a12,12,0,0,1-17-17l72-72a12,12,0,0,1,17,0l72,72A12,12,0,0,1,208.49,120.49Z"/></svg></button></th>
+  <th>Status</th><th>Version</th>
+  <th style="text-align:right"><button class="cs-th-sort">Duration (s) <svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M120.49,167.51a12,12,0,0,1,0,17l-32,32a12,12,0,0,1-17,0l-32-32a12,12,0,1,1,17-17L68,179V48a12,12,0,0,1,24,0V179l11.51-11.52A12,12,0,0,1,120.49,167.51Zm96-96-32-32a12,12,0,0,0-17,0l-32,32a12,12,0,0,0,17,17L164,77V208a12,12,0,0,0,24,0V77l11.51,11.52a12,12,0,0,0,17-17Z"/></svg></button></th>
+  <th>Updated</th>
+</tr></thead>
+<tbody>
+<tr aria-selected="true">
+  <td class="cs-cell-check"><label class="cs-check"><input type="checkbox" checked aria-label="Select api-gateway"></label></td>
+  <td><span style="font-weight:500">api-gateway</span></td>
+  <td><span class="cs-badge cs-tone-success"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg> Succeeded</span></td>
+  <td class="cs-mono">v2.14.0</td>
+  <td class="cs-num">42</td>
+  <td class="cs-muted">4 min ago</td>
+</tr>
+<tr>
+  <td class="cs-cell-check"><label class="cs-check"><input type="checkbox" aria-label="Select billing-worker"></label></td>
+  <td><span style="font-weight:500">billing-worker</span></td>
+  <td><span class="cs-badge cs-tone-danger"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M168.49,104.49,145,128l23.52,23.51a12,12,0,0,1-17,17L128,145l-23.51,23.52a12,12,0,0,1-17-17L111,128,87.51,104.49a12,12,0,0,1,17-17L128,111l23.51-23.52a12,12,0,0,1,17,17ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg> Failed</span></td>
+  <td class="cs-mono">v1.9.3</td>
+  <td class="cs-num">118</td>
+  <td class="cs-muted">12 min ago</td>
+</tr>
+<tr>
+  <td class="cs-cell-check"><label class="cs-check"><input type="checkbox" aria-label="Select web-console"></label></td>
+  <td><span style="font-weight:500">web-console</span></td>
+  <td><span class="cs-badge cs-tone-info"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm128,44A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Zm-72,36.68V132a20,20,0,0,0-20-20,12,12,0,0,0-4,23.32V168a20,20,0,0,0,20,20,12,12,0,0,0,4-23.32Z"/></svg> Running</span></td>
+  <td class="cs-mono">v5.2.0</td>
+  <td class="cs-num">—</td>
+  <td class="cs-muted">now</td>
+</tr>
+<tr>
+  <td class="cs-cell-check"><label class="cs-check"><input type="checkbox" aria-label="Select auth-service"></label></td>
+  <td><span style="font-weight:500">auth-service</span></td>
+  <td><span class="cs-badge cs-tone-warning"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M240.26,186.1,152.81,34.23h0a28.74,28.74,0,0,0-49.62,0L15.74,186.1a27.45,27.45,0,0,0,0,27.71A28.31,28.31,0,0,0,40.55,228h174.9a28.31,28.31,0,0,0,24.79-14.19A27.45,27.45,0,0,0,240.26,186.1Zm-20.8,15.7a4.46,4.46,0,0,1-4,2.2H40.55a4.46,4.46,0,0,1-4-2.2,3.56,3.56,0,0,1,0-3.73L124,46.2a4.77,4.77,0,0,1,8,0l87.44,151.87A3.56,3.56,0,0,1,219.46,201.8ZM116,136V104a12,12,0,0,1,24,0v32a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Z"/></svg> Needs review</span></td>
+  <td class="cs-mono">v3.0.1</td>
+  <td class="cs-num">67</td>
+  <td class="cs-muted">1 h ago</td>
+</tr>
+<tr>
+  <td class="cs-cell-check"><label class="cs-check"><input type="checkbox" aria-label="Select search-index"></label></td>
+  <td><span style="font-weight:500">search-index</span></td>
+  <td><span class="cs-badge cs-tone-success"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M176.49,95.51a12,12,0,0,1,0,17l-56,56a12,12,0,0,1-17,0l-24-24a12,12,0,1,1,17-17L112,143l47.51-47.52A12,12,0,0,1,176.49,95.51ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg> Succeeded</span></td>
+  <td class="cs-mono">v0.8.7</td>
+  <td class="cs-num">31</td>
+  <td class="cs-muted">3 h ago</td>
+</tr>
+</tbody>
+</table>
+<div class="cs-table-foot"><span>5 of 128 · 1 selected</span><span class="cs-row" style="gap:8px"><button class="cs-btn cs-btn--sm" disabled>Previous</button><button class="cs-btn cs-btn--sm">Next</button></span></div>
+</div>
+<script>document.querySelectorAll('[data-indeterminate]').forEach(function(i){i.indeterminate=true;});</script>
+</body>
+</html>

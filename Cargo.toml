@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["common", "server", "agent"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Croustycrabe <croustylab>"]
+
+# Test builds link ~40 binaries that each embed the whole dependency tree: keep only line tables (readable
+# backtraces) instead of full debug info, which had grown target/ past 30 GB.
+[profile.dev]
+debug = "line-tables-only"
+
+# RSA key generation is unusably slow at opt-level 0.
+[profile.dev.package."*"]
+opt-level = 2

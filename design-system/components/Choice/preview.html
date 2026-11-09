@@ -1,0 +1,42 @@
+<!-- @dsCard group="Forms" height=400 subtitle="checkbox · radio · switch" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Choice</title></head>
+<body class="cs-root">
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;max-width:760px">
+  <div class="cs-stack"><p class="sec">Checkbox</p>
+    <label class="cs-check"><input type="checkbox"> Run tests</label>
+    <label class="cs-check"><input type="checkbox" checked> Build image</label>
+    <label class="cs-check"><input type="checkbox" data-indeterminate> Select all</label>
+    <label class="cs-check"><input type="checkbox" disabled> Locked</label>
+    <label class="cs-check"><input type="checkbox" checked disabled> Locked on</label>
+  </div>
+  <div class="cs-stack"><p class="sec">Radio</p>
+    <label class="cs-check"><input type="radio" name="r" checked> Rolling update</label>
+    <label class="cs-check"><input type="radio" name="r"> Blue-green</label>
+    <label class="cs-check"><input type="radio" name="r"> Canary<small>10% of traffic first</small></label>
+    <label class="cs-check"><input type="radio" name="r" disabled> Manual</label>
+  </div>
+  <div class="cs-stack"><p class="sec">Switch</p>
+    <label class="cs-switch"><input type="checkbox" role="switch"> Auto-deploy</label>
+    <label class="cs-switch"><input type="checkbox" role="switch" checked> Notifications</label>
+    <label class="cs-switch"><input type="checkbox" role="switch" disabled> Maintenance</label>
+    <label class="cs-switch"><input type="checkbox" role="switch" checked disabled> Audit log</label>
+  </div>
+</div>
+<div style="margin-top:24px;max-width:760px"><p class="sec">Dark theme</p>
+<div data-theme="dark" class="cs-theme">
+<div class="cs-row" style="gap:24px">
+  <label class="cs-check"><input type="checkbox" checked> Build image</label>
+  <label class="cs-check"><input type="radio" checked> Rolling update</label>
+  <label class="cs-switch"><input type="checkbox" role="switch" checked> Notifications</label>
+  <label class="cs-switch"><input type="checkbox" role="switch"> Auto-deploy</label>
+</div>
+</div></div>
+<script>document.querySelectorAll('[data-indeterminate]').forEach(function(i){i.indeterminate=true;});</script>
+</body>
+</html>

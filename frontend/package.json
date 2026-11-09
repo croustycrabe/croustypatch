@@ -1,0 +1,27 @@
+{
+  "name": "croustypatch-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "e2e": "bash e2e/setup-demo.sh && node e2e/ui-behave.mjs"
+  },
+  "dependencies": {
+    "@fontsource/roboto-mono": "^5.3.0",
+    "@fontsource/rubik": "^5.3.0",
+    "@fontsource/rubik-one": "^5.3.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "next": "^16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "playwright": "^1.65.0",
+    "typescript": "^5.9.3"
+  }
+}

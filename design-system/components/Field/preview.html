@@ -1,0 +1,28 @@
+<!-- @dsCard group="Forms" height=600 subtitle="input · select · textarea, with hint, focus, error, disabled" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Field</title></head>
+<body class="cs-root">
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 24px;max-width:760px">
+  <div class="cs-field"><label class="cs-label" for="f1">Service name</label><input class="cs-input" id="f1" value="api-gateway"><p class="cs-hint">Lowercase letters, numbers and dashes.</p></div>
+  <div class="cs-field"><label class="cs-label" for="f2">Search</label><span class="cs-affix cs-affix--start"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M232.49,215.51,185,168a92.12,92.12,0,1,0-17,17l47.53,47.54a12,12,0,0,0,17-17ZM44,112a68,68,0,1,1,68,68A68.07,68.07,0,0,1,44,112Z"/></svg><input class="cs-input" id="f2" placeholder="Search deployments"></span></div>
+  <div class="cs-field"><label class="cs-label" for="f3">Environment</label><span class="cs-affix cs-affix--end"><select class="cs-select" id="f3"><option>Production</option><option>Staging</option><option>Preview</option></select><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z"/></svg></span></div>
+  <div class="cs-field"><label class="cs-label" for="f4">Commit</label><input class="cs-input cs-input--mono" id="f4" value="a845f23"></div>
+  <div class="cs-field"><label class="cs-label" for="f5">Branch (focused)</label><input class="cs-input is-focus" id="f5" value="main"></div>
+  <div class="cs-field"><label class="cs-label" for="f6">Webhook URL</label><input class="cs-input" id="f6" value="http//example.com/hook" aria-invalid="true" aria-describedby="f6e"><p class="cs-hint cs-hint--error" id="f6e"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M168.49,104.49,145,128l23.52,23.51a12,12,0,0,1-17,17L128,145l-23.51,23.52a12,12,0,0,1-17-17L111,128,87.51,104.49a12,12,0,0,1,17-17L128,111l23.51-23.52a12,12,0,0,1,17,17ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg> Enter a valid URL, starting with https://</p></div>
+  <div class="cs-field"><label class="cs-label" for="f7">Region</label><input class="cs-input" id="f7" value="eu-west-3 · Paris" disabled><p class="cs-hint">Locked after creation.</p></div>
+  <div class="cs-field"><label class="cs-label" for="f8">Description</label><textarea class="cs-textarea" id="f8" placeholder="What does this service do?"></textarea></div>
+</div>
+<div style="margin-top:24px;max-width:760px"><p class="sec">Dark theme</p>
+<div data-theme="dark" class="cs-theme">
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px">
+  <div class="cs-field"><label class="cs-label" for="d1">Service name</label><input class="cs-input" id="d1" value="api-gateway"></div>
+  <div class="cs-field"><label class="cs-label" for="d2">Webhook URL</label><input class="cs-input" id="d2" value="http//example.com" aria-invalid="true"><p class="cs-hint cs-hint--error"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M168.49,104.49,145,128l23.52,23.51a12,12,0,0,1-17,17L128,145l-23.51,23.52a12,12,0,0,1-17-17L111,128,87.51,104.49a12,12,0,0,1,17-17L128,111l23.51-23.52a12,12,0,0,1,17,17ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg> Enter a valid URL.</p></div>
+</div>
+</div></div>
+</body>
+</html>

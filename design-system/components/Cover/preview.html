@@ -1,0 +1,64 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<title>CroustyLab Software</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik+One&display=swap">
+<style>
+  html, body { margin:0; height:100%; }
+  body { background:var(--bg); color:var(--fg); font-family:var(--font-mono); overflow:hidden; }
+  .cover { position:relative; width:960px; height:288px; overflow:hidden; }
+  .art { position:absolute; top:0; left:480px; width:480px; height:288px; }
+  .art svg { display:block; width:480px; height:288px; }
+  .brand { fill:var(--primary); }
+  .slab { fill:var(--inverse-bg); }
+  .ok { fill:var(--success); }
+  .warn { fill:var(--warning); }
+  .bad { fill:var(--danger); }
+  .row { fill:var(--surface); }
+  .cell { fill:var(--surface-active); }
+  .lg { rx:var(--radius-lg); }
+  .md { rx:var(--radius-md); }
+  .sm { rx:var(--radius-sm); }
+  .words { position:absolute; left:var(--space-8); bottom:var(--space-8); max-width:440px; }
+  .name { margin:0; font-family:var(--font-display); font-weight:400; font-size:64px; line-height:.95; color:var(--fg); }
+  .tag { margin:var(--space-3) 0 0; font-size:13px; line-height:20px; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="480 0 480 288" width="480" height="288">
+<!--
+  blocks      primary 224×192 slab bled off the top (identity colour, largest) · inverse-bg 240×160 slab bled off the right · success 104×48 · warning 48×48 · danger 48×56 (states stay small) · surface 96×40 set into the slab — ≈33% of 960×288
+  arrangement flush modular grid on space-2 gutters: brick and ink slabs side by side, a strip of unequal state tiles under the brick slab, flat with no outlines or shadows
+  pattern     tiles cut by the radius tokens, some merged two-wide like the components, from "dense UI, modular, flat": 11 surface-active cells in two rows on the ground, top right
+  scales      sides in space-2 / space-8 multiples; corners radius-lg (slabs), radius-md (state tiles, surface tile), radius-sm (cells)
+-->
+<rect class="cell sm" x="752" y="0" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="784" y="0" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="816" y="0" width="56" height="24" rx="4"/>
+<rect class="cell sm" x="880" y="0" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="912" y="0" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="944" y="0" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="752" y="32" width="56" height="24" rx="4"/>
+<rect class="cell sm" x="816" y="32" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="848" y="32" width="24" height="24" rx="4"/>
+<rect class="cell sm" x="880" y="32" width="56" height="24" rx="4"/>
+<rect class="cell sm" x="944" y="32" width="24" height="24" rx="4"/>
+<rect class="brand lg" x="520" y="-16" width="224" height="192" rx="12"/>
+<rect class="slab lg" x="752" y="64" width="240" height="160" rx="12"/>
+<rect class="row md" x="776" y="88" width="96" height="40" rx="8"/>
+<rect class="ok md" x="520" y="184" width="104" height="48" rx="8"/>
+<rect class="warn md" x="632" y="184" width="48" height="48" rx="8"/>
+<rect class="bad md" x="688" y="184" width="56" height="56" rx="8"/>
+</svg>
+</div>
+<div class="words">
+  <h1 class="name">CroustyLab<br>Software</h1>
+  <p class="tag">Flat surfaces, four state colors, the same brick red.</p>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Development stack: PostgreSQL only. The server and agent run from cargo.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: croustypatch-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: croustypatch
+      POSTGRES_PASSWORD: ${CROUSTYPATCH_DB_PASSWORD:-croustypatch-dev}
+      POSTGRES_DB: croustypatch
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U croustypatch"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  pgdata:

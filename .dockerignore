@@ -1,0 +1,9 @@
+target
+.git
+frontend/node_modules
+frontend/.next
+frontend/out
+design-system
+specs
+docs
+**/*.log

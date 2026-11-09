@@ -1,0 +1,184 @@
+# Installation
+
+## Requirements
+
+- Server: a 64-bit Linux host or container, PostgreSQL 14 or newer. The PostgreSQL client library is compiled in.
+- Agent: Linux with apt or pacman, or FreeBSD with `pkg`; root access; `nft` (Linux) or `pf` (FreeBSD) for quarantine.
+- Building from source: a recent stable Rust (developed and tested with 1.99) and Node 22.
+
+## Server with Docker
+
+```sh
+cd docker
+printf 'CROUSTYPATCH_DB_PASSWORD=%s\nCROUSTYPATCH_MASTER_KEY=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -base64 32)" > .env
+chmod 600 .env
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml logs server | head -30   # shows the bootstrap password once
+```
+
+The master key encrypts sensitive columns (for example the AI API key) and derives the session key.
+**Back it up separately from the database.** Losing it makes encrypted values unrecoverable; leaking
+it together with a database dump defeats the encryption.
+
+First start creates the fallback super-admin `admin`. Its password is printed once in the log (or taken
+from `CROUSTYPATCH_BOOTSTRAP_PASSWORD` if set, in which case it is not printed). You must change it at
+first login. Once you have created your real administrators:
+
+```sh
+docker compose exec server croustypatch-server admin disable --super-admin-fallback
+```
+
+The command refuses to run if no other enabled account can manage users, so you cannot lock yourself out.
+Other admin commands: `admin enable --super-admin-fallback`, `admin reset-password <user>` (new password in
+`CROUSTYPATCH_NEW_PASSWORD`), `migrate`.
+
+## Server behind a reverse proxy on a Docker host
+
+`docker/deploy/` holds the stack used on the lab's Docker host (compose file plus an operations README: files, first
+login, upgrade, reverse-proxy requirements, rollback). It runs in `proxy` mode, listens on plain HTTP and trusts
+forwarded headers only from the proxy's address.
+
+## Server from source
+
+```sh
+cd frontend && npm ci && npm run build && cd ..
+cargo build --release -p croustypatch-server -p croustypatch-agent
+export DATABASE_URL=postgres://croustypatch:...@127.0.0.1/croustypatch
+export CROUSTYPATCH_MASTER_KEY=$(openssl rand -base64 32)   # keep it, you need the same key at every start
+CROUSTYPATCH_STATIC_DIR=frontend/out target/release/croustypatch-server serve
+```
+
+Migrations run automatically at start. A hardened systemd unit is in `docker/croustypatch-server.service`.
+
+Configuration is by flag or environment variable (`croustypatch-server --help`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | local dev URL | PostgreSQL connection string. The link is not TLS-protected (see security.md). |
+| `CROUSTYPATCH_LISTEN` | `127.0.0.1:8443` | Listen address |
+| `CROUSTYPATCH_DATA_DIR` | `./data` | Master key file, TLS files |
+| `CROUSTYPATCH_MASTER_KEY` | file in data dir | Base64, 32 bytes. If unset, `master.key` (mode 600) is created |
+| `CROUSTYPATCH_TLS_MODE` | `direct` | `direct` or `proxy` |
+| `CROUSTYPATCH_TLS_CERT` / `_KEY` | self-signed | PEM files |
+| `CROUSTYPATCH_TLS_SAN` | `localhost,127.0.0.1` | Names for the generated certificate |
+| `CROUSTYPATCH_TRUSTED_PROXIES` | `127.0.0.1,::1` | Peers allowed to set `X-Forwarded-*` |
+| `CROUSTYPATCH_STATIC_DIR` | `../frontend/out` | Exported web UI |
+| `CROUSTYPATCH_AGENT_DIR` | `./data/agents` | Agent binaries served by "Add agent" (comma separated) |
+
+## TLS modes
+
+- **direct**: the server speaks HTTPS and accepts only TLS 1.3 (TLS 1.2 handshakes are refused). Give it
+  your certificate, or let it create a self-signed one in the data directory; agents then pin that
+  certificate with `--ca-file`.
+- **proxy**: the server speaks plain HTTP behind nginx, Traefik, HAProxy or a Cloudflare tunnel, which
+  terminates TLS 1.3. The server reads `X-Forwarded-For`, `-Proto` and `-Host` **only from the peers listed
+  in `CROUSTYPATCH_TRUSTED_PROXIES`**; set that list to your proxy's address. The session cookie gets the
+  `Secure` flag when the proxy reports `https`.
+
+nginx must pass the WebSocket upgrade for `/api/v1/agent/ws`:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8443;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 1h;
+}
+```
+
+## Adding an agent
+
+In the web UI click **Add agent** (sidebar, Hosts page, or ⌘K). Choose the communication mode, group and
+environment, then **Generate the command**. The wizard shows a one-liner for the machine, creates a one-time token
+for it, and **waits for the agent to connect**, confirming as soon as the host appears.
+
+```sh
+# Linux (as shown by the wizard; the token is one-time and expires)
+curl -fsSL https://patch.example.com/api/v1/agent/install.sh | sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_xxxxxxxx sh
+# FreeBSD, as root
+fetch -qo - https://patch.example.com/api/v1/agent/install.sh | env CROUSTYPATCH_ENROLL_TOKEN=cpt_xxxxxxxx sh
+```
+
+The script is generated by the server for its own public address. It downloads the agent for the machine's
+platform, **verifies its SHA-256** (and refuses to install on a mismatch), installs `/usr/local/bin/croustypatch-agent`,
+enrols with the token, and registers a service (systemd on Linux, rc.d on FreeBSD). Running it again upgrades the
+binary and keeps the enrolment. Options, set as environment variables on the same command:
+
+| Variable | Effect |
+|---|---|
+| `CROUSTYPATCH_MODE=pull\|push` | tunnel (default) or periodic HTTPS |
+| `CROUSTYPATCH_CA_FILE=/path/ca.pem` | trust a private CA or a self-signed server certificate |
+| `CROUSTYPATCH_FORCE=1` | enrol again even if already enrolled |
+| `CROUSTYPATCH_DRY_RUN=1` | install an agent that only logs what it would do |
+
+Read the script first at `https://patch.example.com/api/v1/agent/install.sh` if you prefer; the wizard's **Manual**
+tab lists the same steps one by one.
+
+### Which platforms can be installed
+
+The server hands out the binaries found in its agent directories (`CROUSTYPATCH_AGENT_DIR`, comma separated,
+searched in order), named `croustypatch-agent-<platform>`: `linux-x86_64`, `linux-aarch64`, `freebsd-amd64`. The
+wizard shows which are available. The Docker image contains `linux-x86_64` (or `linux-aarch64`, matching the
+architecture it was built on). A FreeBSD agent must be built on FreeBSD (`cargo build --release -p croustypatch-agent`);
+add it without rebuilding the image:
+
+```sh
+docker cp croustypatch-agent-freebsd-amd64 croustypatch-server-1:/var/lib/croustypatch/agents/
+```
+
+(`/var/lib/croustypatch` is the persisted data volume.) On FreeBSD also add `anchor "croustypatch_quarantine"` to
+`/etc/pf.conf`; without it, network isolation is refused rather than silently ineffective.
+
+### Manual enrolment
+
+```sh
+CROUSTYPATCH_ENROLL_TOKEN=cpt_xxxxx croustypatch-agent enroll --server https://patch.example.com --mode pull
+# self-signed server certificate:  add  --ca-file /path/to/server.crt
+```
+
+Files: config `/etc/croustypatch/agent.toml` (FreeBSD: `/usr/local/etc/croustypatch/`), state `/var/lib/croustypatch`
+(FreeBSD: `/var/db/croustypatch`; identity key mode 600, restore points, evidence). Useful commands:
+`croustypatch-agent scan` prints the inventory as JSON without a server; `croustypatch-agent run --dry-run` logs what
+it would do and changes nothing. `croustypatch-agent doctor` rehearses the safety checks of a patch run: it refreshes
+the repositories, builds a restore point for every pending update in a scratch directory, and prints which packages
+could not be restored (`OK` or `NOT SAFE`). Run it as root, ideally inside the service's own sandbox
+(`systemd-run --pipe --wait -p NoNewPrivileges=yes … croustypatch-agent doctor`), to find out why a patch would be refused.
+Re-running the installer on an enrolled host upgrades the binary and needs no token.
+
+The systemd unit deliberately has **no** service sandboxing (`ProtectKernelModules`, `ProtectSystem`, `PrivateTmp`,
+`NoNewPrivileges`…): package maintainer scripts install kernel modules, rebuild the initramfs and switch users, and
+fail half-way under those options, rollback included. Installers before 0.2.4 wrote such a unit; re-run the installer
+to replace it. Before every patch the agent checks that it is not sandboxed (private mount namespace, or capabilities
+below what root has on the machine) and refuses with nothing changed if it is; containers are not affected.
+
+Quarantine keeps only the server's IP addresses reachable, so DNS is cut too. The agent saves the server addresses it
+last resolved (`server_ips.json` in the state directory) and connects through them when the name does not resolve,
+keeping the host name for TLS. An isolated host therefore reconnects after a server or agent restart and receives
+"Restore the network". Agents before 0.2.5 cannot: lift such a quarantine on the host itself with
+`nft delete table inet croustypatch_quarantine` (FreeBSD: `pfctl -a croustypatch_quarantine -F all`).
+
+Agent configuration keys: `server_url`, `mode` (`pull`|`push`), `tls_ca_file`, `heartbeat_secs`,
+`eco_heartbeat_secs`, `eco_enabled`, `dry_run`, `package_manager` (`auto`|`apt`|`pacman`|`pkg`),
+`inventory_interval_secs`, `probe_interval_secs`. The heartbeat default comes from Settings → Agents at
+enrolment time.
+
+### Package-manager specifics
+
+| | apt | pacman | FreeBSD pkg |
+|---|---|---|---|
+| Security flag | origin contains "security" | only with `arch-audit` installed | only for packages listed by `pkg audit` |
+| CVE ids | not available | with `arch-audit` | from `pkg audit` |
+| Selective update | yes | **no**: always a full `-Syu` (Arch forbids partial upgrades) | yes |
+| Restore point | version pins; refuses if the old version cannot be fetched | pins + package files in the pacman cache | `pkg create` archives (+ ZFS boot environment when available) |
+| Reboot detection | `/var/run/reboot-required` | running kernel's modules missing | `freebsd-version -k` ≠ `uname -r` |
+
+## Backups and upgrades
+
+Back up the PostgreSQL database and, separately, the master key. The audit log is verified from the UI
+(**audit** → verify the chain) or `GET /api/v1/audit/verify`. Upgrading is replacing the image or binary;
+migrations apply on start.

@@ -1,0 +1,1 @@
+The Phosphor **bold** icons the site uses, copied from `@phosphor-icons/core` 2.1.1. In code they inherit `currentColor`; these files are filled with `ink` (#1b2125) so they render as images. Use them at 16px in small buttons and 18px beside text; colour `primary` when an icon marks a fact.

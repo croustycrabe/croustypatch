@@ -1,0 +1,129 @@
+/* CroustyLab Software — generated from tokens.json. Light is the default; set data-theme="dark" on any ancestor for dark. */
+@import url("https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap");
+:root, [data-theme="light"] {
+  --bg: #f5f2ea;
+  --surface: #fcfbf8;
+  --surface-sunken: #eeeae0;
+  --surface-hover: #e7e1d3;
+  --surface-active: #d9d0ba;
+  --fg: #1b2125;
+  --fg-muted: #4d6169;
+  --fg-disabled: #8a979c;
+  --border: #d4ccb8;
+  --border-strong: #6f7d82;
+  --primary: #a44334;
+  --primary-hover: #8a3628;
+  --primary-active: #722d22;
+  --primary-fg: #f5f2ea;
+  --primary-subtle: #f3e0db;
+  --primary-text: #a44334;
+  --focus: var(--primary);
+  --inverse-bg: #1b2125;
+  --inverse-fg: #eeeae0;
+  --overlay: #1b212580;
+  --success: #0e6e5e;
+  --success-fg: #f5f2ea;
+  --success-subtle: #d9ece6;
+  --success-text: #0e6e5e;
+  --warning: #e5a800;
+  --warning-fg: #1b2125;
+  --warning-subtle: #f8ebc4;
+  --warning-text: #7a5200;
+  --danger: #b4233f;
+  --danger-fg: #f5f2ea;
+  --danger-subtle: #f6dfe1;
+  --danger-text: #b4233f;
+  --info: #245f9c;
+  --info-fg: #f5f2ea;
+  --info-subtle: #dbe6f3;
+  --info-text: #245f9c;
+  --shadow-float: 2px 2px 0 0 #1b2125;
+  --shadow-dialog: 4px 4px 0 0 #1b2125;
+}
+[data-theme="dark"] {
+  --bg: #14181b;
+  --surface: #1b2125;
+  --surface-sunken: #101315;
+  --surface-hover: #263036;
+  --surface-active: #2f3b42;
+  --fg: #eeeae0;
+  --fg-muted: #a9b6bb;
+  --fg-disabled: #5f6f76;
+  --border: #34424a;
+  --border-strong: #7b8b92;
+  --primary: #d0786b;
+  --primary-hover: #dd8f83;
+  --primary-active: #e9a398;
+  --primary-fg: #1b2125;
+  --primary-subtle: #3a2420;
+  --primary-text: #e08f83;
+  --focus: var(--primary);
+  --inverse-bg: #eeeae0;
+  --inverse-fg: #1b2125;
+  --overlay: #000000a6;
+  --success: #4cc3ae;
+  --success-fg: #1b2125;
+  --success-subtle: #12332d;
+  --success-text: #4cc3ae;
+  --warning: #f0b429;
+  --warning-fg: #1b2125;
+  --warning-subtle: #3a2d0a;
+  --warning-text: #f0b429;
+  --danger: #ff7d8f;
+  --danger-fg: #1b2125;
+  --danger-subtle: #3d1620;
+  --danger-text: #ff7d8f;
+  --info: #6cb1f0;
+  --info-fg: #1b2125;
+  --info-subtle: #132a40;
+  --info-text: #6cb1f0;
+  --shadow-float: 2px 2px 0 0 #000000;
+  --shadow-dialog: 4px 4px 0 0 #000000;
+}
+:root {
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
+  --border-width: 1px;
+  --border-width-strong: 2px;
+  --focus-width: 2px;
+  --control-sm: 28px;
+  --control-md: 36px;
+  --control-lg: 44px;
+  --row-dense: 32px;
+  --row-md: 40px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --sidebar-w: 240px;
+  --sidebar-rail-w: 64px;
+  --dialog-w: 440px;
+  --container: 72rem;
+  --font-display: "Rubik One", system-ui, sans-serif;
+  --font-sans: "Rubik", system-ui, sans-serif;
+  --font-mono: "Roboto Mono", "Roboto Mono Variable", ui-monospace, monospace;
+}
+.heading-1 { font-family: var(--font-display); font-size: 28px; line-height: 36px; font-weight: 400; }
+.heading-2 { font-family: var(--font-display); font-size: 20px; line-height: 28px; font-weight: 400; }
+.heading-3 { font-family: var(--font-display); font-size: 16px; line-height: 24px; font-weight: 400; }
+.body { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 400; }
+.body-strong { font-family: var(--font-sans); font-size: 14px; line-height: 20px; font-weight: 500; }
+.body-lg { font-family: var(--font-sans); font-size: 16px; line-height: 24px; font-weight: 400; }
+.label { font-family: var(--font-sans); font-size: 13px; line-height: 16px; font-weight: 500; }
+.caption { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 400; }
+.eyebrow { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 700; letter-spacing: 0.12em; }
+.code { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; }
+.code-sm { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 400; }
+.data { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 500; }
+.tag { font-family: var(--font-mono); font-size: 12px; line-height: 16px; font-weight: 700; }

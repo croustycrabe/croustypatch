@@ -1,0 +1,30 @@
+# /etc/systemd/system/croustypatch-agent.service
+# Enrol first:  CROUSTYPATCH_ENROLL_TOKEN=... croustypatch-agent enroll --server https://patch.example.com
+[Unit]
+Description=CroustyPatch agent
+Documentation=https://croustylab.example/croustypatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/croustypatch-agent run
+Restart=always
+RestartSec=5
+# The agent patches the system and manages the firewall, so it needs root; everything else is closed.
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+StateDirectory=croustypatch
+StateDirectoryMode=0700
+ConfigurationDirectory=croustypatch
+ConfigurationDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

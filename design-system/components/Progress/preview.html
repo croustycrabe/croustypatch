@@ -1,0 +1,23 @@
+<!-- @dsCard group="Feedback" height=360 subtitle="progress bar in each tone, spinner" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Progress</title></head>
+<body class="cs-root">
+<div class="cs-stack" style="max-width:480px;gap:16px">
+<div><div class="cs-progress-row"><span>Uploading image</span><span class="cs-mono">64%</span></div><div class="cs-progress cs-tone-primary" role="progressbar" aria-label="Uploading image" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100" style="--value:64%"><span></span></div></div>
+<div><div class="cs-progress-row"><span>Tests passed</span><span class="cs-mono">100%</span></div><div class="cs-progress cs-tone-success" role="progressbar" aria-label="Tests passed" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100" style="--value:100%"><span></span></div></div>
+<div><div class="cs-progress-row"><span>Disk usage</span><span class="cs-mono">82%</span></div><div class="cs-progress cs-tone-warning" role="progressbar" aria-label="Disk usage" aria-valuenow="82" aria-valuemin="0" aria-valuemax="100" style="--value:82%"><span></span></div></div>
+<div><div class="cs-progress-row"><span>Error budget used</span><span class="cs-mono">96%</span></div><div class="cs-progress cs-tone-danger" role="progressbar" aria-label="Error budget used" aria-valuenow="96" aria-valuemin="0" aria-valuemax="100" style="--value:96%"><span></span></div></div>
+</div>
+<p class="sec" style="margin-top:24px">Spinner</p>
+<div class="cs-row" style="gap:24px"><span class="cs-spinner" role="status" aria-label="Loading"></span><span class="cs-spinner cs-spinner--md" role="status" aria-label="Loading"></span><span class="cs-spinner cs-spinner--lg" role="status" aria-label="Loading"></span></div>
+<div style="margin-top:24px;max-width:480px"><p class="sec">Dark theme</p>
+<div data-theme="dark" class="cs-theme">
+<div><div class="cs-progress-row"><span>Uploading image</span><span class="cs-mono">64%</span></div><div class="cs-progress cs-tone-primary" role="progressbar" aria-label="Uploading image" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100" style="--value:64%"><span></span></div></div>
+</div></div>
+</body>
+</html>

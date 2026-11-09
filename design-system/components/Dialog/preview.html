@@ -1,0 +1,28 @@
+<!-- @dsCard group="Overlays" height=760 subtitle="modal over a scrim: destructive confirmation and form" -->
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"><link rel="stylesheet" href="../../tokens.css"><link rel="stylesheet" href="../bundle.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Rubik:wght@400;500;700&family=Rubik+One&display=swap">
+<style>html,body{margin:0;background:var(--bg)}body{padding:24px 28px 32px}.sec{margin:0 0 8px;font:700 12px/16px var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-muted)}.blk{margin-bottom:24px}.dark-wrap{margin-top:8px}</style>
+<title>Dialog</title></head>
+<body class="cs-root">
+<div class="cs-overlay">
+  <div class="cs-dialog" role="alertdialog" aria-labelledby="dt1" aria-describedby="dd1">
+    <div class="cs-dialog__head"><h2 class="cs-dialog__title" id="dt1">Delete project</h2><button class="cs-btn cs-btn--icon cs-btn--sm cs-btn--ghost" aria-label="Close"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z"/></svg></button></div>
+    <div class="cs-dialog__body" id="dd1"><p>This permanently deletes <span class="cs-inline-code">api-gateway</span> and its 128 deployments. You can't undo this.</p>
+      <div class="cs-alert cs-tone-danger"><svg class="cs-alert__icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M168.49,104.49,145,128l23.52,23.51a12,12,0,0,1-17,17L128,145l-23.51,23.52a12,12,0,0,1-17-17L111,128,87.51,104.49a12,12,0,0,1,17-17L128,111l23.51-23.52a12,12,0,0,1,17,17ZM236,128A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Z"/></svg><div><p class="cs-alert__text" style="margin:0">Active traffic will stop immediately.</p></div></div></div>
+    <div class="cs-dialog__foot"><button class="cs-btn">Cancel</button><button class="cs-btn cs-btn--danger">Delete project</button></div>
+  </div>
+</div>
+<div style="margin-top:24px" data-theme="dark">
+<div class="cs-overlay">
+  <div class="cs-dialog" role="dialog" aria-labelledby="dt2">
+    <div class="cs-dialog__head"><h2 class="cs-dialog__title" id="dt2">Rollback to v2.13.2</h2><button class="cs-btn cs-btn--icon cs-btn--sm cs-btn--ghost" aria-label="Close"><svg class="cs-icon" viewBox="0 0 256 256" aria-hidden="true"><path d="M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z"/></svg></button></div>
+    <div class="cs-dialog__body"><div class="cs-field"><label class="cs-label" for="rb">Reason</label><input class="cs-input" id="rb" placeholder="Why are you rolling back?"></div></div>
+    <div class="cs-dialog__foot"><button class="cs-btn">Cancel</button><button class="cs-btn cs-btn--primary">Roll back</button></div>
+  </div>
+</div>
+</div>
+</body>
+</html>

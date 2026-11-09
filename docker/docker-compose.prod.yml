@@ -1,0 +1,58 @@
+# Production-style stack: PostgreSQL + CroustyPatch (TLS 1.3 terminated by the server itself).
+# Required environment (put it in an .env file next to this one, mode 600):
+#   CROUSTYPATCH_DB_PASSWORD   database password
+#   CROUSTYPATCH_MASTER_KEY    32 random bytes, base64:   openssl rand -base64 32
+# Keep the master key OUT of backups of the database: it protects the encrypted columns.
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: croustypatch
+      POSTGRES_PASSWORD: ${CROUSTYPATCH_DB_PASSWORD:?set CROUSTYPATCH_DB_PASSWORD}
+      POSTGRES_DB: croustypatch
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U croustypatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://croustypatch:${CROUSTYPATCH_DB_PASSWORD}@postgres:5432/croustypatch
+      CROUSTYPATCH_MASTER_KEY: ${CROUSTYPATCH_MASTER_KEY:?set CROUSTYPATCH_MASTER_KEY}
+      # Direct mode: the server terminates TLS 1.3. Mount your certificate, or let it create a
+      # self-signed one (then agents must pin it with --ca-file).
+      CROUSTYPATCH_TLS_MODE: direct
+      # CROUSTYPATCH_TLS_CERT: /certs/fullchain.pem
+      # CROUSTYPATCH_TLS_KEY: /certs/privkey.pem
+      CROUSTYPATCH_TLS_SAN: localhost,127.0.0.1,patch.example.com
+      # Behind a reverse proxy instead: set CROUSTYPATCH_TLS_MODE=proxy and list the proxy address(es):
+      # CROUSTYPATCH_TLS_MODE: proxy
+      # CROUSTYPATCH_TRUSTED_PROXIES: 172.18.0.1
+    ports:
+      - "8443:8443"
+    volumes:
+      - serverdata:/var/lib/croustypatch
+      # - ./certs:/certs:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend]
+
+volumes:
+  pgdata:
+  serverdata:
+networks:
+  backend:
