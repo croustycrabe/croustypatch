@@ -67,7 +67,8 @@ await p.keyboard.press('Escape');
 await p.goto(`${BASE}/tasks/?filter=approval`); await p.waitForSelector('.tbl a');
 await p.click('.tbl a >> nth=0'); await p.waitForSelector('dialog[open] .timeline'); 
 check('task detail opens as a side panel with the decision reasoning', (await p.locator('dialog.drawer[open]').count()) === 1 && (await p.locator('dialog[open] li:has-text("stability")').count()) > 0);
-await p.click('dialog[open] button:has-text("Approuver")'); await p.waitForTimeout(800);
+await p.click('dialog[open] button:has-text("Approuver")');
+await p.waitForFunction(() => /en file|envoyée|en cours|observation|réussie/i.test(document.querySelector('dialog[open] .status')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {});
 check('approving moves the task on', (await p.locator('dialog[open] .status').first().textContent()).match(/en file|envoyée|en cours|observation|réussie/i) !== null, await p.locator('dialog[open] .status').first().textContent());
 await p.keyboard.press('Escape');
 

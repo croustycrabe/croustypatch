@@ -78,6 +78,37 @@ impl HostModules {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentSettings {
     pub modules: HostModules,
+    #[serde(default)]
+    pub isolation: IsolationSettings,
+}
+
+/// What stays reachable while a host is isolated (double failure or manual quarantine), besides the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IsolationSettings {
+    /// Keep inbound SSH open, so an administrator can still log in and repair the host.
+    pub keep_ssh: bool,
+    pub ssh_port: u16,
+    /// Networks allowed to reach SSH (CIDR or address); empty = any source.
+    pub ssh_sources: Vec<String>,
+}
+
+impl Default for IsolationSettings {
+    fn default() -> Self {
+        Self { keep_ssh: true, ssh_port: 22, ssh_sources: vec![] }
+    }
+}
+
+/// `192.0.2.0/24`, `2001:db8::/32` or a single address, normalised; None when malformed (never reaches a firewall).
+pub fn parse_cidr(s: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (ip, len) = match s.trim().split_once('/') {
+        Some((ip, len)) => (ip.parse::<std::net::IpAddr>().ok()?, len.parse::<u8>().ok()?),
+        None => {
+            let ip = s.trim().parse::<std::net::IpAddr>().ok()?;
+            (ip, if ip.is_ipv4() { 32 } else { 128 })
+        }
+    };
+    (len <= if ip.is_ipv4() { 32 } else { 128 }).then_some((ip, len))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

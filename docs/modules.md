@@ -48,6 +48,17 @@ window, health probes) and are applied to **Docker Compose services only**:
 3. wait until the container is running (and *healthy* if it has a health check), then run the policy's probes;
 4. on failure: re-tag the previous image and `up -d` again; if that fails too, the double-failure protocol applies.
 
+**Stacks deployed by a manager running in a container** (Arcane, Dockge, Komodo…): compose records the files as the
+manager sees them, e.g. `/app/data/projects/hoppscotch/compose.yaml`, which does not exist on the host. The agent
+maps such paths through the mounts of the host's containers (here `/app/data` →
+`/var/lib/docker/volumes/arcane-agent_arcane-data/_data`) and logs the translation. If no file is found, the update
+is refused before anything is touched, with that reason.
+
+Only what was changed is rolled back: a failure before a container was recreated (a pull that fails, a registry that
+is down) ends the task as *failed, nothing was changed*, never as a double failure. And a rollback whose command
+reports an error, while every container runs its previous image again, counts as rolled back: the state of the
+machine decides, not an exit code.
+
 Containers started by hand are reported with their available update but never recreated: the agent cannot know
 which of their settings are intentional. Tested read-only on the `docker-data` host (18 compose containers,
 registry checks for Docker Hub and GHCR, 12 s).

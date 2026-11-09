@@ -147,6 +147,18 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
     diesel::update(hosts::table.find(id)).set(hosts::facts.eq(json!({"capabilities": [capability::SETTINGS]}))).execute(&mut db.conn()).unwrap();
     let s = croustypatch_server::modules::settings_for(&mut db.conn(), id).unwrap().unwrap();
     assert!(s.modules.docker && s.modules.openscap && s.modules.eco && !s.modules.portal);
+    assert!(s.isolation.keep_ssh && s.isolation.ssh_port == 22 && s.isolation.ssh_sources.is_empty(), "SSH stays reachable by default");
+
+    // isolation rules: validated, then carried to the agents with their settings
+    let put = |b: Value| TestRequest::put().uri("/api/v1/settings/isolation").cookie(ck.clone()).set_json(b);
+    for bad in [json!({"keep_ssh": true, "ssh_port": 0, "ssh_sources": []}), json!({"keep_ssh": true, "ssh_port": 22, "ssh_sources": ["10.0.0.0/24; flush ruleset"]}), json!({"keep_ssh": "yes"})] {
+        let (st, b) = call(&app, put(bad.clone())).await;
+        assert_eq!(st, 400, "{bad} -> {b}");
+    }
+    let (st, _) = call(&app, put(json!({"keep_ssh": true, "ssh_port": 2222, "ssh_sources": ["10.0.10.0/24"]}))).await;
+    assert!(st.is_success());
+    let s = croustypatch_server::modules::settings_for(&mut db.conn(), id).unwrap().unwrap();
+    assert_eq!((s.isolation.ssh_port, s.isolation.ssh_sources.clone()), (2222, vec!["10.0.10.0/24".to_string()]));
 }
 
 #[actix_web::test]

@@ -3,22 +3,28 @@ use croustypatch_agent::config::Config;
 use croustypatch_agent::exec::Runner;
 use croustypatch_agent::runner::TaskLog;
 use croustypatch_agent::isolate::*;
+use croustypatch_common::protocol::IsolationSettings;
+
+fn closed() -> IsolationSettings {
+    IsolationSettings { keep_ssh: false, ..Default::default() }
+}
 
 #[test]
 fn nft_ruleset_only_allows_server() {
-    let r = nft_ruleset(&["192.0.2.10".parse().unwrap(), "2001:db8::1".parse().unwrap()]);
+    let r = nft_ruleset(&["192.0.2.10".parse().unwrap(), "2001:db8::1".parse().unwrap()], &closed());
     assert!(r.contains("policy drop"));
     assert!(r.contains("ip saddr { 192.0.2.10 } accept"));
     assert!(r.contains("ip6 daddr { 2001:db8::1 } accept"));
     assert!(r.contains("type filter hook input priority -300"));
     // an IPv4-only server must not generate an empty ip6 set (invalid nft syntax)
-    let r4 = nft_ruleset(&["192.0.2.10".parse().unwrap()]);
+    let r4 = nft_ruleset(&["192.0.2.10".parse().unwrap()], &closed());
+    assert!(!r4.contains("dport"), "SSH closed when asked");
     assert!(!r4.contains("ip6"));
 }
 
 #[test]
 fn pf_rules_block_by_default() {
-    let r = pf_rules(&["192.0.2.10".parse().unwrap()]);
+    let r = pf_rules(&["192.0.2.10".parse().unwrap()], &closed());
     assert!(r.starts_with("block drop all"));
     assert!(r.contains("to { 192.0.2.10 }"));
 }
@@ -26,7 +32,7 @@ fn pf_rules_block_by_default() {
 #[tokio::test]
 async fn refuses_quarantine_without_server_address() {
     let r = Runner { dry_run: true };
-    assert!(quarantine(&r, &[], &TaskLog::default()).await.is_err());
+    assert!(quarantine(&r, &[], &IsolationSettings::default(), &TaskLog::default()).await.is_err());
 }
 
 #[tokio::test]
@@ -43,4 +49,30 @@ async fn forensics_manifest_matches_files() {
         assert_eq!(hash, croustypatch_common::crypto::sha256_hex(&std::fs::read(dir.join(name)).unwrap()));
     }
     assert!(manifest.contains("task.log") && manifest.contains("restore.json"));
+}
+
+#[test]
+fn ssh_stays_reachable_during_isolation_by_default() {
+    let server = ["192.0.2.10".parse().unwrap()];
+    let r = nft_ruleset(&server, &IsolationSettings::default());
+    assert!(r.contains("tcp dport 22 accept"), "{r}");
+    let input = r.split("chain output").next().unwrap();
+    assert!(input.contains("tcp dport 22"), "inbound only: replies leave through the established rule");
+    assert!(pf_rules(&server, &IsolationSettings::default()).contains("pass in quick proto tcp from any to any port 22 keep state"));
+    assert!(describe(&server, &IsolationSettings::default()).contains("inbound SSH (port 22)"));
+}
+
+#[test]
+fn ssh_can_be_limited_to_admin_networks() {
+    let server = ["192.0.2.10".parse().unwrap()];
+    let iso = IsolationSettings { keep_ssh: true, ssh_port: 2222, ssh_sources: vec!["10.0.10.0/24".into(), "10.0.15.10".into(), "2001:db8::/32".into()] };
+    let r = nft_ruleset(&server, &iso);
+    assert!(r.contains("ip saddr { 10.0.10.0/24, 10.0.15.10/32 } tcp dport 2222 accept"), "{r}");
+    assert!(r.contains("ip6 saddr { 2001:db8::/32 } tcp dport 2222 accept"), "{r}");
+    assert!(!r.contains("    tcp dport 2222 accept"), "never open to everyone when sources are given");
+    assert!(pf_rules(&server, &iso).contains("from { 10.0.10.0/24, 10.0.15.10/32, 2001:db8::/32 } to any port 2222"));
+    // malformed sources never reach the firewall, and a list with nothing valid keeps SSH closed
+    let bad = IsolationSettings { keep_ssh: true, ssh_port: 22, ssh_sources: vec!["10.0.0.0/24; flush ruleset".into(), "x".into()] };
+    let r = nft_ruleset(&server, &bad);
+    assert!(!r.contains("dport") && !r.contains("flush"), "{r}");
 }

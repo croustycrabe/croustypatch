@@ -53,7 +53,11 @@ pub fn host_has_capability(c: &mut PgConnection, host_id: Uuid, cap: &str) -> Ap
 /// What to send to the agent, or None if it would not understand it.
 pub fn settings_for(c: &mut PgConnection, host_id: Uuid) -> ApiResult<Option<AgentSettings>> {
     let (facts, modules): (Value, Value) = hosts::table.find(host_id).select((hosts::facts, hosts::modules)).first(c).map_err(|_| ApiError::NotFound("host"))?;
-    Ok(has_capability(&facts, capability::SETTINGS).then(|| AgentSettings { modules: parse(&modules) }))
+    if !has_capability(&facts, capability::SETTINGS) {
+        return Ok(None);
+    }
+    let isolation = settings::table.find("isolation").select(settings::value).first::<Value>(c).optional()?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+    Ok(Some(AgentSettings { modules: parse(&modules), isolation }))
 }
 
 /// Send the host's settings over its tunnel right away (push-mode agents get them with their next telemetry).

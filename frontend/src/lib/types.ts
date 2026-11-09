@@ -268,6 +268,8 @@ export interface Settings {
   connectivity: { mode: 'connected' | 'air_gapped' };
   agent: { heartbeat_secs: number };
   compliance: { threshold: number; profile: string };
+  /** What stays reachable while a host is isolated, besides the server. */
+  isolation: { keep_ssh: boolean; ssh_port: number; ssh_sources: string[] };
 }
 
 export interface PackageRow {

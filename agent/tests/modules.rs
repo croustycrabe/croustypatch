@@ -77,3 +77,46 @@ fn helper_script_apps_are_detected_from_their_version_files() {
     assert_eq!(found[1].version, "1.32.0");
     assert!(found.iter().all(|p| p.candidate.is_none() && p.source == "helper-script"));
 }
+
+#[test]
+fn compose_files_of_a_manager_in_a_container_are_found_through_its_mounts() {
+    // The real case: Arcane runs in a container and writes its own paths into the compose labels.
+    let host = tempfile::tempdir().unwrap();
+    let vol = host.path().join("volumes/arcane-agent_arcane-data/_data");
+    std::fs::create_dir_all(vol.join("projects/hoppscotch")).unwrap();
+    std::fs::write(vol.join("projects/hoppscotch/compose.yaml"), "services: {}").unwrap();
+    let mounts = vec![
+        (host.path().join("termix-data").to_string_lossy().into_owned(), "/app/data".to_string()), // another container, same mount point
+        (vol.to_string_lossy().into_owned(), "/app/data".to_string()),
+        ("/var/run/docker.sock".to_string(), "/var/run/docker.sock".to_string()),
+    ];
+    let c = docker::Compose { project: "hoppscotch".into(), service: "db".into(), working_dir: "/app/data/projects/hoppscotch".into(), config_files: vec!["/app/data/projects/hoppscotch/compose.yaml".into()] };
+    let r = docker::resolve_compose(&c, &mounts, |p| p.exists()).unwrap();
+    assert_eq!(r.config_files, vec![vol.join("projects/hoppscotch/compose.yaml").to_string_lossy().into_owned()]);
+    assert_eq!(r.working_dir, vol.join("projects/hoppscotch").to_string_lossy().into_owned());
+    assert_eq!((r.project.as_str(), r.service.as_str()), ("hoppscotch", "db"));
+
+    // a stack deployed from the host keeps its paths untouched
+    std::fs::create_dir_all(host.path().join("stacks/termix")).unwrap();
+    std::fs::write(host.path().join("stacks/termix/compose.yaml"), "").unwrap();
+    let local = docker::Compose { project: "termix".into(), service: "termix".into(), working_dir: host.path().join("stacks/termix").to_string_lossy().into_owned(), config_files: vec![host.path().join("stacks/termix/compose.yaml").to_string_lossy().into_owned()] };
+    assert_eq!(docker::resolve_compose(&local, &mounts, |p| p.exists()).unwrap(), local);
+
+    // nothing on the host: refused before anything changes, with the reason
+    let lost = docker::Compose { config_files: vec!["/srv/elsewhere/compose.yaml".into()], working_dir: "/srv/elsewhere".into(), ..c.clone() };
+    let e = docker::resolve_compose(&lost, &mounts, |p| p.exists()).unwrap_err().to_string();
+    assert!(e.contains("not on this host") && e.contains("nothing was changed"), "{e}");
+    // a mount translation never climbs out of the mounted directory
+    assert_eq!(docker::host_path("/app/data/../../etc/shadow", &mounts, |p| p.exists() && !p.ends_with("shadow")), None);
+}
+
+#[test]
+fn container_mounts_are_read_from_docker_inspect() {
+    let v = json!({ "Name": "/arcane-agent", "Image": "sha256:ab", "Config": { "Image": "ghcr.io/getarcaneapp/agent:v2.1.0", "Labels": {} },
+        "Mounts": [{ "Type": "volume", "Source": "/var/lib/docker/volumes/arcane-agent_arcane-data/_data", "Destination": "/app/data" }] });
+    let c = docker::container_from_inspect(&v, vec![]).unwrap();
+    assert_eq!(c.mounts, vec![("/var/lib/docker/volumes/arcane-agent_arcane-data/_data".to_string(), "/app/data".to_string())]);
+    // restore points saved by older agents (no mounts) still load
+    let old: docker::Container = serde_json::from_value(json!({ "name": "x", "image_ref": "a", "image_id": "b", "repo_digests": [], "compose": null })).unwrap();
+    assert!(old.mounts.is_empty());
+}

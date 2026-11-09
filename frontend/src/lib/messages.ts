@@ -735,6 +735,12 @@ export const fr = {
   'host.portal_client.gui': 'fenêtre de bureau et terminal',
   'host.portal_client.tui': 'terminal (croustypatch-portal)',
   'host.desktop_detected': 'bureau détecté : poste de travail ?',
+  'settings.isolation': 'Isolement réseau',
+  'settings.isolation.hint': 'Après une double défaillance (ou un isolement demandé), une machine ne garde que le lien avec ce serveur. Laissez SSH ouvert pour pouvoir vous y connecter et la réparer. Les agents reçoivent ce réglage tout de suite.',
+  'settings.isolation.keep_ssh': 'Garder SSH accessible pendant l’isolement',
+  'settings.isolation.port': 'Port SSH',
+  'settings.isolation.sources': 'Réseaux autorisés',
+  'settings.isolation.sources_hint': 'Un réseau ou une adresse par ligne (ex. 10.0.10.0/24). Vide : toute source.',
 } as const;
 
 export type MessageKey = keyof typeof fr;
@@ -1458,4 +1464,10 @@ export const en: Record<MessageKey, string> = {
   'host.portal_client.gui': 'desktop window and terminal',
   'host.portal_client.tui': 'terminal (croustypatch-portal)',
   'host.desktop_detected': 'desktop detected: workstation?',
+  'settings.isolation': 'Network isolation',
+  'settings.isolation.hint': 'After a double failure (or a requested isolation), a machine keeps only its link to this server. Keep SSH open so you can still log in and repair it. Agents receive this setting right away.',
+  'settings.isolation.keep_ssh': 'Keep SSH reachable during isolation',
+  'settings.isolation.port': 'SSH port',
+  'settings.isolation.sources': 'Allowed networks',
+  'settings.isolation.sources_hint': 'One network or address per line (e.g. 10.0.10.0/24). Empty: any source.',
 };

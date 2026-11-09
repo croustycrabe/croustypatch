@@ -156,7 +156,10 @@ fail half-way under those options, rollback included. Installers before 0.2.4 wr
 to replace it. Before every patch the agent checks that it is not sandboxed (private mount namespace, or capabilities
 below what root has on the machine) and refuses with nothing changed if it is; containers are not affected.
 
-Quarantine keeps only the server's IP addresses reachable, so DNS is cut too. The agent saves the server addresses it
+Quarantine keeps only the server's IP addresses reachable, plus **inbound SSH** so an administrator can still log in
+and repair the host (*Settings > Network isolation*: on by default, port 22, any source; it can be limited to admin
+networks such as `10.0.10.0/24`, or switched off). Agents receive this setting right away and apply it at the next
+isolation; agents before 0.5.1 cut SSH too. DNS is cut. The agent saves the server addresses it
 last resolved (`server_ips.json` in the state directory) and connects through them when the name does not resolve,
 keeping the host name for TLS. An isolated host therefore reconnects after a server or agent restart and receives
 "Restore the network". Agents before 0.2.5 cannot: lift such a quarantine on the host itself with

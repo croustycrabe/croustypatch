@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Card, Field, Notice, PageHeader, Select, Spinner, Switch, Tag, TextInput } from '@/components/ui';
+import { Button, Card, Field, Notice, PageHeader, Select, Spinner, Switch, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
@@ -19,6 +19,8 @@ function Settings() {
   const [s, setS] = useState<SettingsT | null>(null);
   const act = useAction();
   const writable = can('settings:write');
+  // The SSH sources are edited as text (one network per line) and parsed on save.
+  const [sources, setSources] = useState<string | null>(null);
 
   useEffect(() => { if (data.data) setS(data.data); }, [data.data]);
   if (!s) return data.error ? <Notice kind="error">{data.error.message}</Notice> : <Spinner />;
@@ -70,6 +72,15 @@ function Settings() {
           </div>
           <p className="field__hint" style={{ marginTop: 14 }}>{t('settings.ai.note')}</p>
           {writable && <AiTest />}
+        </Card>
+
+        <Card title={t('settings.isolation')} actions={writable ? <Button variant="primary" small disabled={act.pending} onClick={() => void save('isolation', { ...s.isolation, ssh_port: Number(s.isolation.ssh_port), ssh_sources: (sources ?? s.isolation.ssh_sources.join('\n')).split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) }).then(() => setSources(null))}>{t('common.save')}</Button> : null}>
+          <p className="muted" style={{ marginBottom: 16 }}>{t('settings.isolation.hint')}</p>
+          <div className="form-grid">
+            <div className="span-all"><Switch checked={s.isolation.keep_ssh} disabled={!writable} onChange={(v) => setS({ ...s, isolation: { ...s.isolation, keep_ssh: v } })}>{t('settings.isolation.keep_ssh')}</Switch></div>
+            <Field label={t('settings.isolation.port')}>{(i) => <TextInput id={i} type="number" min={1} max={65535} value={s.isolation.ssh_port} disabled={!writable || !s.isolation.keep_ssh} onChange={(e) => setS({ ...s, isolation: { ...s.isolation, ssh_port: Number(e.target.value) } })} />}</Field>
+            <Field label={t('settings.isolation.sources')} hint={t('settings.isolation.sources_hint')}>{(i) => <TextArea id={i} className="input--code" rows={3} spellCheck={false} placeholder="10.0.10.0/24" value={sources ?? s.isolation.ssh_sources.join('\n')} disabled={!writable || !s.isolation.keep_ssh} onChange={(e) => setSources(e.target.value)} />}</Field>
+          </div>
         </Card>
 
         <div className="grid grid--2">

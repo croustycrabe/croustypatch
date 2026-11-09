@@ -29,6 +29,10 @@ pub struct Container {
     pub image_id: String,
     pub repo_digests: Vec<String>,
     pub compose: Option<Compose>,
+    /// (host source, path inside the container) of its mounts: used to find the compose files of stacks deployed
+    /// by a manager running in a container (Arcane, Dockge, Komodo…), whose labels hold the manager's own paths.
+    #[serde(default)]
+    pub mounts: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,7 +53,42 @@ pub fn container_from_inspect(v: &Value, repo_digests: Vec<String>) -> Option<Co
         (Some(project), Some(service), Some(working_dir)) => Some(Compose { project, service, working_dir, config_files: label("com.docker.compose.project.config_files").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default() }),
         _ => None,
     };
-    Some(Container { name, image_ref, image_id, repo_digests, compose })
+    let mounts = v
+        .get("Mounts")
+        .and_then(|m| m.as_array())
+        .map(|a| a.iter().filter_map(|m| Some((m.get("Source")?.as_str()?.to_string(), m.get("Destination")?.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    Some(Container { name, image_ref, image_id, repo_digests, compose, mounts })
+}
+
+/// A path from a compose label, as it exists on the host. If it does not exist as written, it may be a path inside a
+/// manager's container: map it through that container's mounts (the longest matching mount first) and keep the
+/// first translation that exists. None when nothing on the host matches.
+pub fn host_path(path: &str, mounts: &[(String, String)], exists: impl Fn(&std::path::Path) -> bool) -> Option<String> {
+    use std::path::Path;
+    if exists(Path::new(path)) {
+        return Some(path.to_string());
+    }
+    let mut ordered: Vec<&(String, String)> = mounts.iter().filter(|(src, dst)| !src.is_empty() && dst.starts_with('/') && dst != "/").collect();
+    ordered.sort_by_key(|(_, d)| std::cmp::Reverse(d.len()));
+    ordered.into_iter().find_map(|(src, dst)| {
+        let rest = Path::new(path).strip_prefix(dst).ok()?;
+        let cand = Path::new(src).join(rest);
+        (!cand.components().any(|c| matches!(c, std::path::Component::ParentDir)) && exists(&cand)).then(|| cand.to_string_lossy().into_owned())
+    })
+}
+
+/// The compose project with host paths, or a clear reason why the agent cannot drive it.
+pub fn resolve_compose(c: &Compose, all_mounts: &[(String, String)], exists: impl Fn(&std::path::Path) -> bool + Copy) -> Result<Compose> {
+    let files = if c.config_files.is_empty() { vec![format!("{}/compose.yaml", c.working_dir.trim_end_matches('/'))] } else { c.config_files.clone() };
+    let mut out = c.clone();
+    out.config_files = vec![];
+    for f in &files {
+        let h = host_path(f, all_mounts, exists).ok_or_else(|| anyhow!("compose file {f} is not on this host (the stack was probably deployed by a tool running in a container whose files are not mounted from the host): update it from that tool; nothing was changed"))?;
+        out.config_files.push(h);
+    }
+    out.working_dir = host_path(&c.working_dir, all_mounts, exists).ok_or_else(|| anyhow!("compose project directory {} is not on this host; nothing was changed", c.working_dir))?;
+    Ok(out)
 }
 
 fn short(d: &str) -> String {
@@ -112,35 +151,56 @@ fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {
     Cmd::new("docker", &[]).args(args).timeout(900)
 }
 
-/// Restore point: the image each container runs now.
+/// Restore point: the image each container runs now. Every check happens here, before anything changes: a container
+/// that is not a compose service, or whose compose files cannot be found on the host, fails the task cleanly.
 pub async fn snapshot(r: &Runner, names: &[String], log: &TaskLog) -> Result<Vec<Container>> {
     let all = containers(r).await?;
+    let all_mounts: Vec<(String, String)> = all.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
     let mut pins = vec![];
     for n in names {
         let name = n.trim_start_matches(PREFIX);
         let c = all.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("container {name} is not running"))?;
-        if c.compose.is_none() {
-            bail!("container {name} was not started by Docker Compose: update it by hand (CroustyPatch only recreates compose services, so their settings stay exactly as written)");
+        let Some(cp) = &c.compose else {
+            bail!("container {name} was not started by Docker Compose: update it by hand (CroustyPatch only recreates compose services, so their settings stay exactly as written); nothing was changed");
+        };
+        let resolved = resolve_compose(cp, &all_mounts, |p| p.exists()).map_err(|e| anyhow!("{name}: {e:#}"))?;
+        if resolved.config_files != cp.config_files {
+            log.line(format!("{name}: compose file {} found on the host as {}", cp.config_files.join(", "), resolved.config_files.join(", ")));
         }
         log.line(format!("restore point: {name} runs image {}", short(&c.image_id)));
-        pins.push(c.clone());
+        pins.push(Container { compose: Some(resolved), ..c.clone() });
     }
     Ok(pins)
 }
 
-pub async fn apply(r: &Runner, pins: &[Container], log: &TaskLog) -> Result<()> {
-    for c in pins {
+/// Pull and recreate each service. `touched` receives the index of every container that was (or may have been)
+/// recreated: a failure before that point changed nothing for it, so it needs no rollback.
+pub async fn apply(r: &Runner, pins: &[Container], log: &TaskLog, touched: &mut Vec<usize>) -> Result<()> {
+    for (i, c) in pins.iter().enumerate() {
         let cp = c.compose.as_ref().expect("checked at snapshot");
         let pull = r.mutate(compose_cmd(cp, &["pull", "--quiet", &cp.service]), log).await?;
         if !pull.ok() {
             bail!("pull of {} failed: {}", c.name, pull.stderr.trim());
         }
+        touched.push(i);
         let up = r.mutate(compose_cmd(cp, &["up", "-d", "--no-deps", &cp.service]), log).await?;
         if !up.ok() {
             bail!("restart of {} failed: {}", c.name, up.stderr.trim());
         }
     }
     Ok(())
+}
+
+/// Do these containers run their restore-point image again? Checked after a rollback whose commands reported an
+/// error: what counts is the state of the machine, not the exit code.
+pub async fn running_on_pins(r: &Runner, pins: &[Container]) -> bool {
+    for c in pins {
+        let Ok(o) = r.read(Cmd::new("docker", &["inspect", "--format", "{{.Image}} {{.State.Status}}", &c.name])).await else { return false };
+        if !o.ok() || o.stdout.trim() != format!("{} running", c.image_id) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Wait until every updated container is running (and healthy, when it has a health check).

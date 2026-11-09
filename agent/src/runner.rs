@@ -87,6 +87,11 @@ impl Agent {
         self.settings().map_or(true, |s| s.modules.get(name))
     }
 
+    /// What isolation keeps reachable: the server's setting when known, else the default (SSH kept open).
+    pub fn isolation(&self) -> croustypatch_common::protocol::IsolationSettings {
+        self.settings().map(|s| s.isolation).unwrap_or_default()
+    }
+
     /// Economy profile allowed: the server's switch when known, else the local configuration.
     pub fn eco_allowed(&self) -> bool {
         self.settings().map_or(self.cfg.eco_enabled, |s| s.modules.eco)
@@ -191,7 +196,7 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::Scan => scan(agent, id, &log).await,
         CommandAction::ApplyUpdates { packages, exec } => apply_updates(agent, id, packages, exec, &log).await,
         CommandAction::Rollback { target_task } => manual_rollback(agent, id, target_task, &log).await,
-        CommandAction::Quarantine => isolate::quarantine(&agent.runner, &agent.server_ips(), &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "host isolated from the network", &log, vec![], false)),
+        CommandAction::Quarantine => isolate::quarantine(&agent.runner, &agent.server_ips(), &agent.isolation(), &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "host isolated from the network", &log, vec![], false)),
         CommandAction::Release => isolate::release(&agent.runner, &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "network isolation lifted", &log, vec![], false)),
         CommandAction::Reboot { delay_minutes, message } => crate::reboot::start(agent, id, delay_minutes, &message, &log).await,
         CommandAction::ComplianceScan { profile } => compliance(agent, id, &profile, &log).await,
@@ -288,7 +293,7 @@ async fn run_probes(agent: &Agent, probes: &[HealthProbe]) -> Vec<Result<(), Str
 async fn double_failure(agent: &Agent, id: Uuid, reason: &str, rp: Option<&RestorePoint>, log: &TaskLog) {
     log.line(format!("DOUBLE FAILURE: {reason}"));
     let ips = agent.server_ips();
-    let isolated = isolate::quarantine(&agent.runner, &ips, log).await;
+    let isolated = isolate::quarantine(&agent.runner, &ips, &agent.isolation(), log).await;
     let extra: Vec<(&str, Vec<u8>)> = rp.map(|r| vec![("restore.json", serde_json::to_vec_pretty(r).unwrap_or_default())]).unwrap_or_default();
     let evidence = isolate::forensics_freeze(&agent.cfg, &agent.runner, id, log, &extra).await;
     let ev = evidence.map(|p| p.display().to_string()).unwrap_or_else(|e| format!("evidence capture failed: {e}"));
@@ -436,7 +441,8 @@ async fn update_containers(agent: &Agent, id: Uuid, names: &[String], exec: &Exe
     let baseline = run_probes(agent, &exec.probes).await;
     let ignored: Vec<usize> = baseline.iter().enumerate().filter(|(_, r)| r.is_err()).map(|(i, _)| i).collect();
     agent.update(id, TaskStatus::Running, format!("updating {} container(s)", pins.len()), log, vec![], false);
-    let applied = match docker::apply(&agent.runner, &pins, log).await {
+    let mut touched = vec![];
+    let applied = match docker::apply(&agent.runner, &pins, log, &mut touched).await {
         Ok(()) => docker::wait_healthy(&agent.runner, &pins, log).await,
         Err(e) => Err(e),
     };
@@ -448,20 +454,37 @@ async fn update_containers(agent: &Agent, id: Uuid, names: &[String], exec: &Exe
     };
     if let Some(why) = failure {
         log.line(format!("container update failed: {why}"));
+        // Only containers that were (or may have been) recreated need rolling back. A failure before any of them —
+        // a pull that failed, a registry that is down — changed nothing: it is a plain failure, never a reason to
+        // isolate the host.
+        let changed: Vec<docker::Container> = touched.iter().map(|i| pins[*i].clone()).collect();
+        if changed.is_empty() {
+            agent.update(id, TaskStatus::Failed, format!("{why}; nothing was changed"), log, vec![], false);
+            return Ok(None);
+        }
         if !exec.auto_rollback {
             agent.update(id, TaskStatus::Failed, format!("{why}; auto-rollback is disabled"), log, vec![], false);
             return Ok(None);
         }
         agent.update(id, TaskStatus::RollingBack, format!("rolling back: {why}"), log, vec![], false);
-        match docker::restore(&agent.runner, &pins, log).await.and(Ok(())) {
-            Ok(()) => match docker::wait_healthy(&agent.runner, &pins, log).await {
-                Ok(()) => {
-                    let _ = agent.send_inventory().await;
-                    agent.update(id, TaskStatus::RolledBack, format!("containers back on their previous image ({why})"), log, vec![], false);
-                }
-                Err(e) => double_failure(agent, id, &format!("containers unhealthy after rollback: {e:#}"), Some(&rp), log).await,
-            },
-            Err(e) => double_failure(agent, id, &format!("rollback failed: {e:#}"), Some(&rp), log).await,
+        let names = changed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
+        let outcome = match docker::restore(&agent.runner, &changed, log).await {
+            Ok(()) => docker::wait_healthy(&agent.runner, &changed, log).await,
+            Err(e) => Err(e),
+        };
+        match outcome {
+            Ok(()) => {
+                let _ = agent.send_inventory().await;
+                agent.update(id, TaskStatus::RolledBack, format!("{names} back on the previous image ({why})"), log, vec![], false);
+            }
+            // What matters is the machine, not an exit code: if every container runs its previous image again,
+            // the rollback worked even though a command complained.
+            Err(e) if !agent.runner.dry_run && docker::running_on_pins(&agent.runner, &changed).await => {
+                log.line(format!("rollback reported an error ({e:#}), but {names} run the previous image again"));
+                let _ = agent.send_inventory().await;
+                agent.update(id, TaskStatus::RolledBack, format!("{names} back on the previous image ({why})"), log, vec![], false);
+            }
+            Err(e) => double_failure(agent, id, &format!("rollback of {names} failed: {e:#}"), Some(&rp), log).await,
         }
         return Ok(None);
     }
