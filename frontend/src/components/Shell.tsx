@@ -69,7 +69,13 @@ function Brand({ onDark }: { onDark?: boolean }) {
   return (
     <Link href="/" className="sidebar__brand" aria-label={t('app.name')} style={onDark ? { border: 0, padding: 0 } : undefined}>
       {/* The mark is used as supplied by the design system, never redrawn. */}
-      <img src={onDark ? '/brand/crab-logo-mono-cream.svg' : '/brand/crab-logo.svg'} alt="" width={34} height={34} />
+      {onDark
+        ? <img src="/brand/crab-logo-mono-cream.svg" alt="" width={34} height={34} />
+        : <>
+            {/* One mark per theme: the brick crab on light, the cream one on dark. */}
+            <img className="logo--light" src="/brand/crab-logo.svg" alt="" width={34} height={34} />
+            <img className="logo--dark" src="/brand/crab-logo-dark.svg" alt="" width={34} height={34} />
+          </>}
       <span className="brandmark">
         <span className="cl-bracket" aria-hidden="true">[</span> {t('app.name')} <span className="cl-bracket" aria-hidden="true">]</span>
       </span>

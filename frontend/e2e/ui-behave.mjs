@@ -271,8 +271,15 @@ check('a compliance task is created and answered by the agent', await p.locator(
   const before = await theme(), bg0 = await bg();
   await th.click('.themebtn'); await th.waitForTimeout(150);
   check('the theme switch flips light and dark', (await theme()) !== before && (await bg()) !== bg0, `${before} -> ${await theme()}`);
+  const shownLogo = () => th.$$eval('.sidebar__brand img', (a) => a.filter((i) => getComputedStyle(i).display !== 'none').map((i) => i.getAttribute('src')));
+  const logos = { [await theme()]: await shownLogo() };
+  await th.screenshot({ path: `${HERE}/.run/logo-${await theme()}.png`, clip: { x: 0, y: 0, width: 420, height: 140 } });
   await th.reload(); await th.waitForSelector('.stat');
   check('the chosen theme is remembered', (await theme()) !== before);
+  await th.click('.themebtn'); await th.waitForTimeout(150);
+  logos[await theme()] = await shownLogo();
+  await th.screenshot({ path: `${HERE}/.run/logo-${await theme()}.png`, clip: { x: 0, y: 0, width: 420, height: 140 } });
+  check('one crab per theme: brick on light, cream on dark', JSON.stringify(logos.light) === JSON.stringify(['/brand/crab-logo.svg']) && JSON.stringify(logos.dark) === JSON.stringify(['/brand/crab-logo-dark.svg']), JSON.stringify(logos));
   await th.context().close();
   const sys = await (await browser.newContext({ ignoreHTTPSErrors: true, colorScheme: 'dark' })).newPage();
   await sys.goto(`${BASE}/login/`); await sys.waitForSelector('form');

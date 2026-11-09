@@ -28,6 +28,9 @@ h1, h2 { margin: 0; font-weight: 400; }
   background: var(--surface); border-bottom: var(--border-width) solid var(--border);
 }
 .top__logo { width: 52px; height: auto; }
+/* One mark per theme: the brick crab on light, the cream one on dark. */
+.logo--dark, [data-theme="dark"] .logo--light { display: none; }
+[data-theme="dark"] .logo--dark { display: block; }
 .top__title { flex: 1; min-width: 0; }
 .top__title h1 { font-family: var(--font-display); font-size: 20px; line-height: 28px; }
 .top__title p { margin: 0; font-size: 13px; }
