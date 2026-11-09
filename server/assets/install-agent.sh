@@ -6,7 +6,8 @@
 # Optional environment:
 #   CROUSTYPATCH_MODE=pull|push   pull = persistent tunnel (default), push = periodic HTTPS
 #   CROUSTYPATCH_CA_FILE=PATH     trust this CA/certificate for the server (private PKI, self-signed)
-#   CROUSTYPATCH_FORCE=1          enrol again even if this host is already enrolled
+#   CROUSTYPATCH_FORCE=1          enrol again even if this host is already enrolled (implied by a token: running the
+#                                 installer with a token always enrols, e.g. after the host was deleted in the web UI)
 #   CROUSTYPATCH_DRY_RUN=1        install an agent that only logs what it would do
 #   CROUSTYPATCH_PORTAL_GUI=1|0   install the desktop app center or not (default: on laptops and workstations)
 #
@@ -87,9 +88,10 @@ say "installed $BIN"
 ln -sf "$BIN" "$(dirname "$BIN")/croustypatch-portal"
 
 FORCE_ARG=""
-[ "${CROUSTYPATCH_FORCE:-0}" = 1 ] && FORCE_ARG="--force"
+# A token means "enrol this host": the old identity may belong to a host deleted on the server, which would refuse it.
+{ [ "${CROUSTYPATCH_FORCE:-0}" = 1 ] || [ -n "$TOKEN" ]; } && FORCE_ARG="--force"
 if [ -f "$STATE/identity.json" ] && [ -z "$FORCE_ARG" ]; then
-  say "this host is already enrolled: only the binary was upgraded (CROUSTYPATCH_FORCE=1 enrols again)"
+  say "this host is already enrolled: only the binary was upgraded (run with a new token to enrol it again)"
 else
   say "enrolling with $SERVER (mode: $MODE)"
   # shellcheck disable=SC2086

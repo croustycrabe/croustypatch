@@ -113,7 +113,7 @@ binary and keeps the enrolment. Options, set as environment variables on the sam
 |---|---|
 | `CROUSTYPATCH_MODE=pull\|push` | tunnel (default) or periodic HTTPS |
 | `CROUSTYPATCH_CA_FILE=/path/ca.pem` | trust a private CA or a self-signed server certificate |
-| `CROUSTYPATCH_FORCE=1` | enrol again even if already enrolled |
+| `CROUSTYPATCH_FORCE=1` | enrol again even if already enrolled (implied when a token is given) |
 | `CROUSTYPATCH_DRY_RUN=1` | install an agent that only logs what it would do |
 
 Read the script first at `https://patch.example.com/api/v1/agent/install.sh` if you prefer; the wizard's **Manual**
@@ -148,7 +148,9 @@ it would do and changes nothing. `croustypatch-agent doctor` rehearses the safet
 the repositories, builds a restore point for every pending update in a scratch directory, and prints which packages
 could not be restored (`OK` or `NOT SAFE`). Run it as root, ideally inside the service's own sandbox
 (`systemd-run --pipe --wait -p NoNewPrivileges=yes … croustypatch-agent doctor`), to find out why a patch would be refused.
-Re-running the installer on an enrolled host upgrades the binary and needs no token.
+Re-running the installer on an enrolled host upgrades the binary and needs no token. Running it **with** a token
+always enrols the host again, which is what you want after deleting the host in the web UI: the server has forgotten
+the old identity and refuses it (the agent logs "the server refuses this agent's identity (401)").
 
 The systemd unit deliberately has **no** service sandboxing (`ProtectKernelModules`, `ProtectSystem`, `PrivateTmp`,
 `NoNewPrivileges`…): package maintainer scripts install kernel modules, rebuild the initramfs and switch users, and

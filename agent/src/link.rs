@@ -116,6 +116,7 @@ pub async fn run_pull(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
         link.refresh_server_ips().await;
         match pull_session(&link, &mut out_rx, &mut attempt).await {
             Ok(()) => tracing::info!("tunnel closed by server"),
+            Err(e) if format!("{e:#}").contains("401") => tracing::error!("the server refuses this agent's identity (401): this host was probably deleted in the web UI or enrolled again elsewhere. Re-run the installer with a new token from Hosts > Add agent"),
             Err(e) => tracing::warn!("tunnel error: {e:#}"),
         }
         attempt += 1;
@@ -262,6 +263,9 @@ pub async fn run_push(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
                 }
             },
             Ok(r) => {
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    tracing::error!("the server refuses this agent's identity (401): this host was probably deleted in the web UI or enrolled again elsewhere. Re-run the installer with a new token from Hosts > Add agent");
+                }
                 tracing::warn!(status = %r.status(), "telemetry rejected");
                 attempt += 1;
                 link.pending.lock().unwrap().extend(msgs.into_iter().filter(|m| !matches!(m, AgentMessage::Heartbeat(_))));
