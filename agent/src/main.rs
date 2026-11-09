@@ -182,6 +182,11 @@ async fn scan(cli: &Cli) -> Result<()> {
 }
 
 async fn doctor(cli: &Cli) -> Result<()> {
+    // Every check below is about what root can do; as another user they only report the missing privileges.
+    #[cfg(unix)]
+    if unsafe { libc_geteuid() } != 0 {
+        bail!("doctor checks what the agent can do as root: run it with sudo (sudo croustypatch-agent doctor)");
+    }
     let cfg = load_config(cli)?;
     let backend = backend_for(&cfg)?;
     let r = exec::Runner { dry_run: false };
