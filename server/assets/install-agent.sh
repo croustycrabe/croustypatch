@@ -8,6 +8,7 @@
 #   CROUSTYPATCH_CA_FILE=PATH     trust this CA/certificate for the server (private PKI, self-signed)
 #   CROUSTYPATCH_FORCE=1          enrol again even if this host is already enrolled
 #   CROUSTYPATCH_DRY_RUN=1        install an agent that only logs what it would do
+#   CROUSTYPATCH_PORTAL_GUI=1|0   install the desktop app center or not (default: on laptops and workstations)
 #
 # Steps: download the agent for this platform, verify its SHA-256, install it, enrol with the token, and
 # register a service (systemd on Linux, rc.d on FreeBSD). Running it again upgrades the binary and keeps the
@@ -110,6 +111,60 @@ if [ "$OS" = Linux ] && command -v apt-get >/dev/null 2>&1 && ! command -v dpkg-
   apt_run install -y -qq dpkg-repack >/dev/null 2>&1 \
     || { apt_run update -qq >/dev/null 2>&1; apt_run install -y -qq dpkg-repack >/dev/null 2>&1; } \
     || say "warning: could not install dpkg-repack; patches that cannot be restored from the repositories will be refused (apt install dpkg-repack)"
+fi
+
+# Desktop app center (`croustypatch-portal` opens it from a graphical session, the terminal one otherwise). The agent
+# decides what this machine is: laptop (system battery), workstation (graphical desktop installed) or server.
+TYPE="$("$BIN" machine-type 2>/dev/null || echo server)"
+WANT_GUI="${CROUSTYPATCH_PORTAL_GUI:-auto}"
+if [ "$WANT_GUI" = auto ]; then
+  case "$TYPE" in laptop|workstation) WANT_GUI=1 ;; *) WANT_GUI=0 ;; esac
+fi
+GUI=/usr/local/bin/croustypatch-portal-gui
+if [ "$WANT_GUI" = 1 ] && [ "$PLAT" != linux-x86_64 ]; then
+  say "no desktop app center for $PLAT yet: use the terminal one (croustypatch-portal)"
+elif [ "$WANT_GUI" = 1 ]; then
+  say "$TYPE: installing the desktop app center"
+  if dl "$BASE/download/portal-gui-$PLAT" "$TMP/gui" 2>/dev/null && dl "$BASE/download/portal-gui-$PLAT.sha256" "$TMP/gui.sha256"; then
+    WANT="$(cut -d' ' -f1 "$TMP/gui.sha256")"
+    GOT="$(sha256_of "$TMP/gui")"
+    [ -n "$WANT" ] && [ "$WANT" = "$GOT" ] || die "desktop app center: checksum mismatch (expected $WANT, got $GOT): refusing to install"
+    install -m 0755 "$TMP/gui" "$GUI.new"
+    mv -f "$GUI.new" "$GUI"
+    mkdir -p /usr/share/applications /usr/share/icons/hicolor/256x256/apps
+    dl "$BASE/download/portal-gui-icon.png" /usr/share/icons/hicolor/256x256/apps/croustypatch-portal.png 2>/dev/null || true
+    cat > /usr/share/applications/croustypatch-portal.desktop <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=CroustyPatch App center
+Name[fr]=CroustyPatch – Portail applicatif
+Comment=Install approved software without administrator rights
+Comment[fr]=Installer des logiciels approuvés sans droits administrateur
+Exec=/usr/local/bin/croustypatch-portal-gui
+Icon=croustypatch-portal
+Terminal=false
+Categories=System;PackageManager;
+Keywords=software;install;apps;logiciels;applications;
+DESKTOP
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
+    say "installed $GUI and its menu entry"
+    # Its only system requirement is the WebKitGTK runtime.
+    if command -v apt-get >/dev/null 2>&1; then
+      if ! dpkg -s libwebkit2gtk-4.1-0 >/dev/null 2>&1; then
+        say "installing libwebkit2gtk-4.1-0 (needed by the desktop app center)"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libwebkit2gtk-4.1-0 >/dev/null 2>&1 \
+          || say "warning: could not install libwebkit2gtk-4.1-0; install it, or use croustypatch-portal --tui"
+      fi
+    elif command -v pacman >/dev/null 2>&1; then
+      # Installing one package without a full upgrade could leave Arch partially upgraded: say what to run instead.
+      pacman -Q webkit2gtk-4.1 >/dev/null 2>&1 || say "warning: the desktop app center needs webkit2gtk-4.1: run 'pacman -Syu webkit2gtk-4.1'"
+    else
+      say "warning: make sure WebKitGTK 4.1 is installed for the desktop app center"
+    fi
+  else
+    say "this server has no desktop app center build: the terminal one is available (croustypatch-portal)"
+  fi
 fi
 
 if [ "$OS" = Linux ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then

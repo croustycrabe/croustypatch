@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use croustypatch_agent::config::Config;
 use croustypatch_agent::identity::Identity;
-use croustypatch_agent::{exec, facts, link, net, pkg, runner};
+use croustypatch_agent::{exec, facts, launcher, link, net, pkg, runner};
 use croustypatch_common::crypto;
 use croustypatch_common::protocol::{EnrollRequest, EnrollResponse};
 use std::path::PathBuf;
@@ -49,12 +49,21 @@ enum Cmd {
     /// Rehearse the safety checks of a patch run without changing the system: refresh the repositories, then build a
     /// restore point for every pending update in a scratch directory and report what could not be restored.
     Doctor,
-    /// The app center in the terminal, for any local user (also installed as `croustypatch-portal`).
+    /// The app center for any local user (also installed as `croustypatch-portal`): the desktop window when a
+    /// graphical session is available and it is installed, the terminal one otherwise.
     Portal {
         /// The agent's app center socket.
         #[arg(long, env = "CROUSTYPATCH_PORTAL_SOCKET", default_value = "/run/croustypatch/portal.sock")]
         socket: String,
+        /// Always open the desktop window (falls back to the terminal if it is not installed).
+        #[arg(long, conflicts_with = "tui")]
+        gui: bool,
+        /// Always open the terminal app center.
+        #[arg(long)]
+        tui: bool,
     },
+    /// Print this machine's type as detected by the agent: laptop, workstation or server.
+    MachineType,
 }
 
 fn load_config(cli: &Cli) -> Result<Config> {
@@ -205,6 +214,16 @@ async fn doctor(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+async fn portal(socket: &str, force: launcher::Force) -> Result<()> {
+    if launcher::decide(force) == launcher::Client::Gui {
+        let e = launcher::exec_gui(socket);
+        eprintln!("cannot open the desktop app center ({e}); opening the terminal one");
+    } else if force == launcher::Force::Gui {
+        eprintln!("the desktop app center is not installed on this machine; opening the terminal one");
+    }
+    croustypatch_agent::tui::run(socket).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).with_writer(std::io::stderr).init();
@@ -212,7 +231,7 @@ async fn main() -> Result<()> {
     // Installed as `croustypatch-portal` (a link to this binary): open the app center directly, no root needed.
     if std::env::args().next().is_some_and(|a| a.ends_with("croustypatch-portal")) {
         let socket = std::env::var("CROUSTYPATCH_PORTAL_SOCKET").unwrap_or_else(|_| "/run/croustypatch/portal.sock".into());
-        return croustypatch_agent::tui::run(&socket).await;
+        return portal(&socket, launcher::force_from_args(std::env::args().skip(1))).await;
     }
     let cli = Cli::parse();
     match &cli.command {
@@ -220,6 +239,11 @@ async fn main() -> Result<()> {
         Cmd::Run { dry_run } => run(&cli, *dry_run).await,
         Cmd::Scan => scan(&cli).await,
         Cmd::Doctor => doctor(&cli).await,
-        Cmd::Portal { socket } => croustypatch_agent::tui::run(socket).await,
+        Cmd::Portal { socket, gui, tui } => portal(socket, if *gui { launcher::Force::Gui } else if *tui { launcher::Force::Tui } else { launcher::Force::Auto }).await,
+        Cmd::MachineType => {
+            let (is_laptop, _) = facts::power_state().await;
+            println!("{}", facts::machine_type(is_laptop, facts::desktop_detected()));
+            Ok(())
+        }
     }
 }

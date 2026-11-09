@@ -20,6 +20,20 @@ RUN cargo build --release --locked -p croustypatch-server -p croustypatch-agent 
  && mkdir -p /out \
  && cp target/release/croustypatch-agent /out/croustypatch-agent-linux-$(uname -m)
 
+# Desktop app center (Tauri) for laptops and workstations. Its own stage so that a server-only change reuses the cache;
+# built on bookworm so that the binary runs on Debian 12+, Ubuntu and Arch (it links the system's webkit2gtk-4.1).
+FROM rust:1-bookworm AS gui
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /gui
+COPY portal-gui ./
+RUN cargo build --release --locked \
+ && mkdir -p /out \
+ && cp target/release/croustypatch-portal-gui /out/croustypatch-portal-gui-linux-$(uname -m) \
+ && cp icons/256x256.png /out/croustypatch-portal-gui.png \
+ && echo "runtime libraries:" && ldd target/release/croustypatch-portal-gui | awk '{print "  " $1}'
+
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
@@ -30,6 +44,7 @@ COPY --from=build /src/target/release/croustypatch-server /usr/local/bin/crousty
 # The Linux agent is served to new hosts by the "Add agent" installer. Binaries for other platforms (FreeBSD must be
 # built on FreeBSD) can be dropped into /var/lib/croustypatch/agents, which lives in the persisted data volume.
 COPY --from=build /out/ /usr/share/croustypatch/agents/
+COPY --from=gui /out/ /usr/share/croustypatch/agents/
 COPY --from=web /web/out /usr/share/croustypatch/web
 ENV CROUSTYPATCH_STATIC_DIR=/usr/share/croustypatch/web \
     CROUSTYPATCH_DATA_DIR=/var/lib/croustypatch \

@@ -43,40 +43,64 @@ pub fn check_order(platform: &str, sha256: &str, version: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, version: &str, log: &TaskLog) -> Result<()> {
+/// Download one build from this agent's server and check its SHA-256.
+async fn fetch(agent: &Agent, id: &str, sha256: &str) -> Result<Vec<u8>> {
+    let client = net::http_client_pinned(&agent.cfg, &agent.server_ips())?;
+    let resp = client.get(net::api_url(&agent.cfg, &format!("/agent/download/{id}"))).timeout(Duration::from_secs(600)).send().await.with_context(|| format!("downloading {id}"))?;
+    if !resp.status().is_success() {
+        bail!("download of {id} refused: {}", resp.status());
+    }
+    let bytes = resp.bytes().await.with_context(|| format!("downloading {id}"))?;
+    if bytes.len() > MAX_SIZE {
+        bail!("{id}: download too large ({} bytes)", bytes.len());
+    }
+    let got = sha256_hex(&bytes);
+    if !got.eq_ignore_ascii_case(sha256) {
+        bail!("{id}: checksum mismatch (expected {sha256}, got {got}): nothing was changed");
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Write an executable next to its final place (same directory, so the later rename is atomic).
+fn stage(target: &std::path::Path, id: Uuid, bytes: &[u8]) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let staged = target.with_file_name(format!(".{name}.{id}.new"));
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(&staged).with_context(|| format!("writing {}", staged.display()))?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    Ok(staged)
+}
+
+pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, version: &str, gui_sha256: Option<&str>, log: &TaskLog) -> Result<()> {
     check_order(platform, sha256, version)?;
+    if let Some(g) = gui_sha256 {
+        check_order(platform, g, version)?;
+    }
     let current = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().context("locating the running agent")?;
+    let gui_path = std::path::Path::new(crate::facts::PORTAL_GUI);
+    let gui = gui_sha256.filter(|_| gui_path.is_file());
     if agent.runner.dry_run {
-        log.line(format!("[dry-run] would replace {} ({current}) with {version}", exe.display()));
+        log.line(format!("[dry-run] would replace {} ({current}) with {version}{}", exe.display(), if gui.is_some() { " and the desktop app center" } else { "" }));
         agent.update(id, TaskStatus::Succeeded, format!("[dry-run] agent {current} would be updated to {version}"), log, vec![], false);
         return Ok(());
     }
     agent.update(id, TaskStatus::Running, format!("downloading agent {version} for {platform}"), log, vec![], false);
-    let client = net::http_client_pinned(&agent.cfg, &agent.server_ips())?;
-    let resp = client.get(net::api_url(&agent.cfg, &format!("/agent/download/{platform}"))).timeout(Duration::from_secs(600)).send().await.context("downloading the agent")?;
-    if !resp.status().is_success() {
-        bail!("download refused: {}", resp.status());
-    }
-    let bytes = resp.bytes().await.context("downloading the agent")?;
-    if bytes.len() > MAX_SIZE {
-        bail!("download too large ({} bytes)", bytes.len());
-    }
-    let got = sha256_hex(&bytes);
-    if !got.eq_ignore_ascii_case(sha256) {
-        bail!("checksum mismatch (expected {sha256}, got {got}): nothing was changed");
-    }
-    log.line(format!("downloaded {} bytes, SHA-256 verified", bytes.len()));
+    // Everything is downloaded and verified before anything is replaced.
+    let bytes = fetch(agent, platform, sha256).await?;
+    log.line(format!("agent: {} bytes, SHA-256 verified", bytes.len()));
+    let gui_bytes = match gui {
+        Some(g) => {
+            let b = fetch(agent, &format!("portal-gui-{platform}"), g).await?;
+            log.line(format!("desktop app center: {} bytes, SHA-256 verified", b.len()));
+            Some(b)
+        }
+        None => None,
+    };
 
-    // Same directory, so the final rename is atomic.
-    let staged = exe.with_file_name(format!(".croustypatch-agent.{id}.new"));
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(&staged).with_context(|| format!("writing {}", staged.display()))?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
-    }
+    let staged = stage(&exe, id, &bytes)?;
     // The new binary must start on this machine and be the announced version (wrong architecture, truncated file…).
     let probe = tokio::time::timeout(Duration::from_secs(20), tokio::process::Command::new(&staged).arg("--version").env_clear().output()).await;
     let ok = match &probe {
@@ -92,13 +116,31 @@ pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, versio
         };
         bail!("the downloaded agent does not run as version {version} on this host ({detail}): nothing was changed");
     }
+    let gui_staged = match &gui_bytes {
+        Some(b) => match stage(gui_path, id, b) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                let _ = std::fs::remove_file(&staged);
+                return Err(e);
+            }
+        },
+        None => None,
+    };
+    if let Some(g) = &gui_staged {
+        std::fs::rename(g, gui_path).map_err(|e| {
+            let _ = std::fs::remove_file(g);
+            let _ = std::fs::remove_file(&staged);
+            anyhow!("replacing {}: {e}", gui_path.display())
+        })?;
+        log.line(format!("{} replaced", gui_path.display()));
+    }
     std::fs::rename(&staged, &exe).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
         anyhow!("replacing {}: {e}", exe.display())
     })?;
     write_private(&pending_file(&agent.cfg), &serde_json::to_vec(&PendingUpdate { task_id: id, from: current.into(), to: version.into() })?)?;
     log.line(format!("{} replaced; restarting", exe.display()));
-    agent.update(id, TaskStatus::Running, format!("agent {version} installed; restarting"), log, vec![], false);
+    agent.update(id, TaskStatus::Running, format!("agent {version} installed{}; restarting", if gui_staged.is_some() { " with the desktop app center" } else { "" }), log, vec![], false);
     // Give the link a moment to deliver the update, then let the service manager start the new binary.
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_secs(3)).await;

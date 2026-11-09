@@ -111,7 +111,8 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                 let f = &b.facts;
                 // Modules chosen when the token was made, else today's defaults.
                 let modules = token_modules.map(|m| crate::modules::parse(&m)).unwrap_or_else(|| crate::modules::defaults(c));
-                let asset_type = if f.is_laptop { "laptop" } else { "server" };
+                // Detected at enrolment only: administrators may change it afterwards.
+                let asset_type = if f.is_laptop { "laptop" } else if f.is_desktop { "workstation" } else { "server" };
                 let host_id: Uuid = diesel::insert_into(hosts::table)
                     .values((
                         hosts::hostname.eq(&f.hostname),
@@ -424,7 +425,7 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
             Some(TaskKind::AgentUpdate) => {
                 let e = exec.clone().unwrap_or_default();
                 let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version") }
+                CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version"), gui_sha256: e.get("gui_sha256").and_then(|v| v.as_str()).map(str::to_owned) }
             }
             Some(TaskKind::Compliance) => CommandAction::ComplianceScan { profile: exec.as_ref().and_then(|e| e.get("profile")).and_then(|v| v.as_str()).unwrap_or("").to_string() },
             Some(TaskKind::Reboot) => {

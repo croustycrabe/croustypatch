@@ -21,6 +21,12 @@ pub struct HostFacts {
     pub package_manager: Option<PackageManager>,
     pub is_laptop: bool,
     pub on_battery: bool,
+    /// A graphical desktop is installed (display manager or desktop sessions): a workstation unless it is a laptop.
+    #[serde(default)]
+    pub is_desktop: bool,
+    /// The desktop app center (`croustypatch-portal-gui`) is installed.
+    #[serde(default)]
+    pub portal_gui: bool,
     pub virtualization: Option<String>,
     pub ip_addresses: Vec<String>,
     pub agent_version: String,
@@ -256,8 +262,15 @@ pub enum CommandAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user: Option<String>,
     },
-    /// Replace the agent binary with the server's build for this platform, then restart.
-    UpdateAgent { platform: String, sha256: String, version: String },
+    /// Replace the agent binary with the server's build for this platform, then restart. When the desktop app center
+    /// is installed and the server has a build of it, `gui_sha256` refreshes it in the same operation.
+    UpdateAgent {
+        platform: String,
+        sha256: String,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gui_sha256: Option<String>,
+    },
 }
 
 /// Command recipe of an app-center application (run as root with `sh -c`, umask 022).

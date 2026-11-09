@@ -124,6 +124,9 @@ fn messages_stay_readable_across_versions() {
     // a package order does not carry the new fields at all, so older agents read it unchanged
     let s = serde_json::to_string(&CommandAction::App { install: true, packages: vec!["htop".into()], command: None, user: None }).unwrap();
     assert_eq!(s, r#"{"type":"app","install":true,"packages":["htop"]}"#);
+    // a 0.4.0 agent reads a 0.5 update order: the extra field is ignored
+    let u: CommandAction = serde_json::from_str(r#"{"type":"update_agent","platform":"linux-x86_64","sha256":"aa","version":"0.5.0"}"#).unwrap();
+    assert!(matches!(u, CommandAction::UpdateAgent { gui_sha256: None, .. }));
     let t: TelemetryResponse = serde_json::from_str(r#"{"commands":[],"heartbeat_secs":60}"#).unwrap();
     assert!(t.settings.is_none());
 }

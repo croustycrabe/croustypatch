@@ -8,7 +8,7 @@ pub(crate) mod admin;
 mod ai;
 pub(crate) mod compliance_api;
 mod mcp;
-mod agent_dist;
+pub mod agent_dist;
 mod notifications;
 mod packages;
 pub mod portal;

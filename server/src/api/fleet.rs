@@ -280,8 +280,9 @@ pub async fn reboot_host(state: web::Data<AppState>, user: AuthUser, path: web::
     control_task_with(&state, user, id, "reboot", "host.reboot_requested", Some(json!({ "delay_minutes": delay, "message": b.message }))).await
 }
 
-/// The agent build this server hands out, for a host's platform: (platform id, sha256, version).
-pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult<(String, String, String)> {
+/// The agent build this server hands out, for a host's platform: (platform id, sha256, version, desktop app center
+/// sha256 when the host has it installed and this server has a build of it).
+pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult<(String, String, String, Option<String>)> {
     let os = facts.get("os_family").and_then(|v| v.as_str()).unwrap_or("");
     let arch = facts.get("arch").and_then(|v| v.as_str()).unwrap_or("");
     let platform = match (os, arch) {
@@ -292,7 +293,12 @@ pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult
     };
     let path = super::agent_dist::binary_path(state, platform);
     let bytes = std::fs::read(&path).map_err(|_| ApiError::Conflict(format!("this server has no agent binary for {platform}")))?;
-    Ok((platform.to_string(), croustypatch_common::crypto::sha256_hex(&bytes), env!("CARGO_PKG_VERSION").to_string()))
+    let gui = if facts.get("portal_gui").and_then(|v| v.as_bool()).unwrap_or(false) {
+        super::agent_dist::gui_path(state, platform).and_then(|p| std::fs::read(p).ok()).map(|b| croustypatch_common::crypto::sha256_hex(&b))
+    } else {
+        None
+    };
+    Ok((platform.to_string(), croustypatch_common::crypto::sha256_hex(&bytes), env!("CARGO_PKG_VERSION").to_string(), gui))
 }
 
 /// POST /hosts/{id}/agent-update — the agent downloads this server's build, checks its SHA-256 and restarts on it.
@@ -303,8 +309,8 @@ pub async fn update_agent(state: web::Data<AppState>, user: AuthUser, path: web:
     if !crate::modules::has_capability(&facts, croustypatch_common::protocol::capability::SELF_UPDATE) {
         return Err(ApiError::Conflict("this agent is too old to update itself: re-run the installer one-liner on the host once".into()));
     }
-    let (platform, sha256, version) = agent_build_for(&state, &facts)?;
-    control_task_with(&state, user, id, "agent_update", "host.agent_update_requested", Some(json!({ "platform": platform, "sha256": sha256, "version": version }))).await
+    let (platform, sha256, version, gui_sha256) = agent_build_for(&state, &facts)?;
+    control_task_with(&state, user, id, "agent_update", "host.agent_update_requested", Some(json!({ "platform": platform, "sha256": sha256, "version": version, "gui_sha256": gui_sha256 }))).await
 }
 
 pub async fn release_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {

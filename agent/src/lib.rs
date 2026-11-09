@@ -6,6 +6,7 @@ pub mod facts;
 pub mod health;
 pub mod identity;
 pub mod isolate;
+pub mod launcher;
 pub mod link;
 pub mod modules;
 pub mod net;

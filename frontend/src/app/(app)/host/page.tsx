@@ -168,7 +168,7 @@ function HostDetail() {
                 <dt>{t('host.kernel')}</dt><dd>{String(facts.kernel ?? '—')}</dd>
                 <dt>{t('host.arch')}</dt><dd>{String(facts.arch ?? '—')}</dd>
                 <dt>{t('host.pkgmgr')}</dt><dd>{host.package_manager}</dd>
-                <dt>{t('host.asset_type')}</dt><dd>{tr('asset', host.asset_type)}</dd>
+                <dt>{t('host.asset_type')}</dt><dd>{tr('asset', host.asset_type)}{facts.is_desktop && host.asset_type === 'server' ? <> <Tag tone="info">{t('host.desktop_detected')}</Tag></> : null}</dd>
                 {ips && <><dt>{t('host.ips')}</dt><dd>{ips}</dd></>}
               </dl>
             </Card>
@@ -183,6 +183,7 @@ function HostDetail() {
                 <dt>{t('host.comm')}</dt><dd>{t(host.comm_mode === 'pull' ? 'hosts.mode.pull' : 'hosts.mode.push')}{host.connected ? ' · ●' : ''}</dd>
                 <dt>{t('host.last_seen')}</dt><dd>{date(host.last_seen_at)}</dd>
                 <dt>{t('host.last_inventory')}</dt><dd>{date(host.last_inventory_at)}</dd>
+                <dt>{t('host.portal_client')}</dt><dd>{t(facts.portal_gui ? 'host.portal_client.gui' : 'host.portal_client.tui')}</dd>
                 {host.eco && <><dt>Eco</dt><dd>{t('host.eco_note')}</dd></>}
                 {host.downtime_until && <><dt>{t('host.downtime')}</dt><dd>{date(host.downtime_until)}</dd></>}
               </dl>

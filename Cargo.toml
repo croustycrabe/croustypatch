@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["common", "server", "agent"]
+# The desktop app center needs webkit2gtk to build: it has its own lock file and is built in Docker (see portal-gui/).
+exclude = ["portal-gui"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["Croustycrabe <croustylab>"]

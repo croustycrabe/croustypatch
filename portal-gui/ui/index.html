@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CroustyPatch</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <img src="logo.svg" class="top__logo" alt="">
+    <div class="top__title">
+      <h1 id="title">Portail applicatif</h1>
+      <p id="host" class="muted"></p>
+    </div>
+    <label class="search">
+      <span class="search__icon" data-icon="search"></span>
+      <input id="q" type="search" autocomplete="off" spellcheck="false">
+    </label>
+    <button id="refresh" class="btn btn--outline" type="button"><span data-icon="refresh"></span><span class="btn__label" id="refresh-label"></span></button>
+  </header>
+  <div class="layout">
+    <nav id="cats" class="cats" aria-label="Catégories"></nav>
+    <main class="main">
+      <div id="notice" class="notice" hidden></div>
+      <div id="grid" class="grid" aria-live="polite"></div>
+      <p id="empty" class="empty" hidden></p>
+    </main>
+  </div>
+  <section class="status" aria-label="État">
+    <div class="status__head">
+      <h2 id="status-title"></h2>
+      <button id="clear" class="btn btn--ghost btn--sm" type="button"><span data-icon="broom"></span><span id="clear-label"></span></button>
+    </div>
+    <div id="progress" class="progress" hidden>
+      <div class="progress__label"><span id="progress-text"></span><span id="progress-stage" class="muted"></span></div>
+      <div class="progress__track"><div id="progress-bar" class="progress__bar"></div></div>
+    </div>
+    <p id="idle" class="muted"></p>
+    <ol id="log" class="log"></ol>
+  </section>
+  <dialog id="confirm" class="dialog">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <div id="confirm-body" class="dialog__body"></div>
+      <div class="dialog__actions">
+        <button value="cancel" class="btn btn--outline" id="confirm-no"></button>
+        <button value="ok" class="btn btn--primary" id="confirm-yes"></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

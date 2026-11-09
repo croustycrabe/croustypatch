@@ -110,6 +110,15 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
     let enroll = |name: &str, token: &str| {
         TestRequest::post().uri("/api/v1/agent/enroll").set_json(EnrollRequest { token: token.into(), facts: HostFacts { hostname: name.into(), ..Default::default() }, public_key_pem: kp.public_pem.clone() })
     };
+    // the machine type comes from the agent: battery = laptop, graphical desktop = workstation, else server
+    let (_, tok3) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({"max_uses": 2}))).await;
+    for (name, laptop, desktop, want) in [("ws", false, true, "workstation"), ("lt", true, true, "laptop")] {
+        let req = TestRequest::post().uri("/api/v1/agent/enroll").set_json(EnrollRequest { token: tok3["token"].as_str().unwrap().into(), facts: HostFacts { hostname: name.into(), is_laptop: laptop, is_desktop: desktop, ..Default::default() }, public_key_pem: kp.public_pem.clone() });
+        let (st, r) = call(&app, req).await;
+        assert_eq!(st, 201, "{r}");
+        let t: String = hosts::table.find(r["agent_id"].as_str().unwrap().parse::<Uuid>().unwrap()).select(hosts::asset_type).first(&mut db.conn()).unwrap();
+        assert_eq!(t, want);
+    }
     let (st, r) = call(&app, enroll("chosen", tok["token"].as_str().unwrap())).await;
     assert_eq!(st, 201, "{r}");
     let id: Uuid = r["agent_id"].as_str().unwrap().parse().unwrap();
@@ -144,6 +153,7 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
 async fn the_agent_updates_itself_only_when_it_can() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("croustypatch-agent-linux-x86_64"), b"new agent build").unwrap();
+    std::fs::write(dir.path().join("croustypatch-portal-gui-linux-x86_64"), b"new desktop build").unwrap();
     let db = support::TestDb::new();
     let agent_dir = dir.path().to_path_buf();
     let state = db.state_with(|c| c.agent_dir = vec![agent_dir.clone()]);
@@ -167,6 +177,16 @@ async fn the_agent_updates_itself_only_when_it_can() {
     assert_eq!(payload["action"]["platform"], json!("linux-x86_64"));
     assert_eq!(payload["action"]["sha256"], json!(croustypatch_common::crypto::sha256_hex(b"new agent build")));
     assert_eq!(payload["action"]["version"], json!(env!("CARGO_PKG_VERSION")));
+    assert!(payload["action"].get("gui_sha256").is_none(), "no desktop app on this host: nothing to refresh");
+
+    // a laptop with the desktop app center gets it refreshed in the same order
+    let laptop = add_host(&mut db.conn(), "laptop", "pacman", capability::ALL);
+    diesel::update(hosts::table.find(laptop)).set(hosts::facts.eq(json!({"os_family": "linux", "arch": "x86_64", "capabilities": capability::ALL, "portal_gui": true}))).execute(&mut db.conn()).unwrap();
+    let (st, _) = call(&app, upd(laptop)).await;
+    assert_eq!(st, 202);
+    let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, laptop).unwrap();
+    let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
+    assert_eq!(payload["action"]["gui_sha256"], json!(croustypatch_common::crypto::sha256_hex(b"new desktop build")));
     let kind: String = tasks::table.filter(tasks::host_id.eq(new)).select(tasks::kind).first(&mut db.conn()).unwrap();
     assert_eq!(kind, "agent_update");
 }

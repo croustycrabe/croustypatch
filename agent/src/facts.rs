@@ -37,6 +37,33 @@ pub fn detect_package_manager(configured: &str) -> PackageManager {
     }
 }
 
+/// Where the desktop app center is installed.
+pub const PORTAL_GUI: &str = "/usr/local/bin/croustypatch-portal-gui";
+
+/// Is a graphical desktop installed? A display manager service, or desktop sessions offered at login
+/// (`xsessions` / `wayland-sessions`). The systemd default target is not used: distributions ship
+/// `graphical.target` as the default even on servers. `root` is "/" except in tests.
+pub fn desktop_detected_in(root: &std::path::Path) -> bool {
+    let non_empty = |p: &str| std::fs::read_dir(root.join(p)).map(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".desktop")))).unwrap_or(false);
+    root.join("etc/systemd/system/display-manager.service").exists()
+        || ["usr/share/xsessions", "usr/share/wayland-sessions", "usr/local/share/xsessions", "usr/local/share/wayland-sessions"].iter().any(|p| non_empty(p))
+}
+
+pub fn desktop_detected() -> bool {
+    desktop_detected_in(std::path::Path::new("/"))
+}
+
+/// laptop (system battery) > workstation (graphical desktop) > server.
+pub fn machine_type(is_laptop: bool, is_desktop: bool) -> &'static str {
+    if is_laptop {
+        "laptop"
+    } else if is_desktop {
+        "workstation"
+    } else {
+        "server"
+    }
+}
+
 /// (is_laptop, on_battery)
 pub async fn power_state() -> (bool, bool) {
     #[cfg(target_os = "linux")]
@@ -126,6 +153,8 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         arch: std::env::consts::ARCH.to_string(),
         package_manager: Some(pm),
         is_laptop,
+        is_desktop: desktop_detected(),
+        portal_gui: std::path::Path::new(PORTAL_GUI).is_file(),
         on_battery,
         virtualization: None,
         ip_addresses: local_ip(server_url).await,

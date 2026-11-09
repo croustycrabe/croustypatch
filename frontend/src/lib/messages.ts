@@ -731,6 +731,10 @@ export const fr = {
   'portal.sugg.in_catalog': 'Dans le catalogue',
   'portal.sugg.added': '{name} est ajoutée au catalogue.',
   'portal.sugg.search': 'Rechercher une application',
+  'host.portal_client': 'Portail applicatif',
+  'host.portal_client.gui': 'fenêtre de bureau et terminal',
+  'host.portal_client.tui': 'terminal (croustypatch-portal)',
+  'host.desktop_detected': 'bureau détecté : poste de travail ?',
 } as const;
 
 export type MessageKey = keyof typeof fr;
@@ -1450,4 +1454,8 @@ export const en: Record<MessageKey, string> = {
   'portal.sugg.in_catalog': 'In the catalog',
   'portal.sugg.added': '{name} added to the catalog.',
   'portal.sugg.search': 'Search an application',
+  'host.portal_client': 'App center',
+  'host.portal_client.gui': 'desktop window and terminal',
+  'host.portal_client.tui': 'terminal (croustypatch-portal)',
+  'host.desktop_detected': 'desktop detected: workstation?',
 };

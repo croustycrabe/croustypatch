@@ -136,7 +136,32 @@ peer credentials (not from the client) and is recorded as `local:<user>@<host>` 
 socket is open to every local user (mode 0666), since the catalog is admin-approved; set `portal_group = "<group>"`
 in the agent's configuration to restrict it to one group (mode 0660).
 
+### Desktop app center (laptops and workstations)
+
+The same app center in a window (Tauri, `croustypatch-portal-gui`): categories, search, presence checked on the
+machine (*Present*, *Partial n/m*, *Available*), a confirmation that shows the packages or the exact command before
+anything runs, a progress bar and a notification log. French or English and light or dark follow the system.
+
+- **Who gets it.** The agent tells the installer what the machine is (`croustypatch-agent machine-type`): *laptop*
+  (system battery), *workstation* (a display manager or desktop sessions installed) or *server*. Laptops and
+  workstations get the window, its menu entry (*CroustyPatch App center*) and icon, and the WebKitGTK runtime it
+  needs (`libwebkit2gtk-4.1-0` on Debian/Ubuntu; on Arch the installer asks you to run
+  `pacman -Syu webkit2gtk-4.1` rather than risk a partial upgrade). `CROUSTYPATCH_PORTAL_GUI=1` or `=0` forces the
+  choice. Hosts are now enrolled as *laptop*, *workstation* or *server* accordingly; hosts enrolled earlier keep
+  their type, and the host page flags a *server* on which a desktop is detected.
+- **Which one opens.** `croustypatch-portal` opens the window when the user is in a graphical session
+  (`WAYLAND_DISPLAY` / `DISPLAY`) and the window is installed, the terminal app center otherwise (for example over
+  SSH on a laptop). `--gui` / `--tui` force it.
+- **Same rights as the terminal.** The window talks to the same socket; the agent identifies the user from the
+  socket, never from the window. The window can call three commands (list, install, uninstall) and nothing else: no
+  shell, file or network access, a strict content security policy, fonts and icons bundled.
+- **Updates.** *Update agent* on the host page also replaces the window when it is installed (same SHA-256 check;
+  both files are verified before either is replaced).
+- Built for Linux x86_64 only (Debian 12+, Ubuntu, Arch). FreeBSD and aarch64 machines use the terminal app center.
+  If the window stays blank under Wayland with some graphics drivers, start it with
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
 On the web, a command app shows as installed after its last successful install (the server cannot look at the
 machine); the terminal app center checks the machine itself.
 
-Not in this release: a desktop GUI client.
+Not in this release: a desktop window for FreeBSD and aarch64.

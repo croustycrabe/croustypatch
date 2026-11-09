@@ -1,0 +1,23 @@
+# Desktop app center (Tauri). Kept out of the main workspace on purpose: building it needs webkit2gtk-4.1, which
+# the server, the agent and their tests must not depend on. Built by docker/Dockerfile (stage "gui").
+[package]
+name = "croustypatch-portal-gui"
+version = "0.5.0"
+edition = "2021"
+license = "MIT"
+authors = ["Croustycrabe <croustylab>"]
+description = "CroustyPatch desktop app center: a client of the agent's local socket"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

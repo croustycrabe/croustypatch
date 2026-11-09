@@ -197,7 +197,7 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::ComplianceScan { profile } => compliance(agent, id, &profile, &log).await,
         CommandAction::App { install, command: Some(cmd), user, .. } => app_command(agent, id, install, &cmd, user.as_deref(), &log).await,
         CommandAction::App { install, packages, command: None, .. } => app(agent, id, install, &packages, &log).await,
-        CommandAction::UpdateAgent { platform, sha256, version } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, &log).await,
+        CommandAction::UpdateAgent { platform, sha256, version, gui_sha256 } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, gui_sha256.as_deref(), &log).await,
     };
     if let Err(e) = res {
         log.line(format!("error: {e:#}"));
