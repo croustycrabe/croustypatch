@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 pub mod gateway;
 pub mod models;
+pub mod modules;
 pub mod notify;
 pub mod planner;
 pub mod reboot;

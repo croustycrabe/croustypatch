@@ -27,6 +27,51 @@ pub struct HostFacts {
     /// Optional modules loaded in the agent (docker, openscap, ...).
     #[serde(default)]
     pub modules: Vec<String>,
+    /// Protocol features this agent understands (see `capability`); empty on agents before 0.4.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// Feature flags an agent advertises in its facts, so the server never sends an order an older agent would misread.
+pub mod capability {
+    /// Understands `ServerMessage::Settings` / `TelemetryResponse::settings` (per-host modules).
+    pub const SETTINGS: &str = "settings";
+    /// Runs app-center command recipes (`CommandAction::App { command, .. }`).
+    pub const APP_COMMAND: &str = "app_command";
+    /// Replaces its own binary on `CommandAction::UpdateAgent`.
+    pub const SELF_UPDATE: &str = "self_update";
+    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE];
+}
+
+/// Optional features switched on per host by the server (Hosts > host > Modules).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostModules {
+    pub docker: bool,
+    pub helper_script: bool,
+    pub openscap: bool,
+    pub portal: bool,
+    pub eco: bool,
+}
+
+impl HostModules {
+    pub const NAMES: &[&str] = &["docker", "helper_script", "openscap", "portal", "eco"];
+    pub fn get(&self, name: &str) -> bool {
+        match name {
+            "docker" => self.docker,
+            "helper_script" | "helper-script" => self.helper_script,
+            "openscap" => self.openscap,
+            "portal" => self.portal,
+            "eco" => self.eco,
+            _ => false,
+        }
+    }
+}
+
+/// Server-side settings pushed to an agent (on connection and whenever they change).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentSettings {
+    pub modules: HostModules,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +193,8 @@ pub struct PackageChange {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     Welcome { heartbeat_secs: u64 },
+    /// Per-host settings; only sent to agents advertising `capability::SETTINGS`.
+    Settings(AgentSettings),
     Command(SignedCommand),
     /// Ask for a fresh inventory right away.
     Ping,
@@ -198,8 +245,29 @@ pub enum CommandAction {
         #[serde(default)]
         profile: String,
     },
-    /// App center: install or remove the packages of a catalog application.
-    App { install: bool, packages: Vec<String> },
+    /// App center: install or remove a catalog application, from its packages or (agents with
+    /// `capability::APP_COMMAND`) from an admin-written command recipe.
+    App {
+        install: bool,
+        packages: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<AppCommand>,
+        /// Local account that asked (TUI), so the result can be checked against its rights; None from the web UI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+    },
+    /// Replace the agent binary with the server's build for this platform, then restart.
+    UpdateAgent { platform: String, sha256: String, version: String },
+}
+
+/// Command recipe of an app-center application (run as root with `sh -c`, umask 022).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppCommand {
+    pub install: String,
+    pub uninstall: String,
+    /// Absolute path that exists once the app is installed. It must be usable by the user who asked
+    /// (or by every user when the request came from the web UI).
+    pub check: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +306,8 @@ pub struct TelemetryRequest {
 pub struct TelemetryResponse {
     pub commands: Vec<SignedCommand>,
     pub heartbeat_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<AgentSettings>,
 }
 
 /// Build a signed command envelope.

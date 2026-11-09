@@ -131,5 +131,6 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         ip_addresses: local_ip(server_url).await,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         modules,
+        capabilities: croustypatch_common::protocol::capability::ALL.iter().map(|s| s.to_string()).collect(),
     }
 }

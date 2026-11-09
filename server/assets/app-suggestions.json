@@ -1,0 +1,852 @@
+[
+ {
+  "name": "Git",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Gestion de versions distribuée.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "git"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "git"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Outils de compilation",
+  "category": "Développement",
+  "icon": "wrench",
+  "description": "Compilateur C/C++, make et outils de construction.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "build-essential"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "base-devel"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Python 3",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Interpréteur Python avec pip et venv.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "python3",
+     "python3-pip",
+     "python3-venv"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "python",
+     "python-pip"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Node.js",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Environnement JavaScript côté serveur, avec npm.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "nodejs",
+     "npm"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "nodejs",
+     "npm"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Go",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Compilateur et outils du langage Go.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "golang"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "go"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Rust",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Compilateur Rust et Cargo (versions de la distribution).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "rustc",
+     "cargo"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "rust"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Neovim",
+  "category": "Développement",
+  "icon": "terminal",
+  "description": "Éditeur de texte modal, successeur de Vim.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "neovim"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "neovim"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Vim",
+  "category": "Développement",
+  "icon": "terminal",
+  "description": "Éditeur de texte modal.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "vim"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "vim"
+    ]
+   }
+  }
+ },
+ {
+  "name": "jq",
+  "category": "Développement",
+  "icon": "terminal",
+  "description": "Lire et transformer du JSON en ligne de commande.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "jq"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "jq"
+    ]
+   }
+  }
+ },
+ {
+  "name": "SQLite",
+  "category": "Développement",
+  "icon": "database",
+  "description": "Base de données SQL dans un fichier, avec son client.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "sqlite3"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "sqlite"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Client PostgreSQL",
+  "category": "Développement",
+  "icon": "database",
+  "description": "psql et outils clients PostgreSQL.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "postgresql-client"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "postgresql-libs"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Client MariaDB",
+  "category": "Développement",
+  "icon": "database",
+  "description": "Client en ligne de commande MariaDB / MySQL.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "mariadb-client"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "mariadb-clients"
+    ]
+   }
+  }
+ },
+ {
+  "name": "htop",
+  "category": "Système",
+  "icon": "chart-bar",
+  "description": "Moniteur de processus interactif.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "htop"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "htop"
+    ]
+   }
+  }
+ },
+ {
+  "name": "btop",
+  "category": "Système",
+  "icon": "chart-bar",
+  "description": "Moniteur de ressources (CPU, mémoire, disques, réseau).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "btop"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "btop"
+    ]
+   }
+  }
+ },
+ {
+  "name": "tmux",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Multiplexeur de terminal : sessions qui survivent à la déconnexion.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "tmux"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "tmux"
+    ]
+   }
+  }
+ },
+ {
+  "name": "ncdu",
+  "category": "Système",
+  "icon": "chart-bar",
+  "description": "Voir ce qui occupe le disque.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ncdu"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ncdu"
+    ]
+   }
+  }
+ },
+ {
+  "name": "tree",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Afficher une arborescence de dossiers.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "tree"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "tree"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Zsh",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Shell interactif.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "zsh"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "zsh"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Fastfetch",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Résumé du système dans le terminal. Sur Debian : version 13 ou plus.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "fastfetch"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "fastfetch"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Recherche en terminal",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "ripgrep, fd, fzf et bat : chercher et lire des fichiers vite.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ripgrep",
+     "fd-find",
+     "fzf",
+     "bat"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ripgrep",
+     "fd",
+     "fzf",
+     "bat"
+    ]
+   }
+  }
+ },
+ {
+  "name": "rsync",
+  "category": "Système",
+  "icon": "wrench",
+  "description": "Copie et synchronisation de fichiers.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "rsync"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "rsync"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Restic",
+  "category": "Sauvegarde",
+  "icon": "database",
+  "description": "Sauvegardes chiffrées et dédupliquées.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "restic"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "restic"
+    ]
+   }
+  }
+ },
+ {
+  "name": "BorgBackup",
+  "category": "Sauvegarde",
+  "icon": "database",
+  "description": "Sauvegardes dédupliquées et chiffrées.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "borgbackup"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "borg"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Outils réseau",
+  "category": "Réseau",
+  "icon": "wrench",
+  "description": "dig, mtr, iperf3, tcpdump et nmap pour diagnostiquer le réseau.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "bind9-dnsutils",
+     "mtr-tiny",
+     "iperf3",
+     "tcpdump",
+     "nmap"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "bind",
+     "mtr",
+     "iperf3",
+     "tcpdump",
+     "nmap"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Wireshark",
+  "category": "Réseau",
+  "icon": "chart-bar",
+  "description": "Analyse de trafic réseau (interface graphique).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "wireshark"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "wireshark-qt"
+    ]
+   }
+  }
+ },
+ {
+  "name": "WireGuard",
+  "category": "Réseau",
+  "icon": "shield-check",
+  "description": "Outils du VPN WireGuard (wg, wg-quick).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "wireguard-tools"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "wireguard-tools"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Docker",
+  "category": "Conteneurs",
+  "icon": "cube",
+  "description": "Moteur de conteneurs Docker et Compose (paquets de la distribution).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "docker.io",
+     "docker-compose"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "docker",
+     "docker-compose"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Podman",
+  "category": "Conteneurs",
+  "icon": "cube",
+  "description": "Conteneurs sans démon, compatibles Docker.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "podman"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "podman"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Ansible",
+  "category": "Administration",
+  "icon": "wrench",
+  "description": "Automatisation de configuration par SSH.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ansible"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ansible"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Lynis",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Audit de durcissement du système.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "lynis"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "lynis"
+    ]
+   }
+  }
+ },
+ {
+  "name": "ClamAV",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Antivirus en ligne de commande.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "clamav"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "clamav"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Fail2ban",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Bannir les adresses qui échouent à se connecter.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "fail2ban"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "fail2ban"
+    ]
+   }
+  }
+ },
+ {
+  "name": "KeePassXC",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Gestionnaire de mots de passe hors ligne.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "keepassxc"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "keepassxc"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Firefox",
+  "category": "Internet",
+  "icon": "browser",
+  "description": "Navigateur web.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "firefox-esr"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "firefox"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Chromium",
+  "category": "Internet",
+  "icon": "browser",
+  "description": "Navigateur web libre à la base de Chrome.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "chromium"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "chromium"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Thunderbird",
+  "category": "Internet",
+  "icon": "chat-circle",
+  "description": "Courriel, agenda et contacts.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "thunderbird"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "thunderbird"
+    ]
+   }
+  }
+ },
+ {
+  "name": "FileZilla",
+  "category": "Internet",
+  "icon": "wrench",
+  "description": "Client FTP et SFTP.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "filezilla"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "filezilla"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Remmina",
+  "category": "Internet",
+  "icon": "app-window",
+  "description": "Bureau à distance RDP, VNC et SSH.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "remmina"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "remmina"
+    ]
+   }
+  }
+ },
+ {
+  "name": "LibreOffice",
+  "category": "Bureautique",
+  "icon": "file-text",
+  "description": "Traitement de texte, tableur et présentations.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "libreoffice"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "libreoffice-fresh"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Okular",
+  "category": "Bureautique",
+  "icon": "file-text",
+  "description": "Lecteur de PDF et de documents.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "okular"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "okular"
+    ]
+   }
+  }
+ },
+ {
+  "name": "GIMP",
+  "category": "Graphisme",
+  "icon": "image",
+  "description": "Retouche d’images.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "gimp"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "gimp"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Inkscape",
+  "category": "Graphisme",
+  "icon": "image",
+  "description": "Dessin vectoriel.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "inkscape"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "inkscape"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Krita",
+  "category": "Graphisme",
+  "icon": "image",
+  "description": "Peinture numérique.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "krita"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "krita"
+    ]
+   }
+  }
+ },
+ {
+  "name": "VLC",
+  "category": "Multimédia",
+  "icon": "music-notes",
+  "description": "Lecteur audio et vidéo.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "vlc"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "vlc"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Audacity",
+  "category": "Multimédia",
+  "icon": "music-notes",
+  "description": "Enregistrement et montage audio.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "audacity"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "audacity"
+    ]
+   }
+  }
+ },
+ {
+  "name": "OBS Studio",
+  "category": "Multimédia",
+  "icon": "image",
+  "description": "Enregistrement d’écran et diffusion en direct.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "obs-studio"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "obs-studio"
+    ]
+   }
+  }
+ }
+]

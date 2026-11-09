@@ -1,0 +1,123 @@
+//! Agent self-update (Hosts > host > Update agent).
+//!
+//! The signed order names the platform build and its SHA-256. The agent downloads it from its own server, checks
+//! the hash, makes sure the new binary starts and reports the expected version, swaps it in place atomically and
+//! exits with `EXIT_RESTART`; the service manager (systemd `Restart=always` or `on-failure`, FreeBSD `daemon -r`)
+//! starts the new one, which closes the task. A failure at any step leaves the running binary untouched.
+use crate::config::{write_private, Config};
+use crate::net;
+use crate::runner::{Agent, TaskLog};
+use anyhow::{anyhow, bail, Context, Result};
+use croustypatch_common::crypto::sha256_hex;
+use croustypatch_common::model::TaskStatus;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use uuid::Uuid;
+
+const PLATFORMS: &[&str] = &["linux-x86_64", "linux-aarch64", "freebsd-amd64"];
+const MAX_SIZE: usize = 200 * 1024 * 1024;
+/// Non-zero on purpose (EX_TEMPFAIL): restarted by `Restart=always` and by `Restart=on-failure` units alike.
+pub const EXIT_RESTART: i32 = 75;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingUpdate {
+    pub task_id: Uuid,
+    pub from: String,
+    pub to: String,
+}
+
+fn pending_file(cfg: &Config) -> std::path::PathBuf {
+    cfg.state_dir.join("pending_update.json")
+}
+
+pub fn check_order(platform: &str, sha256: &str, version: &str) -> Result<()> {
+    if !PLATFORMS.contains(&platform) {
+        bail!("unknown platform {platform:?}");
+    }
+    if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("malformed SHA-256");
+    }
+    if version.is_empty() || version.len() > 40 || !version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
+        bail!("malformed version");
+    }
+    Ok(())
+}
+
+pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, version: &str, log: &TaskLog) -> Result<()> {
+    check_order(platform, sha256, version)?;
+    let current = env!("CARGO_PKG_VERSION");
+    let exe = std::env::current_exe().context("locating the running agent")?;
+    if agent.runner.dry_run {
+        log.line(format!("[dry-run] would replace {} ({current}) with {version}", exe.display()));
+        agent.update(id, TaskStatus::Succeeded, format!("[dry-run] agent {current} would be updated to {version}"), log, vec![], false);
+        return Ok(());
+    }
+    agent.update(id, TaskStatus::Running, format!("downloading agent {version} for {platform}"), log, vec![], false);
+    let client = net::http_client_pinned(&agent.cfg, &agent.server_ips())?;
+    let resp = client.get(net::api_url(&agent.cfg, &format!("/agent/download/{platform}"))).timeout(Duration::from_secs(600)).send().await.context("downloading the agent")?;
+    if !resp.status().is_success() {
+        bail!("download refused: {}", resp.status());
+    }
+    let bytes = resp.bytes().await.context("downloading the agent")?;
+    if bytes.len() > MAX_SIZE {
+        bail!("download too large ({} bytes)", bytes.len());
+    }
+    let got = sha256_hex(&bytes);
+    if !got.eq_ignore_ascii_case(sha256) {
+        bail!("checksum mismatch (expected {sha256}, got {got}): nothing was changed");
+    }
+    log.line(format!("downloaded {} bytes, SHA-256 verified", bytes.len()));
+
+    // Same directory, so the final rename is atomic.
+    let staged = exe.with_file_name(format!(".croustypatch-agent.{id}.new"));
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(&staged).with_context(|| format!("writing {}", staged.display()))?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+    }
+    // The new binary must start on this machine and be the announced version (wrong architecture, truncated file…).
+    let probe = tokio::time::timeout(Duration::from_secs(20), tokio::process::Command::new(&staged).arg("--version").env_clear().output()).await;
+    let ok = match &probe {
+        Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).split_whitespace().any(|w| w == version),
+        _ => false,
+    };
+    if !ok {
+        let _ = std::fs::remove_file(&staged);
+        let detail = match probe {
+            Ok(Ok(o)) => format!("it printed {:?}", String::from_utf8_lossy(&o.stdout).trim()),
+            Ok(Err(e)) => e.to_string(),
+            Err(_) => "it did not answer".into(),
+        };
+        bail!("the downloaded agent does not run as version {version} on this host ({detail}): nothing was changed");
+    }
+    std::fs::rename(&staged, &exe).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        anyhow!("replacing {}: {e}", exe.display())
+    })?;
+    write_private(&pending_file(&agent.cfg), &serde_json::to_vec(&PendingUpdate { task_id: id, from: current.into(), to: version.into() })?)?;
+    log.line(format!("{} replaced; restarting", exe.display()));
+    agent.update(id, TaskStatus::Running, format!("agent {version} installed; restarting"), log, vec![], false);
+    // Give the link a moment to deliver the update, then let the service manager start the new binary.
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        tracing::info!("exiting to restart on the updated binary");
+        std::process::exit(EXIT_RESTART);
+    });
+    Ok(())
+}
+
+/// After a restart: close the update task that caused it.
+pub fn resume(agent: &Agent) {
+    let path = pending_file(&agent.cfg);
+    let Some(p) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<PendingUpdate>(&b).ok()) else { return };
+    let _ = std::fs::remove_file(&path);
+    let now = env!("CARGO_PKG_VERSION");
+    let log = TaskLog::default();
+    if now == p.to {
+        agent.update(p.task_id, TaskStatus::Succeeded, format!("agent updated from {} to {now}", p.from), &log, vec![], false);
+    } else {
+        agent.update(p.task_id, TaskStatus::Failed, format!("the agent restarted as {now}, expected {}", p.to), &log, vec![], false);
+    }
+}

@@ -35,8 +35,16 @@ async fn the_app_center_installs_only_catalog_apps_in_scope() {
     let view = |h: Uuid| TestRequest::get().uri(&format!("/api/v1/portal/hosts/{h}")).cookie(ck.clone());
     let (st, _) = call(&app, view(dev_host)).await;
     assert_eq!(st, 409);
+    // the global switch only sets the default for new hosts: each existing host is switched on by itself
     let (st, _) = call(&app, TestRequest::put().uri("/api/v1/settings/modules").cookie(ck.clone()).set_json(json!({"docker": false, "helper_script": false, "openscap": false, "portal": true, "notifications": true, "eco": true}))).await;
     assert!(st.is_success());
+    let (st, _) = call(&app, view(dev_host)).await;
+    assert_eq!(st, 409, "existing hosts keep their own switches");
+    for h in [dev_host, other_host] {
+        let (st, b) = call(&app, TestRequest::patch().uri(&format!("/api/v1/hosts/{h}")).cookie(ck.clone()).set_json(json!({"modules": {"portal": true}}))).await;
+        assert_eq!(st, 200, "{b}");
+        assert_eq!(b["modules"]["portal"], json!(true));
+    }
 
     let (_, v) = call(&app, view(dev_host)).await;
     let names: Vec<&str> = v["apps"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
@@ -77,7 +85,8 @@ async fn a_local_user_asks_through_the_agent_for_its_own_host_only() {
     let ck = admin(&app).await;
     let kp = crypto::generate_rsa(2048).unwrap();
     let host: Uuid = diesel::insert_into(hosts::table).values((hosts::hostname.eq("srv-tui"), hosts::public_key_pem.eq(&kp.public_pem), hosts::status.eq("online"))).returning(hosts::id).get_result(&mut db.conn()).unwrap();
-    call(&app, TestRequest::put().uri("/api/v1/settings/modules").cookie(ck.clone()).set_json(json!({"docker": false, "helper_script": false, "openscap": false, "portal": true, "notifications": true, "eco": true}))).await;
+    let (st, _) = call(&app, TestRequest::patch().uri(&format!("/api/v1/hosts/{host}")).cookie(ck.clone()).set_json(json!({"modules": {"portal": true}}))).await;
+    assert_eq!(st, 200);
     let (_, a) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(json!({"name": "htop", "packages": ["htop"]}))).await;
     let mint = |jti: &str| { let now = chrono::Utc::now().timestamp(); jwt::sign_rs256(&kp.private_pem, &Claims { sub: host.to_string(), iss: "agent".into(), iat: now - 5, exp: now + 60, jti: jti.into(), scope: None }).unwrap() };
 

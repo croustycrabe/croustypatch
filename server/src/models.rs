@@ -73,6 +73,7 @@ pub struct Host {
     pub last_seen_at: Option<Ts>,
     pub last_inventory_at: Option<Ts>,
     pub enrolled_at: Ts,
+    pub modules: Value,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]
@@ -100,6 +101,7 @@ pub struct EnrollmentToken {
     pub revoked: bool,
     pub created_by: String,
     pub created_at: Ts,
+    pub modules: Option<Value>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]

@@ -38,6 +38,7 @@ fn wire() -> Wire {
         out,
         server_ips: Mutex::new(vec![]),
         running: Mutex::new(Default::default()),
+        settings: Mutex::new(None),
     });
     Wire { link: Link::new(agent, cmd_tx), cmd_rx, server_key, agent_id, _dir: dir }
 }

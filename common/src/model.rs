@@ -51,7 +51,7 @@ impl TaskStatus {
 }
 
 str_enum!(
-    TaskKind { Scan => "scan", Patch => "patch", Rollback => "rollback", Quarantine => "quarantine", Release => "release", Reboot => "reboot", Compliance => "compliance", App => "app" }
+    TaskKind { Scan => "scan", Patch => "patch", Rollback => "rollback", Quarantine => "quarantine", Release => "release", Reboot => "reboot", Compliance => "compliance", App => "app", AgentUpdate => "agent_update" }
 );
 
 str_enum!(
@@ -118,4 +118,17 @@ pub fn is_valid_package_name(s: &str) -> bool {
         && s.len() <= 128
         && !s.starts_with(['-', '.'])
         && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '_' | '-' | ':' | '~' | '@'))
+}
+
+/// Keys of an app-center recipe map: one per package manager, or `*` for every system.
+pub const RECIPE_KEYS: &[&str] = &["apt", "pacman", "pkg", "dnf", "*"];
+
+/// The recipe for a host: its package manager's entry, else the `*` entry.
+pub fn pick_recipe<'a>(recipes: &'a serde_json::Value, package_manager: &str) -> Option<&'a serde_json::Value> {
+    recipes.get(package_manager).or_else(|| recipes.get("*")).filter(|v| v.is_object())
+}
+
+/// An absolute path without `..`, control characters or shell-hostile surprises (used for app checks).
+pub fn is_valid_check_path(s: &str) -> bool {
+    s.starts_with('/') && s.len() <= 255 && !s.split('/').any(|c| c == "..") && s.chars().all(|c| !c.is_control()) && !s.contains('\0')
 }

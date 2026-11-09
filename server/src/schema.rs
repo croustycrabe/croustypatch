@@ -85,6 +85,7 @@ diesel::table! {
         last_inventory_at -> Nullable<Timestamptz>,
         enrolled_at -> Timestamptz,
         created_at -> Timestamptz,
+        modules -> Jsonb,
     }
 }
 
@@ -109,6 +110,7 @@ diesel::table! {
         revoked -> Bool,
         created_by -> Text,
         created_at -> Timestamptz,
+        modules -> Nullable<Jsonb>,
     }
 }
 
@@ -326,11 +328,11 @@ diesel::table! {
         category -> Text,
         description -> Text,
         icon -> Text,
-        packages -> Jsonb,
         group_ids -> Jsonb,
         enabled -> Bool,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        recipes -> Jsonb,
     }
 }
 

@@ -18,7 +18,7 @@ pub const PLATFORMS: &[(&str, &str, &str)] = &[("linux-x86_64", "linux", "x86_64
 const INSTALL_SCRIPT: &str = include_str!("../../assets/install-agent.sh");
 
 /// The first configured directory that holds a binary for this platform (or the first directory, for error messages).
-fn binary_path(state: &AppState, id: &str) -> PathBuf {
+pub(crate) fn binary_path(state: &AppState, id: &str) -> PathBuf {
     let name = format!("croustypatch-agent-{id}");
     state.cfg.agent_dir.iter().map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| state.cfg.agent_dir.first().cloned().unwrap_or_default().join(name))
 }

@@ -35,6 +35,16 @@ export interface Host {
   last_seen_at: string | null;
   last_inventory_at: string | null;
   enrolled_at: string;
+  modules: HostModules;
+}
+
+/** Optional features switched on per host. */
+export interface HostModules {
+  docker: boolean;
+  helper_script: boolean;
+  openscap: boolean;
+  portal: boolean;
+  eco: boolean;
 }
 
 export type HostStatus = 'online' | 'offline' | 'eco' | 'maintenance' | 'alert' | 'quarantined' | 'pending';
@@ -91,7 +101,7 @@ export interface Task {
   id: string;
   host_id: string;
   hostname: string;
-  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app';
+  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app' | 'agent_update';
   status: TaskStatus;
   policy_id: string | null;
   parent_task_id: string | null;

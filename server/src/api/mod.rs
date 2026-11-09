@@ -11,7 +11,7 @@ mod mcp;
 mod agent_dist;
 mod notifications;
 mod packages;
-mod portal;
+pub mod portal;
 mod fleet;
 mod patching;
 mod system;
@@ -59,6 +59,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/portal/apps/{id}", web::delete().to(portal::delete))
             .route("/portal/hosts/{id}", web::get().to(portal::host_view))
             .route("/portal/install", web::post().to(portal::request))
+            .route("/portal/suggestions", web::get().to(portal::suggestions))
             .route("/compliance", web::get().to(compliance_api::fleet))
             .route("/hosts/{id}/compliance", web::get().to(compliance_api::host))
             .route("/hosts/{id}/compliance-scan", web::post().to(compliance_api::scan))
@@ -89,6 +90,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/hosts/{id}/quarantine", web::post().to(fleet::quarantine_host))
             .route("/hosts/{id}/release", web::post().to(fleet::release_host))
             .route("/hosts/{id}/reboot", web::post().to(fleet::reboot_host))
+            .route("/hosts/{id}/agent-update", web::post().to(fleet::update_agent))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))

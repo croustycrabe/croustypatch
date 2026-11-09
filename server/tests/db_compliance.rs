@@ -27,6 +27,11 @@ async fn compliance_reports_are_stored_scored_and_immutable() {
     let ck = admin(&app).await;
     let state = web::Data::new(db.state());
     let host = add_host(&mut db.conn());
+    let scan = || TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone()).set_json(json!({}));
+    let (st, _) = call(&app, scan()).await;
+    assert_eq!(st, 409, "OpenSCAP is off for this host");
+    let (st, _) = call(&app, TestRequest::patch().uri(&format!("/api/v1/hosts/{host}")).cookie(ck.clone()).set_json(json!({ "modules": { "openscap": true } }))).await;
+    assert_eq!(st, 200);
     let (st, r) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone()).set_json(json!({ "profile": "xccdf_org.ssgproject.content_profile_cis" }))).await;
     assert_eq!(st, 202, "{r}");
     let task: Uuid = r["task_id"].as_str().unwrap().parse().unwrap();
@@ -69,7 +74,7 @@ async fn container_inventory_is_kept_only_while_the_docker_module_is_on() {
     gateway::handle_messages(&state, host, vec![inv()]).await;
     assert_eq!(sources(&db), vec!["system"], "modules are off by default");
 
-    let (st, _) = call(&app, TestRequest::put().uri("/api/v1/settings/modules").cookie(ck.clone()).set_json(json!({ "docker": true, "helper_script": true, "openscap": false, "portal": false, "notifications": true, "eco": true }))).await;
+    let (st, _) = call(&app, TestRequest::patch().uri(&format!("/api/v1/hosts/{host}")).cookie(ck.clone()).set_json(json!({ "modules": { "docker": true, "helper_script": true } }))).await;
     assert!(st.is_success());
     gateway::handle_messages(&state, host, vec![inv(), inv()]).await;
     assert_eq!(sources(&db), vec!["docker", "helper-script", "system"], "and every source is replaced, never duplicated");

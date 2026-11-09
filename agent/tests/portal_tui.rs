@@ -165,7 +165,7 @@ fn screen(s: &State) -> String {
 fn presence_comes_from_the_local_check_and_shows_partial_installs() {
     let mut v = catalog();
     let installed: std::collections::HashSet<String> = ["htop", "git"].iter().map(|s| s.to_string()).collect();
-    portal::annotate_local(&mut v, &installed);
+    portal::annotate_local(&mut v, &installed, |_| false);
     assert_eq!(v["apps"][1]["local"], json!({ "present": 1, "total": 2, "missing": ["make"] }));
     let mut s = State::new(&EN);
     s.load(&v);
@@ -182,7 +182,7 @@ fn presence_comes_from_the_local_check_and_shows_partial_installs() {
     assert!(s.confirm.is_some());
     // software installed by hand counts as present even when the server's inventory is older
     let mut by_hand = catalog();
-    portal::annotate_local(&mut by_hand, &["htop", "git", "make"].iter().map(|s| s.to_string()).collect());
+    portal::annotate_local(&mut by_hand, &["htop", "git", "make"].iter().map(|s| s.to_string()).collect(), |_| false);
     let mut s2 = State::new(&EN);
     s2.load(&by_hand);
     assert_eq!(s2.apps[1].presence(), Presence::Present);

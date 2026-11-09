@@ -72,7 +72,6 @@ pub async fn verify_audit(state: web::Data<AppState>, user: AuthUser) -> ApiResu
 pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<HttpResponse> {
     user.require("dashboard:read")?;
     let perms = user.permissions.clone();
-    let st = state.clone();
     let out: Value = state
         .db(move |c| {
             let mut fleet: HashMap<String, i64> = HashMap::new();
@@ -112,7 +111,9 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 .limit(12)
                 .select((tasks::id, tasks::host_id, hosts::hostname, tasks::kind, tasks::status, tasks::message, tasks::updated_at))
                 .load(c)?;
-            let modules = crate::api::admin::load_setting(c, &st, "modules")?;
+            // A module counts as in use when at least one host has it switched on.
+            let host_modules: Vec<serde_json::Value> = hosts::table.select(hosts::modules).load(c)?;
+            let in_use = |m: &str| host_modules.iter().any(|v| crate::modules::parse(v).get(m));
             Ok(json!({
                 "fleet": { "total": total, "by_status": fleet, "reboot_required": reboot, "hosts_needing_updates": hosts_upd.len(), "os": os_rows.into_iter().map(|(name, count)| json!({"name": if name.is_empty() { "?" } else { name.as_str() }, "count": count})).collect::<Vec<_>>() },
                 "vulnerabilities": { "hosts_with_security_updates": hosts_sec.len(), "security_updates": sec_updates, "critical_cves_unpatched": critical, "outdated_packages": outdated.len() },
@@ -120,8 +121,8 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 "tasks": { "awaiting_approval": awaiting, "in_progress": running, "waivers_pending": waivers_open },
                 "activity": recent.into_iter().map(|(id, host_id, hostname, kind, status, message, ts)| json!({"id": id, "host_id": host_id, "hostname": hostname, "kind": kind, "status": status, "message": message, "ts": ts})).collect::<Vec<_>>(),
                 // Optional modules are reported as inactive until they exist and are switched on.
-                "compliance": { "enabled": modules.get("openscap").and_then(|v| v.as_bool()).unwrap_or(false), "score": crate::api::compliance_api::fleet_score(c)? },
-                "portal": { "enabled": modules.get("portal").and_then(|v| v.as_bool()).unwrap_or(false), "installs": null },
+                "compliance": { "enabled": in_use("openscap"), "score": crate::api::compliance_api::fleet_score(c)? },
+                "portal": { "enabled": in_use("portal"), "installs": null },
                 "can": { "approve": perms_allow(&perms, "tasks:write") },
             }))
         })

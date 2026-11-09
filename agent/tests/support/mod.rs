@@ -56,6 +56,7 @@ pub fn rig(db: Value) -> Rig {
         out,
         server_ips: Mutex::new(vec!["127.0.0.1".parse().unwrap()]),
         running: Mutex::new(Default::default()),
+        settings: Mutex::new(None),
     });
     tokio::spawn(worker(agent.clone(), cmd_rx));
     Rig { dir, mock_path, cmd_tx, out_rx, agent, agent_id }

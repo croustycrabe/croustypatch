@@ -1,15 +1,20 @@
 'use client';
-import { ArrowsClockwise, DotsThree, Power, Prohibit, ShieldCheck, Trash, WifiHigh } from '@phosphor-icons/react';
+import { ArrowCircleUp, ArrowsClockwise, DotsThree, Power, Prohibit, ShieldCheck, Trash, WifiHigh } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, HostStatusLabel, Menu, MenuItem, Notice, PageHeader, Select, Spinner, StatCard, StateIcon, Table, Tabs, Tag, TaskStatusLabel, TextInput } from '@/components/ui';
+import { Button, Card, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, HostStatusLabel, Menu, MenuItem, Notice, PageHeader, Select, Spinner, StatCard, StateIcon, Switch, Table, Tabs, Tag, TaskStatusLabel, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
-import type { Host, HostGroup, HostPackage, Task } from '@/lib/types';
+import type { MessageKey } from '@/lib/messages';
+import type { Host, HostGroup, HostModules, HostPackage, Task } from '@/lib/types';
+
+const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
+/** Module name -> what the agent reports in its facts when the host has it. */
+const DETECTED: Partial<Record<keyof HostModules, string>> = { docker: 'docker', helper_script: 'helper-script', openscap: 'openscap' };
 
 interface Detail { host: Host; group_ids: string[]; packages: HostPackage[]; tasks: Task[] }
 type Draft = { display_name: string; environment: string; criticality: string; asset_type: string; internet_exposed: boolean; has_staging: boolean; ring: number; tags: string; group_ids: string[] };
@@ -26,6 +31,7 @@ function HostDetail() {
   const id = params.get('id');
   const detail = useApi<Detail>(id ? `/hosts/${id}` : null, { poll: 8000 });
   const groups = useApi<HostGroup[]>(can('groups:read') ? '/groups' : null);
+  const server = useApi<{ version: string }>('/server-info');
 
   const initialTab = (params.get('tab') as TabId | null) ?? 'overview';
   const [tab, setTab] = useState<TabId>(['overview', 'packages', 'history', 'compliance', 'settings'].includes(initialTab) ? initialTab : 'overview');
@@ -55,6 +61,21 @@ function HostDetail() {
   const security = pending.filter((p) => p.is_security);
   const quarantined = host.status === 'quarantined';
   const canWrite = can('hosts:write');
+  const caps = (facts.capabilities as string[] | undefined) ?? [];
+  const detected = (facts.modules as string[] | undefined) ?? [];
+  const agentVersion = String(facts.agent_version ?? '');
+  const latest = server.data?.version ?? '';
+  const outdated = !!latest && agentVersion !== latest;
+  const updating = tasks.some((k) => k.kind === 'agent_update' && ['queued', 'sent', 'running'].includes(k.status));
+  const setModule = (m: keyof HostModules, on: boolean) => act.run(async () => {
+    await api('PATCH', `/hosts/${id}`, { modules: { [m]: on } });
+    toast.success(t('common.saved'));
+    detail.reload();
+  });
+  const updateAgent = () => {
+    if (!caps.includes('self_update')) { toast.error(t('host.agent.update.old')); return; }
+    setConfirm({ text: t('host.agent.update.confirm', { v: latest }), run: () => doTask(`/hosts/${id}/agent-update`) });
+  };
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => { setDraft({ ...draft, [k]: v }); setDirty(true); };
 
   const save = () => act.run(async () => {
@@ -98,10 +119,11 @@ function HostDetail() {
         actions={<>
           {can('tasks:create') && <Button icon={<ArrowsClockwise size={16} weight="bold" />} disabled={act.pending || quarantined} onClick={() => void doTask(`/hosts/${id}/scan`)}>{t('host.scan')}</Button>}
           {can('tasks:create') && !quarantined && pending.length > 0 && <Button variant="primary" icon={<ShieldCheck size={16} weight="bold" />} disabled={act.pending} onClick={() => patch([])}>{t('host.patch_all')}</Button>}
-          {(can('tasks:write') || can('hosts:delete')) && (
+          {(can('tasks:write') || can('hosts:delete') || canWrite) && (
             <Menu label={t('host.more')} trigger={<DotsThree size={20} weight="bold" />}>
               {(close) => (
                 <>
+                  {canWrite && !quarantined && <MenuItem icon={<ArrowCircleUp size={16} weight="bold" />} onClick={() => { close(); updateAgent(); }}>{t('host.agent.update')}</MenuItem>}
                   {can('tasks:write') && !quarantined && <MenuItem icon={<Power size={16} weight="bold" />} onClick={() => { close(); setReboot({ delay: host.asset_type === 'server' ? 0 : 10, message: '' }); }}>{t('host.reboot')}</MenuItem>}
                   {can('tasks:write') && (quarantined
                     ? <MenuItem icon={<WifiHigh size={16} weight="bold" />} onClick={() => { close(); void doTask(`/hosts/${id}/release`); }}>{t('host.release')}</MenuItem>
@@ -152,7 +174,12 @@ function HostDetail() {
             </Card>
             <Card title={t('host.section.agent')}>
               <dl className="kv">
-                <dt>{t('host.agent')}</dt><dd>{String(facts.agent_version ?? '—')}</dd>
+                <dt>{t('host.agent')}</dt>
+                <dd className="row row--tight">
+                  {agentVersion || '—'}
+                  {updating ? <Tag tone="info">{t('portal.working')}</Tag> : outdated ? <Tag tone="warn">{t('host.agent.outdated', { v: latest })}</Tag> : latest ? <Tag tone="ok">{t('host.agent.current')}</Tag> : null}
+                  {canWrite && outdated && !updating && !quarantined && <Button small icon={<ArrowCircleUp size={14} weight="bold" />} disabled={act.pending} onClick={updateAgent}>{t('host.agent.update')}</Button>}
+                </dd>
                 <dt>{t('host.comm')}</dt><dd>{t(host.comm_mode === 'pull' ? 'hosts.mode.pull' : 'hosts.mode.push')}{host.connected ? ' · ●' : ''}</dd>
                 <dt>{t('host.last_seen')}</dt><dd>{date(host.last_seen_at)}</dd>
                 <dt>{t('host.last_inventory')}</dt><dd>{date(host.last_inventory_at)}</dd>
@@ -199,6 +226,25 @@ function HostDetail() {
 
       {tab === 'compliance' && <Compliance hostId={id} modules={(facts.modules as string[] | undefined) ?? []} canScan={can('tasks:create') && !quarantined} onScan={() => void doTask(`/hosts/${id}/compliance-scan`, {})} />}
       {tab === 'settings' && (
+        <div className="stack stack--lg">
+        <Card title={t('host.modules')}>
+          <p className="muted" style={{ marginBottom: 16 }}>{t('host.modules.sub')}</p>
+          {!caps.includes('settings') && <div style={{ marginBottom: 16 }}><Notice>{t('host.modules.old_agent')}</Notice></div>}
+          <div className="stack" style={{ gap: 14 }}>
+            {HOST_MODULES.map((m) => {
+              const probe = DETECTED[m];
+              return (
+                <div key={m} className="row" style={{ justifyContent: 'space-between', flexWrap: 'nowrap' }}>
+                  <div>
+                    <b>{t(`mod.${m}` as MessageKey)}</b> {probe && <Tag tone={detected.includes(probe) ? 'ok' : 'neutral'}>{t(detected.includes(probe) ? 'host.modules.detected' : 'host.modules.not_detected')}</Tag>}
+                    <p className="field__hint">{t(`mod.${m}.desc` as MessageKey)}</p>
+                  </div>
+                  <Switch checked={!!host.modules?.[m]} disabled={!canWrite || act.pending} onChange={(v) => void setModule(m, v)}><span className="sr-only">{t(`mod.${m}` as MessageKey)}</span></Switch>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
         <Card title={t('host.section.attributes')}>
           <p className="muted" style={{ marginBottom: 16 }}>{t('host.section.attributes.sub')}</p>
           <form className="form-grid" onSubmit={(e) => { e.preventDefault(); void save(); }}>
@@ -221,6 +267,7 @@ function HostDetail() {
             {canWrite && <div className="span-all"><Button variant="primary" type="submit" disabled={!dirty || act.pending}>{t('common.save')}</Button></div>}
           </form>
         </Card>
+        </div>
       )}
 
       <Dialog open={!!reboot} title={t('host.reboot.title')} onClose={() => setReboot(null)}>

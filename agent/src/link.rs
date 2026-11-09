@@ -53,7 +53,7 @@ impl Link {
 
     async fn heartbeat(&self) -> Heartbeat {
         let (is_laptop, on_battery) = facts::power_state().await;
-        let eco = self.agent.cfg.eco_enabled && is_laptop && on_battery;
+        let eco = self.agent.eco_allowed() && is_laptop && on_battery;
         let load_1m = std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse().ok())).unwrap_or(0.0);
         let uptime_secs = std::fs::read_to_string("/proc/uptime").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok())).unwrap_or(0.0) as u64;
         Heartbeat { on_battery, eco, load_1m, uptime_secs, running_tasks: self.agent.running.lock().unwrap().iter().copied().collect() }
@@ -61,6 +61,13 @@ impl Link {
 
     fn interval(&self, eco: bool) -> Duration {
         Duration::from_secs(if eco { self.agent.cfg.eco_heartbeat_secs } else { self.agent.cfg.heartbeat_secs }.max(5))
+    }
+
+    /// New settings from the server; a module switch changes what the inventory holds, so send a fresh one.
+    fn settings(&self, s: AgentSettings) {
+        if self.agent.apply_settings(s) {
+            self.spawn_inventory();
+        }
     }
 
     fn spawn_inventory(&self) {
@@ -161,6 +168,7 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<ServerMessage>(&t) {
                     Ok(ServerMessage::Command(c)) => { link.accept(&c); }
                     Ok(ServerMessage::Ping) => link.spawn_inventory(),
+                    Ok(ServerMessage::Settings(s)) => link.settings(s),
                     Ok(ServerMessage::Welcome { heartbeat_secs }) => tracing::debug!(heartbeat_secs, "welcome"),
                     Err(e) => tracing::warn!("unreadable server message: {e}"),
                 },
@@ -238,6 +246,9 @@ pub async fn run_push(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
             Ok(r) if r.status().is_success() => match r.json::<TelemetryResponse>().await {
                 Ok(t) => {
                     attempt = 0;
+                    if let Some(s) = t.settings {
+                        link.settings(s);
+                    }
                     for c in &t.commands {
                         link.accept(c);
                     }

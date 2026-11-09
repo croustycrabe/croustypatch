@@ -34,6 +34,8 @@ pub struct AppItem {
     pub category: String,
     pub description: String,
     pub packages: Vec<String>,
+    /// Command recipe (install, uninstall, check path) instead of packages.
+    pub command: Option<(String, String, String)>,
     /// Per the server's last inventory of this host.
     pub installed: bool,
     /// Checked on this machine just now: (packages present, packages in the app).
@@ -53,6 +55,10 @@ impl AppItem {
             category: s("category"),
             description: s("description"),
             packages: v.get("packages").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            command: v.get("command").filter(|c| c.is_object()).map(|c| {
+                let f = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                (f("install"), f("uninstall"), f("check"))
+            }),
             installed: v.get("installed").and_then(|x| x.as_bool()).unwrap_or(false),
             local: n("/local/present").zip(n("/local/total")),
             pending: v.get("pending").filter(|p| !p.is_null()).map(|p| (p.get("install").and_then(|x| x.as_bool()).unwrap_or(true), p.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string())),
@@ -118,6 +124,8 @@ pub struct Words {
     pub sent: &'static str,
     pub packages: &'static str,
     pub missing: &'static str,
+    pub command: &'static str,
+    pub check: &'static str,
     pub categories: &'static str,
     pub apps: &'static str,
     pub status: &'static str,
@@ -135,14 +143,14 @@ pub struct Words {
 pub const FR: Words = Words {
     title: "Portail applicatif", all: "Toutes", present: "Présent", partial: "Partiel", available: "Disponible", installing: "Installation", removing: "Désinstallation",
     empty: "Aucune application proposée pour cette machine.", keys: "↑↓ choisir  ←→ catégorie  i installer  u désinstaller  r actualiser  c effacer  q quitter",
-    confirm_install: "Installer", confirm_remove: "Désinstaller", yes_no: "o / n", sent: "demande envoyée", packages: "Paquets", missing: "manquants",
+    confirm_install: "Installer", confirm_remove: "Désinstaller", yes_no: "o / n", sent: "demande envoyée", packages: "Paquets", missing: "manquants", command: "Commande", check: "Vérifié par",
     categories: "Catégories", apps: "Applications", status: "État et notifications", idle: "Aucune opération en cours.", queued: "en file d’attente", to_agent: "transmise à l’agent",
     running: "en cours", installed_ok: "installé", removed_ok: "désinstallé", failed: "échec", cancelled: "annulé", opened: "applications déjà présentes sur cette machine",
 };
 pub const EN: Words = Words {
     title: "App center", all: "All", present: "Present", partial: "Partial", available: "Available", installing: "Installing", removing: "Removing",
     empty: "No application offered for this machine.", keys: "↑↓ select  ←→ category  i install  u uninstall  r refresh  c clear  q quit",
-    confirm_install: "Install", confirm_remove: "Uninstall", yes_no: "y / n", sent: "request sent", packages: "Packages", missing: "missing",
+    confirm_install: "Install", confirm_remove: "Uninstall", yes_no: "y / n", sent: "request sent", packages: "Packages", missing: "missing", command: "Command", check: "Checked by",
     categories: "Categories", apps: "Applications", status: "Status and notifications", idle: "No operation in progress.", queued: "queued", to_agent: "handed to the agent",
     running: "running", installed_ok: "installed", removed_ok: "uninstalled", failed: "failed", cancelled: "cancelled", opened: "applications already present on this machine",
 };
@@ -339,7 +347,14 @@ pub fn render(f: &mut Frame, s: &State) {
     let bottom = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(42), Constraint::Percentage(58)]).split(rows[2]);
     let detail = match s.selected() {
         Some(a) => {
-            let mut l = vec![Line::from(Span::styled(a.name.clone(), Style::new().add_modifier(Modifier::BOLD))), Line::from(Span::raw(a.description.clone())), Line::from(vec![Span::styled(format!("{}: ", s.w.packages), Style::new().fg(MUTED)), Span::raw(a.packages.join(", "))])];
+            let mut l = vec![Line::from(Span::styled(a.name.clone(), Style::new().add_modifier(Modifier::BOLD))), Line::from(Span::raw(a.description.clone()))];
+            match &a.command {
+                Some((install, _, check)) => {
+                    l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.command), Style::new().fg(MUTED)), Span::raw(install.lines().next().unwrap_or("").to_string())]));
+                    l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.check), Style::new().fg(MUTED)), Span::raw(check.clone())]));
+                }
+                None => l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.packages), Style::new().fg(MUTED)), Span::raw(a.packages.join(", "))])),
+            }
             if let Presence::Partial(p, t) = a.presence() {
                 l.push(Line::from(Span::styled(format!("{} {p}/{t} · {} {}", s.w.partial, t - p, s.w.missing), Style::new().fg(WARNING))));
             }
@@ -374,11 +389,20 @@ pub fn render(f: &mut Frame, s: &State) {
 
     f.render_widget(Paragraph::new(Line::from(Span::styled(s.w.keys, Style::new().fg(MUTED)))), rows[3]);
 
-    if let Some((_, name, install)) = &s.confirm {
-        let r = centered(area, 50, 5);
+    if let Some((id, name, install)) = &s.confirm {
+        // A command app shows exactly what will run as root before the user says yes.
+        let script = s.apps.iter().find(|a| &a.id == id).and_then(|a| a.command.as_ref()).map(|c| if *install { c.0.clone() } else { c.1.clone() });
+        let extra: Vec<Line> = script.iter().flat_map(|sc| sc.lines().take(8).map(|l| Line::from(Span::styled(format!("  {l}"), Style::new().fg(MUTED)))).collect::<Vec<_>>()).collect();
+        let r = centered(area, if extra.is_empty() { 50 } else { 76 }, 5 + extra.len() as u16 + u16::from(!extra.is_empty()));
         f.render_widget(Clear, r);
         let verb = if *install { s.w.confirm_install } else { s.w.confirm_remove };
-        let p = Paragraph::new(vec![Line::from(format!("{verb} {name} ?")), Line::from(Span::styled(s.w.yes_no, Style::new().fg(MUTED)))]).block(Block::default().borders(Borders::ALL).border_style(Style::new().fg(if *install { BRICK } else { DANGER })));
+        let mut lines = vec![Line::from(format!("{verb} {name} ?"))];
+        if !extra.is_empty() {
+            lines.push(Line::from(Span::styled(format!("{}:", s.w.command), Style::new().fg(MUTED))));
+            lines.extend(extra);
+        }
+        lines.push(Line::from(Span::styled(s.w.yes_no, Style::new().fg(MUTED))));
+        let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).border_style(Style::new().fg(if *install { BRICK } else { DANGER })));
         f.render_widget(p, r);
     }
 }

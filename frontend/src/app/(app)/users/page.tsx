@@ -9,7 +9,7 @@ import type { Role, UserRow } from '@/lib/types';
 
 const MODULES = ['dashboard', 'hosts', 'groups', 'policies', 'tasks', 'vulnerabilities', 'waivers', 'enrollment', 'audit', 'settings', 'users', 'roles'] as const;
 const ACTIONS = ['read', 'create', 'write', 'delete'] as const;
-const EXTRA = ['waivers:approve_ciso', 'waivers:approve_business'] as const;
+const EXTRA = ['waivers:approve_ciso', 'waivers:approve_business', 'portal:commands'] as const;
 
 /** Expand wildcards into the explicit grid so the editor shows what a role really grants. */
 function explicit(perms: string[]): Set<string> {

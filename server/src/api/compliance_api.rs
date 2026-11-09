@@ -74,5 +74,9 @@ pub async fn scan(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uu
     if profile.len() > 200 || !profile.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
         return Err(ApiError::bad("profile must be an XCCDF profile id"));
     }
-    super::fleet::control_task_with(&state, user, path.into_inner(), "compliance", "task.compliance_requested", Some(json!({ "profile": profile }))).await
+    let host = path.into_inner();
+    if !state.db(move |c| crate::modules::for_host(c, host)).await?.openscap {
+        return Err(ApiError::Conflict("the OpenSCAP module is switched off for this host (host page > Modules)".into()));
+    }
+    super::fleet::control_task_with(&state, user, host, "compliance", "task.compliance_requested", Some(json!({ "profile": profile }))).await
 }

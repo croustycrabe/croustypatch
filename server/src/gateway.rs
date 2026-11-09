@@ -92,7 +92,7 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             c.transaction::<_, ApiError, _>(|c| {
                 let now = Utc::now();
                 // Atomic claim: only succeeds while the token is valid and has uses left.
-                let claimed: Option<(Uuid, Option<Uuid>, String, String)> = diesel::update(
+                let claimed: Option<(Uuid, Option<Uuid>, String, String, Option<Value>)> = diesel::update(
                     enrollment_tokens::table
                         .filter(enrollment_tokens::token_hash.eq(&hash))
                         .filter(enrollment_tokens::revoked.eq(false))
@@ -100,15 +100,17 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                         .filter(enrollment_tokens::used_count.lt(enrollment_tokens::max_uses)),
                 )
                 .set(enrollment_tokens::used_count.eq(enrollment_tokens::used_count + 1))
-                .returning((enrollment_tokens::id, enrollment_tokens::group_id, enrollment_tokens::environment, enrollment_tokens::comm_mode))
+                .returning((enrollment_tokens::id, enrollment_tokens::group_id, enrollment_tokens::environment, enrollment_tokens::comm_mode, enrollment_tokens::modules))
                 .get_result(c)
                 .optional()?;
-                let Some((token_id, group_id, environment, comm_mode)) = claimed else {
+                let Some((token_id, group_id, environment, comm_mode, token_modules)) = claimed else {
                     // Returned as Ok(None), not Err: an Err would roll the transaction back and erase this audit entry.
                     audit::record(c, Event::new("agent", "agent.enroll_rejected").details(json!({"hostname": b.facts.hostname})).ip(&ip))?;
                     return Ok(None);
                 };
                 let f = &b.facts;
+                // Modules chosen when the token was made, else today's defaults.
+                let modules = token_modules.map(|m| crate::modules::parse(&m)).unwrap_or_else(|| crate::modules::defaults(c));
                 let asset_type = if f.is_laptop { "laptop" } else { "server" };
                 let host_id: Uuid = diesel::insert_into(hosts::table)
                     .values((
@@ -124,6 +126,7 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                         hosts::comm_mode.eq(comm_mode),
                         hosts::last_seen_at.eq(now),
                         hosts::heartbeat_secs.eq(heartbeat as i32),
+                        hosts::modules.eq(serde_json::to_value(modules).unwrap_or_default()),
                     ))
                     .returning(hosts::id)
                     .get_result(c)?;
@@ -244,12 +247,12 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
     c.transaction::<_, ApiError, _>(|c| {
         apply_facts(c, host_id, &inv.facts)?;
         // The inventory is complete each time: replace every source. Module data (containers, helper scripts) is
-        // kept only while its module is switched on in Settings > Modules.
+        // kept only while its module is switched on for this host.
         diesel::delete(host_packages::table.filter(host_packages::host_id.eq(host_id))).execute(c)?;
-        let modules = crate::compliance::modules(c);
+        let modules = crate::modules::for_host(c, host_id)?;
         let keep = |src: &str| match src {
-            "docker" => crate::compliance::module_on(&modules, "docker"),
-            "helper-script" => crate::compliance::module_on(&modules, "helper_script"),
+            "docker" => modules.docker,
+            "helper-script" => modules.helper_script,
             _ => true,
         };
         // (name, source) is the key: the last entry wins on duplicates (e.g. multi-arch).
@@ -414,7 +417,14 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
                 CommandAction::App {
                     install: e.get("install").and_then(|v| v.as_bool()).unwrap_or(true),
                     packages: e.get("packages").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                    command: e.get("command").filter(|v| v.is_object()).and_then(|v| serde_json::from_value(v.clone()).ok()),
+                    user: e.get("user").and_then(|v| v.as_str()).map(str::to_owned),
                 }
+            }
+            Some(TaskKind::AgentUpdate) => {
+                let e = exec.clone().unwrap_or_default();
+                let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version") }
             }
             Some(TaskKind::Compliance) => CommandAction::ComplianceScan { profile: exec.as_ref().and_then(|e| e.get("profile")).and_then(|v| v.as_str()).unwrap_or("").to_string() },
             Some(TaskKind::Reboot) => {
@@ -470,14 +480,14 @@ pub async fn telemetry(state: web::Data<AppState>, agent: AgentAuth, body: web::
     let msgs = body.into_inner().messages;
     handle_messages(&state, host_id, msgs).await;
     let st = state.clone();
-    let (commands, hb) = state
+    let (commands, hb, settings) = state
         .db(move |c| {
             let cmds = claim_due_commands(c, &st, host_id)?;
             let hb: i32 = hosts::table.find(host_id).select(hosts::heartbeat_secs).first(c)?;
-            Ok((cmds, hb))
+            Ok((cmds, hb, crate::modules::settings_for(c, host_id)?))
         })
         .await?;
-    Ok(HttpResponse::Ok().json(TelemetryResponse { commands, heartbeat_secs: hb.max(10) as u64 }))
+    Ok(HttpResponse::Ok().json(TelemetryResponse { commands, heartbeat_secs: hb.max(10) as u64, settings }))
 }
 
 // ---------------------------------------------------------------- websocket tunnel
@@ -510,8 +520,11 @@ pub async fn ws_tunnel(req: HttpRequest, body: web::Payload, state: web::Data<Ap
                 incoming = stream.next() => match incoming {
                     Some(Ok(actix_ws::AggregatedMessage::Text(text))) => match serde_json::from_str::<AgentMessage>(&text) {
                         Ok(m) => {
-                            let had_update = matches!(m, AgentMessage::TaskUpdate(_) | AgentMessage::Hello { .. });
+                            let hello = matches!(m, AgentMessage::Hello { .. });
+                            let had_update = hello || matches!(m, AgentMessage::TaskUpdate(_));
                             handle_messages(&st, host_id, vec![m]).await;
+                            // The hello carries the agent's capabilities: only then do we know it reads its settings.
+                            if hello { crate::modules::push_settings(&st, host_id).await; }
                             if had_update { push_pending(&st, host_id).await; }
                         }
                         Err(e) => tracing::warn!(%host_id, error = %e, "bad agent message"),

@@ -119,9 +119,10 @@ async fn run(cli: &Cli, dry_run: bool) -> Result<()> {
     std::fs::create_dir_all(&cfg.state_dir)?;
     let (out_tx, out_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let agent = Arc::new(runner::Agent { runner: exec::Runner { dry_run: cfg.dry_run }, cfg: cfg.clone(), identity, backend, out: out_tx, server_ips: Mutex::new(net::load_server_ips(&cfg)), running: Mutex::new(Default::default()) });
+    let agent = Arc::new(runner::Agent { runner: exec::Runner { dry_run: cfg.dry_run }, cfg: cfg.clone(), identity, backend, out: out_tx, server_ips: Mutex::new(net::load_server_ips(&cfg)), running: Mutex::new(Default::default()), settings: Mutex::new(runner::load_settings(&cfg)) });
     tracing::info!(agent = %agent.identity.agent_id, mode = %cfg.mode, server = %cfg.server_url, "agent starting");
     croustypatch_agent::reboot::resume(&agent);
+    croustypatch_agent::selfupdate::resume(&agent);
     tokio::spawn(runner::worker(agent.clone(), cmd_rx));
     let link = Arc::new(link::Link::new(agent.clone(), cmd_tx));
     {

@@ -49,9 +49,49 @@ pub struct Agent {
     pub out: mpsc::UnboundedSender<AgentMessage>,
     pub server_ips: Mutex<Vec<IpAddr>>,
     pub running: Mutex<HashSet<Uuid>>,
+    /// Per-host settings from the server (None until received from a server that sends them).
+    pub settings: Mutex<Option<AgentSettings>>,
+}
+
+fn settings_file(cfg: &Config) -> std::path::PathBuf {
+    cfg.state_dir.join("settings.json")
+}
+
+/// The settings saved by the last run, so module switches apply before the server is reachable.
+pub fn load_settings(cfg: &Config) -> Option<AgentSettings> {
+    std::fs::read(settings_file(cfg)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 impl Agent {
+    pub fn settings(&self) -> Option<AgentSettings> {
+        self.settings.lock().unwrap().clone()
+    }
+
+    /// Store new settings from the server; returns true if they changed.
+    pub fn apply_settings(&self, s: AgentSettings) -> bool {
+        let mut cur = self.settings.lock().unwrap();
+        if cur.as_ref() == Some(&s) {
+            return false;
+        }
+        tracing::info!(modules = ?s.modules, "settings received from the server");
+        if let Ok(b) = serde_json::to_vec(&s) {
+            let _ = write_private(&settings_file(&self.cfg), &b);
+        }
+        *cur = Some(s);
+        true
+    }
+
+    /// Is this module switched on for this host? Before the server has said anything, everything detected is
+    /// collected (the server drops what it does not want).
+    pub fn module_on(&self, name: &str) -> bool {
+        self.settings().map_or(true, |s| s.modules.get(name))
+    }
+
+    /// Economy profile allowed: the server's switch when known, else the local configuration.
+    pub fn eco_allowed(&self) -> bool {
+        self.settings().map_or(self.cfg.eco_enabled, |s| s.modules.eco)
+    }
+
     /// Addresses of the management server, copied out so no lock is held across an await.
     pub fn server_ips(&self) -> Vec<IpAddr> {
         self.server_ips.lock().unwrap().clone()
@@ -68,10 +108,12 @@ impl Agent {
         let mut packages = self.backend.inventory(&self.runner).await?;
         // The mock backend simulates a whole system: never mix the real host's modules into it.
         if !matches!(self.backend, Backend::Mock(_)) {
-            if crate::modules::docker::available() {
+            if self.module_on("docker") && crate::modules::docker::available() {
                 packages.extend(crate::modules::docker::inventory(&self.runner).await);
             }
-            packages.extend(crate::modules::helper_scripts::detect(std::path::Path::new("/opt")));
+            if self.module_on("helper_script") {
+                packages.extend(crate::modules::helper_scripts::detect(std::path::Path::new("/opt")));
+            }
         }
         let reboot_required = self.backend.reboot_required(&self.runner).await;
         Ok(Inventory { facts, packages, reboot_required, collected_at: Utc::now() })
@@ -153,7 +195,9 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::Release => isolate::release(&agent.runner, &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "network isolation lifted", &log, vec![], false)),
         CommandAction::Reboot { delay_minutes, message } => crate::reboot::start(agent, id, delay_minutes, &message, &log).await,
         CommandAction::ComplianceScan { profile } => compliance(agent, id, &profile, &log).await,
-        CommandAction::App { install, packages } => app(agent, id, install, &packages, &log).await,
+        CommandAction::App { install, command: Some(cmd), user, .. } => app_command(agent, id, install, &cmd, user.as_deref(), &log).await,
+        CommandAction::App { install, packages, command: None, .. } => app(agent, id, install, &packages, &log).await,
+        CommandAction::UpdateAgent { platform, sha256, version } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, &log).await,
     };
     if let Err(e) = res {
         log.line(format!("error: {e:#}"));
@@ -181,6 +225,22 @@ async fn app(agent: &Agent, id: Uuid, install: bool, packages: &[String], log: &
     let after = agent.send_inventory().await?;
     let changes = pkg::diff(&before, &pkg::installed_map(&after.packages));
     agent.update(id, TaskStatus::Succeeded, format!("{} package(s) {}", changes.len(), if install { "installed" } else { "removed" }), log, changes, after.reboot_required);
+    Ok(())
+}
+
+/// App center, command recipe: run the admin's command, then check the app is usable by whoever asked.
+async fn app_command(agent: &Agent, id: Uuid, install: bool, cmd: &AppCommand, user: Option<&str>, log: &TaskLog) -> Result<()> {
+    if !croustypatch_common::model::is_valid_check_path(&cmd.check) {
+        return Err(anyhow!("refusing a recipe whose check is not an absolute path"));
+    }
+    let target = match user {
+        Some(u) => crate::app_command::lookup(u).await?,
+        None => crate::app_command::Target::everyone(),
+    };
+    agent.update(id, TaskStatus::Running, format!("{} with the catalog command (for {})", if install { "installing" } else { "removing" }, target.name), log, vec![], false);
+    let summary = crate::app_command::run(&agent.runner, cmd, install, &target, log).await?;
+    let inv = agent.send_inventory().await?;
+    agent.update(id, TaskStatus::Succeeded, summary, log, vec![], inv.reboot_required);
     Ok(())
 }
 

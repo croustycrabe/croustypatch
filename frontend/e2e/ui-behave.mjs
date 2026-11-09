@@ -78,6 +78,8 @@ await p.waitForTimeout(500); check('policy saved from the slide-over', (await p.
 
 // ---- ADD AGENT: generate, enrol a real agent with the command, watch the wizard notice
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.sidebar button:has-text("Ajouter un agent")'); await p.waitForSelector('dialog[open]');
+check('the wizard offers the modules for the new host', await p.locator('dialog[open] fieldset:has-text("Modules") input[type=checkbox]').count() === 5);
+await p.check('dialog[open] fieldset:has-text("Modules") label:has-text("Docker") input');
 await p.click('dialog[open] button:has-text("Générer la commande")'); await p.waitForSelector('dialog[open] pre.cmd');
 const cmd = await p.locator('dialog[open] pre.cmd').first().textContent();
 check('the Linux command is a curl one-liner for this server', /^curl -fsSL https:\/\/localhost:8443\/api\/v1\/agent\/install\.sh \| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\S+ sh$/.test(cmd), cmd.slice(0, 90));
@@ -92,6 +94,12 @@ execFileSync(AGENT, ['--config', `${U}/wiz.toml`, 'enroll', '--server', BASE, '-
 const agent = spawn(AGENT, ['--config', `${U}/wiz.toml`, 'run'], { stdio: 'ignore' });
 await p.waitForSelector('dialog[open] :text("est connecté")', { timeout: 15000 }).then(() => check('the wizard detects the new agent and confirms the connection', true), () => check('the wizard detects the new agent and confirms the connection', false));
 check('and offers to open the new host', await p.locator('dialog[open] a:has-text("Ouvrir l’hôte")').count() === 1);
+{
+  const href = await p.locator('dialog[open] a:has-text("Ouvrir l’hôte")').getAttribute('href');
+  const hid = new URL(href, BASE).searchParams.get('id');
+  const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
+  check('the modules chosen in the wizard are switched on for the new host', m?.docker === true && m?.openscap === false, JSON.stringify(m));
+}
 agent.kill();
 await p.keyboard.press('Escape');
 
@@ -209,7 +217,11 @@ check('the reboot task is created and handled by the agent', await p.locator('.t
 await p.goto(`${BASE}/account/`); await p.waitForSelector('button:has-text("Nouveau jeton")');
 await p.click('button:has-text("Nouveau jeton")'); await p.waitForSelector('dialog[open]'); await p.fill('dialog[open] input >> nth=0', 'e2e assistant'); await p.click('dialog[open] button[type=submit]');
 await p.waitForSelector('code.cs-inline-code'); const tok = (await p.locator('code.cs-inline-code').textContent()).trim();
-check('a personal token is shown once after creation', tok.startsWith('cpat_') && (await p.locator('.tbl tr:has-text("e2e assistant")').count()) === 1);
+{
+  await p.waitForSelector('.tbl tr:has-text("e2e assistant")', { timeout: 5000 }).catch(() => {});
+  const n = await p.locator('.tbl tr:has-text("e2e assistant")').count();
+  check('a personal token is shown once after creation', tok.startsWith('cpat_') && n === 1, `${tok.slice(0, 9)}… rows=${n}`);
+}
 {
   const r = await p.evaluate(async (tk) => (await fetch('/api/v1/mcp', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json', authorization: `Bearer ${tk}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'fleet_summary', arguments: {} } }) })).json(), tok);
   check('an MCP client authenticates with the token and reads the fleet', r?.result?.isError === false && typeof r.result.structuredContent.pending_updates === 'number', JSON.stringify(r).slice(0, 120));
@@ -217,6 +229,15 @@ check('a personal token is shown once after creation', tok.startsWith('cpat_') &
 
 // ---- compliance tab: an audit can be requested
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.tbl tr:has(.status.tone-ok) .cell-host a >> nth=0'); await p.waitForSelector('.tabs');
+check('the agent card shows the agent is up to date', await p.locator('.kv .tag:has-text("à jour")').count() === 1);
+await p.click('[role=tab]:has-text("Réglages")'); await p.waitForSelector('[role=switch]');
+check('the host settings list the five modules', await p.locator('[role=switch]').count() === 5);
+await p.click('[role=switch]:has-text("OpenSCAP")'); await p.waitForSelector('.toast');
+{
+  const hid = new URL(p.url()).searchParams.get('id');
+  const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
+  check('a module is switched on for this host only', m?.openscap === true, JSON.stringify(m));
+}
 await p.click('[role=tab]:has-text("Conformité")'); await p.waitForSelector('button:has-text("Lancer un audit"), .empty');
 check('the compliance tab explains how to start when there is no report', (await p.locator('.empty').textContent()).includes('openscap'));
 await p.click('button:has-text("Lancer un audit")'); await p.waitForTimeout(1500);
@@ -225,9 +246,13 @@ check('a compliance task is created and answered by the agent', await p.locator(
 
 // ---- app center: catalog, then self-service install through the agent
 {
-  const mods = await p.evaluate(async () => (await (await fetch('/api/v1/settings')).json()).modules);
-  await p.evaluate(async (m) => fetch('/api/v1/settings/modules', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...m, portal: true }) }), mods);
+  // the app center is switched on per host
+  await p.evaluate(async () => { for (const h of await (await fetch('/api/v1/hosts')).json()) await fetch(`/api/v1/hosts/${h.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modules: { portal: true } }) }); });
   await p.goto(`${BASE}/portal/`); await p.waitForSelector('[role=tab]:has-text("Catalogue")');
+  await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("htop")');
+  check('suggested apps are listed with their packages per system', (await p.locator('.appcard:has-text("htop")').textContent()).includes('pacman'));
+  await p.click('.appcard:has-text("htop") button:has-text("Ajouter")'); await p.waitForSelector('.appcard:has-text("htop") .tag:has-text("Dans le catalogue")');
+  check('a suggestion is added to the catalog in one click', true);
   await p.click('[role=tab]:has-text("Catalogue")'); await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
   await p.fill('dialog[open] input >> nth=0', 'Outils dev'); await p.fill('dialog[open] input.mono', 'git, make');
   await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Outils dev")');

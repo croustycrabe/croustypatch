@@ -7,12 +7,15 @@ import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
-import type { HostGroup, HostSummary } from '@/lib/types';
-import { Button, Chip, Drawer, Field, Notice, Section, Select, Skeleton, Tabs, Tag, TextInput } from './ui';
+import type { MessageKey } from '@/lib/messages';
+import type { HostGroup, HostModules, HostSummary } from '@/lib/types';
+import { Button, Check, Chip, Drawer, Field, Notice, Section, Select, Skeleton, Tabs, Tag, TextInput } from './ui';
 
 interface Platform { id: string; os: string; arch: string; available: boolean }
 interface Created { token: string; details: { expires_at: string } }
-interface Form { comm_mode: 'pull' | 'push'; group_id: string; environment: string; label: string; hours: number; max_uses: number; dry_run: boolean }
+interface Form { comm_mode: 'pull' | 'push'; group_id: string; environment: string; label: string; hours: number; max_uses: number; dry_run: boolean; modules: HostModules }
+
+const MODULE_KEYS: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
 
 const Ctx = createContext<{ open: () => void } | null>(null);
 
@@ -85,10 +88,14 @@ function Steps({ step }: { step: 0 | 1 | 2 }) {
 
 function Wizard({ onClose }: { onClose: () => void }) {
   const { t, date } = useI18n();
-  const { can } = useAuth();
+  const { can, modules: defaults } = useAuth();
   const toast = useToast();
   const act = useAction();
-  const [f, setF] = useState<Form>({ comm_mode: 'pull', group_id: '', environment: 'production', label: '', hours: 24, max_uses: 1, dry_run: false });
+  // Pre-filled with the server's defaults for new hosts (Settings > Modules).
+  const [f, setF] = useState<Form>(() => ({
+    comm_mode: 'pull', group_id: '', environment: 'production', label: '', hours: 24, max_uses: 1, dry_run: false,
+    modules: { docker: !!defaults?.docker, helper_script: !!defaults?.helper_script, openscap: !!defaults?.openscap, portal: !!defaults?.portal, eco: defaults?.eco ?? true },
+  }));
   const [created, setCreated] = useState<{ token: string; expires_at: string; startedAt: number } | null>(null);
   const [tab, setTab] = useState<'linux' | 'freebsd' | 'manual'>('linux');
 
@@ -106,7 +113,7 @@ function Wizard({ onClose }: { onClose: () => void }) {
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
   const generate = useCallback(() => act.run(async () => {
     const r = await api<Created>('POST', '/enrollment-tokens', {
-      label: f.label || 'Add agent', group_id: f.group_id || null, environment: f.environment, comm_mode: f.comm_mode, hours: Number(f.hours), max_uses: Number(f.max_uses),
+      label: f.label || 'Add agent', group_id: f.group_id || null, environment: f.environment, comm_mode: f.comm_mode, hours: Number(f.hours), max_uses: Number(f.max_uses), modules: f.modules,
     });
     setCreated({ token: r.token, expires_at: r.details.expires_at, startedAt: Date.now() });
   }), [act, f]);
@@ -145,6 +152,13 @@ function Wizard({ onClose }: { onClose: () => void }) {
               {['production', 'staging', 'dev'].map((v) => <option key={v} value={v}>{t(`env.${v}` as 'env.production')}</option>)}
             </Select>)}</Field>
         </div>
+        <fieldset className="fieldset">
+          <legend>{t('agent.modules')}</legend>
+          <p className="field__hint" style={{ marginBottom: 10 }}>{t('agent.modules.hint')}</p>
+          <div className="row">
+            {MODULE_KEYS.map((m) => <Check key={m} checked={f.modules[m]} onChange={(v) => setF({ ...f, modules: { ...f.modules, [m]: v } })}>{t(`mod.${m}` as MessageKey)}</Check>)}
+          </div>
+        </fieldset>
         <Section title={t('agent.advanced')}>
           <div className="form-grid">
             <Field label={t('agent.label')}>{(id) => <TextInput id={id} value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} />}</Field>

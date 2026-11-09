@@ -1,4 +1,5 @@
 //! CroustyPatch agent library. The binary (`main.rs`) is only the CLI on top of this.
+pub mod app_command;
 pub mod config;
 pub mod exec;
 pub mod facts;
@@ -14,3 +15,4 @@ pub mod tui;
 pub mod preflight;
 pub mod reboot;
 pub mod runner;
+pub mod selfupdate;

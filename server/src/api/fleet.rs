@@ -100,6 +100,8 @@ pub struct HostPatch {
     tags: Option<Vec<String>>,
     heartbeat_secs: Option<i32>,
     group_ids: Option<Vec<Uuid>>,
+    /// Optional modules for this host: any subset of docker, helper_script, openscap, portal, eco.
+    modules: Option<serde_json::Value>,
 }
 
 pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, body: web::Json<HostPatch>) -> ApiResult<HttpResponse> {
@@ -129,6 +131,10 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
     if b.tags.as_ref().is_some_and(|t| t.len() > 30 || t.iter().any(|x| x.is_empty() || x.len() > 40)) {
         return Err(ApiError::bad("at most 30 tags of 1-40 characters"));
     }
+    if let Some(m) = &b.modules {
+        crate::modules::validate(m)?;
+    }
+    let modules_changed = b.modules.is_some();
     let out: Host = state
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
@@ -163,6 +169,20 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                         return Err(ApiError::NotFound("host"));
                     }
                 }
+                if let Some(m) = &b.modules {
+                    // A partial map only changes the modules it names.
+                    let mut cur: serde_json::Value = hosts::table.find(id).select(hosts::modules).first(c).map_err(|_| ApiError::NotFound("host"))?;
+                    let mut merged = serde_json::to_value(crate::modules::parse(&cur)).unwrap_or_default();
+                    for (k, v) in m.as_object().into_iter().flatten() {
+                        merged[k] = v.clone();
+                    }
+                    if merged != cur {
+                        diesel::update(hosts::table.find(id)).set(hosts::modules.eq(&merged)).execute(c)?;
+                        audit::record(c, Event::new(&user.username, "host.modules_changed").target("host", &id.to_string()).host(id).details(json!({ "before": cur, "after": merged })).ip(&user.ip))?;
+                        cur = merged;
+                    }
+                    let _ = cur;
+                }
                 if let Some(gs) = &b.group_ids {
                     diesel::delete(host_group_members::table.filter(host_group_members::host_id.eq(id))).execute(c)?;
                     for g in gs {
@@ -177,6 +197,9 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
             })
         })
         .await?;
+    if modules_changed {
+        crate::modules::push_settings(&state, id).await;
+    }
     Ok(HttpResponse::Ok().json(out))
 }
 
@@ -205,7 +228,7 @@ pub(crate) async fn control_task_with(state: &web::Data<AppState>, user: AuthUse
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
                 let status: String = hosts::table.find(host_id).select(hosts::status).first(c).map_err(|_| ApiError::NotFound("host"))?;
-                if status == "quarantined" && (kind == "scan" || kind == "reboot") {
+                if status == "quarantined" && matches!(kind, "scan" | "reboot" | "agent_update") {
                     return Err(ApiError::Conflict("host is quarantined; release it first".into()));
                 }
                 let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq(kind)).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
@@ -255,6 +278,33 @@ pub async fn reboot_host(state: web::Data<AppState>, user: AuthUser, path: web::
     let asset: String = state.db(move |c| Ok(hosts::table.find(id).select(hosts::asset_type).first::<String>(c).map_err(|_| ApiError::NotFound("host"))?)).await?;
     let delay = b.delay_minutes.unwrap_or(crate::reboot::default_delay(&asset)).min(24 * 60);
     control_task_with(&state, user, id, "reboot", "host.reboot_requested", Some(json!({ "delay_minutes": delay, "message": b.message }))).await
+}
+
+/// The agent build this server hands out, for a host's platform: (platform id, sha256, version).
+pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult<(String, String, String)> {
+    let os = facts.get("os_family").and_then(|v| v.as_str()).unwrap_or("");
+    let arch = facts.get("arch").and_then(|v| v.as_str()).unwrap_or("");
+    let platform = match (os, arch) {
+        ("linux", "x86_64" | "amd64") => "linux-x86_64",
+        ("linux", "aarch64" | "arm64") => "linux-aarch64",
+        ("freebsd", "amd64" | "x86_64") => "freebsd-amd64",
+        _ => return Err(ApiError::Conflict(format!("no agent build for {os} {arch}"))),
+    };
+    let path = super::agent_dist::binary_path(state, platform);
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::Conflict(format!("this server has no agent binary for {platform}")))?;
+    Ok((platform.to_string(), croustypatch_common::crypto::sha256_hex(&bytes), env!("CARGO_PKG_VERSION").to_string()))
+}
+
+/// POST /hosts/{id}/agent-update — the agent downloads this server's build, checks its SHA-256 and restarts on it.
+pub async fn update_agent(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
+    user.require("hosts:write")?;
+    let id = path.into_inner();
+    let facts: serde_json::Value = state.db(move |c| Ok(hosts::table.find(id).select(hosts::facts).first(c).map_err(|_| ApiError::NotFound("host"))?)).await?;
+    if !crate::modules::has_capability(&facts, croustypatch_common::protocol::capability::SELF_UPDATE) {
+        return Err(ApiError::Conflict("this agent is too old to update itself: re-run the installer one-liner on the host once".into()));
+    }
+    let (platform, sha256, version) = agent_build_for(&state, &facts)?;
+    control_task_with(&state, user, id, "agent_update", "host.agent_update_requested", Some(json!({ "platform": platform, "sha256": sha256, "version": version }))).await
 }
 
 pub async fn release_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
@@ -375,6 +425,8 @@ pub struct NewToken {
     /// Validity in hours (default 24, max 720).
     hours: Option<i64>,
     max_uses: Option<i32>,
+    /// Modules for the hosts enrolled with this token; absent = the defaults (Settings > Modules) at enrolment.
+    modules: Option<serde_json::Value>,
 }
 
 pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web::Json<NewToken>) -> ApiResult<HttpResponse> {
@@ -389,6 +441,10 @@ pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web:
     if !(1..=720).contains(&hours) || !(1..=1000).contains(&max_uses) {
         return Err(ApiError::bad("hours must be 1..=720 and max_uses 1..=1000"));
     }
+    let modules = match &b.modules {
+        Some(m) => Some(serde_json::to_value(crate::modules::validate(m)?).unwrap_or_default()),
+        None => None,
+    };
     let token = format!("cpt_{}", random_token(24));
     let hash = token_hash(&token);
     let row: EnrollmentToken = state
@@ -403,10 +459,11 @@ pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web:
                     enrollment_tokens::expires_at.eq(Utc::now() + Duration::hours(hours)),
                     enrollment_tokens::max_uses.eq(max_uses),
                     enrollment_tokens::created_by.eq(&user.username),
+                    enrollment_tokens::modules.eq(&modules),
                 ))
                 .returning(EnrollmentToken::as_returning())
                 .get_result(c)?;
-            audit::record(c, Event::new(&user.username, "enrollment.token_created").target("token", &t.id.to_string()).details(json!({"label": t.label, "max_uses": max_uses, "hours": hours})).ip(&user.ip))?;
+            audit::record(c, Event::new(&user.username, "enrollment.token_created").target("token", &t.id.to_string()).details(json!({"label": t.label, "max_uses": max_uses, "hours": hours, "modules": t.modules})).ip(&user.ip))?;
             Ok(t)
         })
         .await?;
