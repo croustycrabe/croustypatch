@@ -116,7 +116,10 @@ pub mod capability {
     pub const APP_COMMAND: &str = "app_command";
     /// Replaces its own binary on `CommandAction::UpdateAgent`.
     pub const SELF_UPDATE: &str = "self_update";
-    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE];
+    /// Changes the tag of a container's image in its compose file (`ApplyUpdates::retag`). An agent without it would
+    /// ignore the field and pull the tag it already has, so the server never sends it one.
+    pub const DOCKER_RETAG: &str = "docker_retag";
+    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE, DOCKER_RETAG];
 }
 
 /// Optional features switched on per host by the server (Hosts > host > Modules).
@@ -343,6 +346,10 @@ pub enum CommandAction {
         packages: Vec<String>,
         #[serde(default)]
         exec: ExecPolicy,
+        /// `docker:<container>` -> the image reference to move it to (the same image with another tag). The agent
+        /// changes the tag in the service's compose file, recreates it, and puts the file back if that fails.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        retag: std::collections::BTreeMap<String, String>,
     },
     /// Revert the packages changed by a previous patch task.
     Rollback { target_task: Uuid },

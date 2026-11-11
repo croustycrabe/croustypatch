@@ -93,14 +93,45 @@ new first number is marked **major** (and the newest of the running major is nam
 needs a migration). The Docker page and tab show it as *Update suggested*, count it in *Updates suggested* and can
 filter on it.
 
-It is shown as a **suggested update** (*v3.3.1 → v3.4.1*, with the image to write in the compose file), not applied:
-moving to another tag means changing the `image:` line (or the `.env` variable) of the compose file, which CroustyPatch
-does not edit; the *Update* buttons keep pulling the running tag. Change the tag, then update. How it is
+It is shown as a **suggested update** (*v3.3.1 → v3.4.1*). The ordinary *Update* buttons keep pulling the running tag,
+because another tag is another image: the compose file has to say so, or the next `docker compose up` would bring the
+old one back. See *Apply a suggested version* below. How it is
 checked: Docker Hub lists tags alphabetically, GHCR in no order (immich-server has more than 33 000, 34 pages, about
 7 s), so the agent reads the pages (at most 100 and 60 s per repository), keeps only tags of the right shape as they
 arrive, and stops early only when a page proves the list is alphabetical and past the tag's prefix. The answer is
 kept in memory for 6 hours per image (a failed lookup 20 minutes), so a registry is asked a few times a day at most.
 Agents from 0.7.1; anonymous access only (public images), like the digest check. `GET /api/v1/docker?newer=true`.
+
+**Apply a suggested version (0.7.4).** A suggestion has a **Move to v3.4.1** button (agents 0.7.4 or later, `tasks:create`).
+The agent changes the tag in the service's compose file and recreates it with the usual cycle (pull, `up -d` for that
+service, wait until healthy, the policy's probes); if that fails the compose file **and** the previous image are put
+back (the policy's *auto rollback*), and a manual rollback of the task does the same. The change is deliberately
+narrow, and the agent decides it on the real file, not the server:
+
+- the service has a **literal `image:` line** directly inside its block, and that line says exactly what the container
+  runs now (so it is the definition it was created from). With several compose files the last one that defines the
+  service is the one edited. Only the tag characters change: indentation, quotes, comments and line endings stay, as do
+  the file's mode and owner. A variable (`${VERSION}`), an alias or anchor, a `<<` merge key, `extends`, a build-only
+  service, an inline mapping or tabs are **refused with the reason** and the tag is changed by hand (the page says so
+  and shows the image to write). On the real stacks of this installation 48 of 51 services qualify.
+- the new image is built **by the server from what the agent reported** (the running image with the suggested tag): the
+  request names containers (`{"host_ids", "scope": "docker", "packages": ["docker:immich_server"], "to_latest": true}`),
+  never an image; the agent checks again that it is the same image with only the tag changed.
+- everything is planned before anything is written: if one container of the task cannot be changed, nothing is touched.
+  Containers of one file are edited together, and a file that already says the new tag only has its container recreated.
+- the original text is kept in the task's restore point; it is put back only if the file still is what the update
+  wrote, never over a change somebody made since (the rollback then says so and the old tag is restored by hand).
+- a **major** version (the first number goes up: a database's next major, `v3` to `v4`) is refused unless the request
+  says `allow_major`; the page shows a warning about migrations and keeps the button off until it is acknowledged.
+- an agent without the `docker_retag` capability is never sent a version change (it would pull the tag it already has
+  and report success): the server answers 409 and says to update the agent. The inventory tells the page whether each
+  suggestion can be applied (`latest.apply`: `file` with the path, or `manual` with the reason).
+
+The whole cycle was run against a real Docker daemon and compose plugin (`agent/tests/docker_live.rs`, ignored by
+default: it needs docker and internet): a version applied (file and container, healthy) and rolled back by hand
+(file back byte for byte, previous image healthy); a tag from a variable refused with nothing touched; a tag that
+cannot be pulled leaving file and container as they were; a new version that turns unhealthy rolled back with its file.
+The planner was also run on sanitised copies of every real compose file of this installation.
 
 **System, Docker, or both (0.7.2).** Starting updates by hand takes a *scope*: the host page and the hosts list's bulk
 bar offer **Update** → *System · n*, *Docker · m* or *System and Docker · n+m* (a plain button when only one kind is
@@ -289,19 +320,27 @@ anything runs, a progress bar and a notification log. French or English and ligh
   enrolled before 0.7 gets the login entry from *Update agent* (the agent adds it right after replacing the window
   binary, never over an existing file) but not `libnotify`: without `notify-send` the notifier falls back to D-Bus
   (`gdbus`), and the installer can be re-run to add the package.
-- **Suggested editors (0.7.3).** *Visual Studio Code* and *Zed* are in the suggestions, and neither is in the repositories
-  of Debian or Ubuntu, so those systems install them with a **command** (the first suggestions to do so; adding one
-  needs `portal:commands`, the card is flagged *command* and asks for a confirmation that says it runs as root; the shipped
-  list names them in `REVIEWED_COMMANDS` and a test reads their scripts). **VS Code** on Debian and Ubuntu adds Microsoft's
-  apt repository (signed key, `/etc/apt/sources.list.d/vscode.sources`) and installs `code`, so its updates arrive with
-  the system updates; removing it removes the repository. **Arch:** Microsoft's build is only in the AUR (which cannot be
-  built as root by an agent), so Arch installs `code` from the official repository, which is the open-source **Code -
-  OSS** build (same editor, Open VSX instead of Microsoft's extension marketplace); the card says so. **Zed** on Debian
-  and Ubuntu uses Zed's official release archive (the one its own installer downloads), read completely before anything is
-  replaced, unpacked as `root:root` into `/opt/zed.app` with `/usr/local/bin/zed`, a menu entry and an icon; it has no
-  automatic update (install again to get the latest). Arch installs `zed` from `extra`. Both scripts were run on clean
-  Debian 13 and Ubuntu 26.04 containers (install, install again, uninstall). Zed needs a graphical desktop and a Vulkan
-  graphics driver and refuses to run as root.
+- **Suggested editors (0.7.3, Arch changed in 0.7.4).** *Visual Studio Code* and *Zed* are in the suggestions, and neither
+  is in the repositories of Debian or Ubuntu, so those systems install them with a **command** (the first suggestions to
+  do so; adding one needs `portal:commands`, the card is flagged *command* and asks for a confirmation that says it runs
+  as root; the shipped list names them in `REVIEWED_COMMANDS` and tests read their scripts). **VS Code** on Debian and
+  Ubuntu adds Microsoft's apt repository (signed key, `/etc/apt/sources.list.d/vscode.sources`) and installs `code`, so
+  its updates arrive with the system updates; removing it removes the repository. **VS Code on Arch** is Microsoft's
+  build from the AUR (`visual-studio-code-bin`, which is not in pacman): the recipe installs `base-devel` and `git`,
+  clones the AUR repository and builds it as the unprivileged user `nobody` (`makepkg` refuses to run as root, and
+  `--nodeps` leaves the runtime libraries to `pacman -U`), then installs the package with pacman. The AUR is
+  community-maintained and unreviewed, so the recipe checks what it is about to run: only the expected files, the
+  root-run install script and the launcher pinned by SHA-256 (read on 2026-11-11), sources only from
+  `update.code.visualstudio.com` and a few suspicious words refused; if the package changes, the install stops with the
+  reason and the recipe has to be reviewed. It refuses to run when Code - OSS is installed (the two conflict) and
+  there is no automatic update (install again to rebuild the latest). The open-source build is its own suggestion,
+  **Code - OSS** (Arch only: the repository package `code`; Debian and Ubuntu have none). **Zed** on Debian and Ubuntu uses
+  Zed's official release archive (the one its own installer downloads), read completely before anything is replaced,
+  unpacked as `root:root` into `/opt/zed.app` with `/usr/local/bin/zed`, a menu entry and an icon; it has no
+  automatic update (install again to get the latest). Arch installs `zed` from `extra`. The scripts were run on clean
+  Debian 13, Ubuntu 26.04 and Arch containers (install, install again, uninstall; Arch also refusing a changed AUR
+  script and Code - OSS in the way). Zed needs a graphical desktop and a Vulkan graphics driver and refuses to run as
+  root.
 - **App icons (0.7).** Applications added before 0.7 kept a generic icon (only the suggestions showed the logos): 0.7.1 gives
   those that carry the name of a suggested application (`git`, `Firefox`, `Python 3`…) its logo, once, and a new
   application left with the default icon takes the logo of the application it is named after. An icon chosen on

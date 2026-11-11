@@ -268,6 +268,13 @@ pub struct NewTasks {
     /// What to update: the operating system, the Docker containers, or both (the default).
     #[serde(default)]
     scope: UpdateScope,
+    /// Move the named containers to the newer version tag their agent reported (the compose file's `image:` line is
+    /// changed on the host). Docker only, and only containers named in `packages`.
+    #[serde(default)]
+    to_latest: bool,
+    /// Confirms a major version change (`3.x` to `4.x`, a database's next major): refused without it.
+    #[serde(default)]
+    allow_major: bool,
 }
 
 /// Which pending updates a manual request takes. System updates and container images are separate tasks whatever
@@ -314,6 +321,12 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
     }
     if let Some(bad) = b.packages.iter().find(|p| !is_valid_package_name(p)) {
         return Err(ApiError::bad(format!("invalid package name: {bad}")));
+    }
+    if b.to_latest {
+        if b.scope != UpdateScope::Docker || b.packages.is_empty() || b.packages.iter().any(|p| !p.starts_with("docker:")) {
+            return Err(ApiError::bad("a new version is applied to named containers: scope docker and packages docker:<container>"));
+        }
+        return create_retag_tasks(&state, user, b).await;
     }
     let host_ids = b.host_ids.clone();
     let ids: Vec<(Uuid, Uuid)> = state
@@ -382,6 +395,97 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
         .await?;
     for h in &host_ids {
         gateway::push_pending(&state, *h).await;
+    }
+    Ok(HttpResponse::Accepted().json(json!({ "tasks": ids.iter().map(|(h, t)| json!({"host_id": h, "task_id": t})).collect::<Vec<_>>() })))
+}
+
+/// `ghcr.io/x/y:v3.3.1` and `v3.4.1` -> `ghcr.io/x/y:v3.4.1`. None without a tag, or with an unusable one.
+pub fn retag_ref(image: &str, tag: &str) -> Option<String> {
+    let valid = !tag.is_empty() && tag.len() <= 128 && tag.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    let i = image.rfind(':')?;
+    if !valid || image.rfind('/').is_some_and(|s| i < s) || image.contains('@') {
+        return None;
+    }
+    Some(format!("{}:{}", &image[..i], tag))
+}
+
+/// Apply the suggested version of containers. The new image is built here from what the agent reported for the
+/// container (its running image with the tag it found in the registry): the request names containers, never images.
+async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewTasks) -> ApiResult<HttpResponse> {
+    use croustypatch_common::protocol::capability;
+    let host_ids = b.host_ids.clone();
+    let ids: Vec<(Uuid, Uuid)> = state
+        .db(move |c| {
+            let mut created = vec![];
+            for host_id in b.host_ids {
+                let r = c.transaction::<_, ApiError, _>(|c| {
+                    let host: crate::models::Host = hosts::table.find(host_id).select(crate::models::Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?;
+                    if matches!(host.status.as_str(), "pending" | "quarantined") {
+                        return Err(ApiError::Conflict(format!("{} is {}", host.hostname, host.status)));
+                    }
+                    if !crate::modules::has_capability(&host.facts, capability::DOCKER_RETAG) {
+                        return Err(ApiError::Conflict(format!("the agent of {} cannot change a compose file yet: update it first (Hosts > host > Update agent)", host.hostname)));
+                    }
+                    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(planner::blocking_kinds("docker"))).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+                    if open > 0 {
+                        return Err(ApiError::Conflict(format!("{} already has an open container task", host.hostname)));
+                    }
+                    let pkgs: Vec<crate::models::HostPackage> = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::source.eq("docker")).filter(host_packages::name.eq_any(b.packages.clone())).select(crate::models::HostPackage::as_select()).load(c)?;
+                    if pkgs.is_empty() {
+                        return Err(ApiError::Conflict(format!("{} has none of these containers", host.hostname)));
+                    }
+                    let mut retag = serde_json::Map::new();
+                    let mut batch = vec![];
+                    for p in pkgs {
+                        let name = p.name.trim_start_matches("docker:").to_string();
+                        let (image, latest) = (p.meta.get("image").and_then(|v| v.as_str()).map(str::to_owned), p.meta.get("latest").cloned());
+                        let Some((image, latest)) = image.zip(latest.filter(|l| l.get("tag").is_some_and(|t| t.is_string()))) else {
+                            return Err(ApiError::Conflict(format!("{name}: no newer version is known for this container")));
+                        };
+                        if let Some(reason) = latest.pointer("/apply/reason").and_then(|r| r.as_str()).filter(|_| latest.pointer("/apply/mode").and_then(|m| m.as_str()) == Some("manual")) {
+                            return Err(ApiError::Conflict(format!("{name}: the new version has to be applied by hand: {reason}")));
+                        }
+                        let tag = latest["tag"].as_str().unwrap_or_default();
+                        let new_ref = retag_ref(&image, tag).ok_or_else(|| ApiError::Conflict(format!("{name}: {tag} is not a tag that can be applied to {image}")))?;
+                        if latest.get("major").and_then(|m| m.as_bool()).unwrap_or(false) && !b.allow_major {
+                            return Err(ApiError::Conflict(format!("{name}: {tag} is a major version change ({image} → {new_ref}): confirm it explicitly (allow_major)")));
+                        }
+                        retag.insert(p.name.clone(), json!(new_ref));
+                        batch.push(planner::Candidate { candidate: new_ref, pkg: p });
+                    }
+                    let groups = planner::host_groups(c, host_id)?;
+                    let def = planner::applicable_policy(c, &host, &groups)?;
+                    let policy_exec: ExecPolicy = def.as_ref().map(|p| planner::exec_policy(&p.def, host.has_staging, &host.criticality)).unwrap_or_default();
+                    let mut exec = serde_json::to_value(&policy_exec).unwrap_or_default();
+                    exec["retag"] = serde_json::Value::Object(retag.clone());
+                    let id: Uuid = diesel::insert_into(tasks::table)
+                        .values((
+                            tasks::host_id.eq(host_id),
+                            tasks::kind.eq("docker"),
+                            tasks::status.eq("queued"),
+                            tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
+                            tasks::packages.eq(planner::packages_json(&batch)),
+                            tasks::exec.eq(Some(exec)),
+                            tasks::requested_by.eq(&user.username),
+                            tasks::message.eq(format!("new container version applied by {}", user.username)),
+                        ))
+                        .returning(tasks::id)
+                        .get_result(c)?;
+                    diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
+                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": "docker", "scope": "docker", "retag": retag, "allow_major": b.allow_major})).ip(&user.ip))?;
+                    Ok(id)
+                });
+                created.push(r.map(|id| (host_id, id)));
+            }
+            let (ok, errs): (Vec<_>, Vec<_>) = created.into_iter().partition(|r| r.is_ok());
+            if ok.is_empty() {
+                return Err(errs.into_iter().next().unwrap().unwrap_err());
+            }
+            Ok(ok.into_iter().map(|r| r.unwrap()).collect())
+        })
+        .await?;
+    for h in &host_ids {
+        gateway::push_pending(state, *h).await;
     }
     Ok(HttpResponse::Accepted().json(json!({ "tasks": ids.iter().map(|(h, t)| json!({"host_id": h, "task_id": t})).collect::<Vec<_>>() })))
 }

@@ -194,7 +194,7 @@ async fn execute(agent: &Agent, p: CommandPayload) {
     let id = p.task_id;
     let res = match p.action {
         CommandAction::Scan => scan(agent, id, &log).await,
-        CommandAction::ApplyUpdates { packages, exec } => apply_updates(agent, id, packages, exec, &log).await,
+        CommandAction::ApplyUpdates { packages, exec, retag } => apply_updates(agent, id, packages, retag, exec, &log).await,
         CommandAction::Rollback { target_task } => manual_rollback(agent, id, target_task, &log).await,
         CommandAction::Quarantine => isolate::quarantine(&agent.runner, &agent.server_ips(), &agent.isolation(), &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "host isolated from the network", &log, vec![], false)),
         CommandAction::Release => isolate::release(&agent.runner, &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "network isolation lifted", &log, vec![], false)),
@@ -341,7 +341,7 @@ async fn restore_and_verify(agent: &Agent, id: Uuid, rp: &RestorePoint, probes: 
     double_failure(agent, id, "services still unhealthy after rollback", Some(rp), log).await
 }
 
-async fn apply_updates(agent: &Agent, id: Uuid, requested: Vec<String>, exec: ExecPolicy, log: &TaskLog) -> Result<()> {
+async fn apply_updates(agent: &Agent, id: Uuid, requested: Vec<String>, retag: std::collections::BTreeMap<String, String>, exec: ExecPolicy, log: &TaskLog) -> Result<()> {
     if let Some(bad) = requested.iter().find(|p| !is_valid_package_name(p)) {
         return Err(anyhow!("refusing invalid package name {bad:?}"));
     }
@@ -349,7 +349,7 @@ async fn apply_updates(agent: &Agent, id: Uuid, requested: Vec<String>, exec: Ex
     let (containers, requested): (Vec<String>, Vec<String>) = requested.into_iter().partition(|n| n.starts_with(crate::modules::docker::PREFIX));
     let mut container_changes = vec![];
     if !containers.is_empty() {
-        match update_containers(agent, id, &containers, &exec, log).await? {
+        match update_containers(agent, id, &containers, &retag, &exec, log).await? {
             Some(ch) => container_changes = ch,
             None => return Ok(()), // rolled back or failed: the task is already closed
         }
@@ -450,12 +450,51 @@ async fn apply_updates(agent: &Agent, id: Uuid, requested: Vec<String>, exec: Ex
 
 /// Update compose containers with a restore point, health checks and automatic rollback.
 /// Ok(Some(changes)) when done, Ok(None) when the task was closed here (rolled back or failed).
-async fn update_containers(agent: &Agent, id: Uuid, names: &[String], exec: &ExecPolicy, log: &TaskLog) -> Result<Option<Vec<PackageChange>>> {
-    use crate::modules::docker;
+async fn update_containers(agent: &Agent, id: Uuid, names: &[String], retag: &std::collections::BTreeMap<String, String>, exec: &ExecPolicy, log: &TaskLog) -> Result<Option<Vec<PackageChange>>> {
+    use crate::modules::{docker, retag as compose};
     agent.update(id, TaskStatus::Running, format!("preparing {} container(s)", names.len()), log, vec![], false);
     let pins = docker::snapshot(&agent.runner, names, log).await?;
-    let rp = RestorePoint { task_id: id, created_at: Utc::now(), pins: vec![], extra: serde_json::json!({ "docker": pins }), unrestorable: vec![] };
+    // A new version means changing the tag in the service's compose file. Everything is planned before anything is
+    // written: one container that cannot be changed safely stops the whole task, with nothing touched.
+    let requests = match docker::retag_requests(&pins, retag) {
+        Ok(r) => r,
+        Err(e) => {
+            agent.update(id, TaskStatus::Failed, format!("{e:#}; nothing was changed"), log, vec![], false);
+            return Ok(None);
+        }
+    };
+    let (edits, outcomes) = match compose::plan_all(&requests, &compose::read_files) {
+        Ok(x) => x,
+        Err(why) => {
+            agent.update(id, TaskStatus::Failed, format!("the new version cannot be applied: {why}; nothing was changed"), log, vec![], false);
+            return Ok(None);
+        }
+    };
+    for ((service, running, new, _), outcome) in requests.iter().zip(&outcomes) {
+        match outcome {
+            compose::Outcome::Changed { path } => log.line(format!("{service}: image {running} -> {new} in {path}")),
+            compose::Outcome::AlreadyThere { path } => log.line(format!("{service}: {path} already says {new}; the container is recreated on it")),
+        }
+    }
+    let stored: Vec<compose::StoredEdit> = edits.iter().map(compose::FileEdit::stored).collect();
+    let rp = RestorePoint { task_id: id, created_at: Utc::now(), pins: vec![], extra: serde_json::json!({ "docker": pins, "compose_edits": stored }), unrestorable: vec![] };
     save_restore_point(&agent.cfg, &rp)?;
+    let mut written: Vec<compose::StoredEdit> = vec![];
+    for e in &edits {
+        if agent.runner.dry_run {
+            log.line(format!("[dry-run] would change {}", e.path));
+            continue;
+        }
+        if let Err(err) = compose::write_file(&e.path, &e.edited) {
+            for w in &written {
+                let _ = compose::revert(w);
+            }
+            agent.update(id, TaskStatus::Failed, format!("cannot change {}: {err:#}; nothing was changed", e.path), log, vec![], false);
+            return Ok(None);
+        }
+        log.line(format!("changed {}", e.path));
+        written.push(e.stored());
+    }
     let baseline = run_probes(agent, &exec.probes).await;
     let ignored: Vec<usize> = baseline.iter().enumerate().filter(|(_, r)| r.is_err()).map(|(i, _)| i).collect();
     agent.update(id, TaskStatus::Running, format!("updating {} container(s)", pins.len()), log, vec![], false);
@@ -477,17 +516,25 @@ async fn update_containers(agent: &Agent, id: Uuid, names: &[String], exec: &Exe
         // isolate the host.
         let changed: Vec<docker::Container> = touched.iter().map(|i| pins[*i].clone()).collect();
         if changed.is_empty() {
-            agent.update(id, TaskStatus::Failed, format!("{why}; nothing was changed"), log, vec![], false);
+            // no container changed: the compose files go back as well, so the host is exactly as it was
+            let undone = revert_compose(&written, log);
+            let note = match undone { Ok(()) => String::new(), Err(e) => format!(" (the compose file could not be put back: {e:#})") };
+            agent.update(id, TaskStatus::Failed, format!("{why}; nothing was changed{note}"), log, vec![], false);
             return Ok(None);
         }
         if !exec.auto_rollback {
-            agent.update(id, TaskStatus::Failed, format!("{why}; auto-rollback is disabled"), log, vec![], false);
+            let note = if written.is_empty() { String::new() } else { " (the compose file keeps the new tag)".to_string() };
+            agent.update(id, TaskStatus::Failed, format!("{why}; auto-rollback is disabled{note}"), log, vec![], false);
             return Ok(None);
         }
         agent.update(id, TaskStatus::RollingBack, format!("rolling back: {why}"), log, vec![], false);
         let names = changed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
-        let outcome = match docker::restore(&agent.runner, &changed, log).await {
-            Ok(()) => docker::wait_healthy(&agent.runner, &changed, log).await,
+        // the compose files must say the previous tags again before the previous images are put back
+        let outcome = match revert_compose(&written, log) {
+            Ok(()) => match docker::restore(&agent.runner, &changed, log).await {
+                Ok(()) => docker::wait_healthy(&agent.runner, &changed, log).await,
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         };
         match outcome {
@@ -515,10 +562,31 @@ async fn update_containers(agent: &Agent, id: Uuid, names: &[String], exec: &Exe
     Ok(Some(changes))
 }
 
+/// Put the compose files back as they were (each only if nobody changed it since the update).
+fn revert_compose(written: &[crate::modules::retag::StoredEdit], log: &TaskLog) -> Result<()> {
+    let mut failed = vec![];
+    for w in written {
+        match crate::modules::retag::revert(w) {
+            Ok(()) => log.line(format!("compose file {} put back as it was", w.path)),
+            Err(e) => {
+                log.line(format!("{e:#}"));
+                failed.push(format!("{e:#}"));
+            }
+        }
+    }
+    if failed.is_empty() { Ok(()) } else { Err(anyhow!(failed.join("; "))) }
+}
+
 async fn manual_rollback(agent: &Agent, id: Uuid, target: Uuid, log: &TaskLog) -> Result<()> {
     let rp = load_restore_point(&agent.cfg, target)?;
     if let Some(pins) = rp.extra.get("docker").and_then(|v| serde_json::from_value::<Vec<crate::modules::docker::Container>>(v.clone()).ok()) {
         agent.update(id, TaskStatus::Running, format!("rolling back task {target} (containers)"), log, vec![], false);
+        // a version change also changed compose files: they say the previous tags again before the containers are recreated
+        let edits: Vec<crate::modules::retag::StoredEdit> = rp.extra.get("compose_edits").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        if let Err(e) = revert_compose(&edits, log) {
+            agent.update(id, TaskStatus::Failed, format!("cannot put the compose file back: {e:#}; the containers were not touched"), log, vec![], false);
+            return Ok(());
+        }
         match crate::modules::docker::restore(&agent.runner, &pins, log).await {
             Ok(()) => {
                 let _ = agent.send_inventory().await;

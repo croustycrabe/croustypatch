@@ -437,6 +437,8 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
             // Container image updates are applied by the same agent routine, as a task of their own.
             Some(TaskKind::Patch) | Some(TaskKind::Docker) => CommandAction::ApplyUpdates {
                 packages: packages.as_array().map(|a| a.iter().filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect()).unwrap_or_default(),
+                // a new version of containers: the image to move each one to (set only by the server, for a container task)
+                retag: if kind == "docker" { exec.as_ref().and_then(|e| e.get("retag")).and_then(|r| r.as_object()).map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect()).unwrap_or_default() } else { Default::default() },
                 exec: exec.and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
             },
             Some(TaskKind::Rollback) => match parent {

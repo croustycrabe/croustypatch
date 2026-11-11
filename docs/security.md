@@ -48,6 +48,14 @@ icons are checked by content, size-limited and only shown through `<img>`. The a
 only from the fixed lists in `modules/openscap.rs`, and custom audit profiles are validated (identifiers only
 letters, digits and `_ . -`) before they reach a command line or the XML tailoring file.
 
+## Applying a Docker version (0.7.4)
+
+The only thing the agent writes outside its own directories is the `image:` line of a compose file, and only when asked
+by a signed command that the server builds from the container's own inventory (never from an image name in a request).
+The agent re-checks that the new reference is the running one with another tag, edits one literal line it can identify
+without doubt, keeps the original for the rollback and leaves any file that changed since alone. A major version needs an
+explicit confirmation. See `modules.md`.
+
 ## Known limits
 
 - The server → PostgreSQL link is not TLS-protected (the client library is compiled without OpenSSL). Keep it on a private network or a unix socket.

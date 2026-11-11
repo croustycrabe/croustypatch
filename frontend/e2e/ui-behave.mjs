@@ -308,16 +308,18 @@ check('a compliance task is created and answered by the agent', await p.locator(
   check('suggested apps are listed with their packages per system', (await p.locator('.appcard:has-text("htop")').textContent()).includes('pacman'));
   await p.click('.appcard:has-text("htop") button:has-text("Ajouter")'); await p.waitForSelector('.appcard:has-text("htop") .tag:has-text("Dans le catalogue")');
   check('a suggestion is added to the catalog in one click', true);
-  const vs = p.locator('.appcard:has-text("Visual Studio Code")');
+  const vs = p.locator('.appcard', { has: p.locator('b', { hasText: /^Visual Studio Code$/ }) });
   const vsText = await vs.textContent();
-  check('Visual Studio Code is suggested: a command on Debian, the repository package on Arch, and it says which build', vsText.includes('commande → /usr/bin/code') && vsText.includes('pacman') && vsText.includes('Code - OSS') && (await vs.locator('.tag:has-text("commande")').count()) === 1);
+  check('Visual Studio Code is suggested as Microsoft\'s build on both systems (a command: the Microsoft repository on Debian, the AUR on Arch), and says it conflicts with Code - OSS', (vsText.match(/commande → \/usr\/bin\/code/g) ?? []).length === 2 && vsText.includes('AUR') && vsText.includes('Incompatible avec Code - OSS') && (await vs.locator('.tag:has-text("commande")').count()) === 1);
+  const oss = p.locator('.appcard', { has: p.locator('b', { hasText: /^Code - OSS$/ }) });
+  check('Code - OSS is suggested on its own, as a plain pacman package for Arch', (await oss.textContent()).includes('pacman') && !(await oss.textContent()).includes('commande') && (await oss.locator('button:has-text("Ajouter")').count()) === 1);
   check('Zed is suggested with its logo', (await p.locator('.appcard:has-text("Zed") .appcard__icon--img img').count()) === 1 && (await p.locator('.appcard:has-text("Zed")').textContent()).includes('zed'));
   await vs.locator('button:has-text("Ajouter")').click(); await p.waitForSelector('dialog[open]');
   check('an application that installs with a command asks first and says it runs as root', (await p.locator('dialog[open]').textContent()).includes('root'));
   await p.click('dialog[open] button:has-text("Annuler")');
   check('cancelling adds nothing', (await vs.locator('button:has-text("Ajouter")').count()) === 1);
   await vs.locator('button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
-  await p.waitForSelector('.appcard:has-text("Visual Studio Code") .tag:has-text("Dans le catalogue")');
+  await vs.locator('.tag:has-text("Dans le catalogue")').waitFor();
   await p.locator('.appcard:has-text("Zed") button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
   await p.waitForSelector('.appcard:has-text("Zed") .tag:has-text("Dans le catalogue")');
   check('once confirmed they join the catalog', true);
@@ -538,6 +540,47 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.click('.alert button[aria-label="Mettre à jour"]');
   check('with the counts of the selection', (await p.locator('[role=menuitem]').allTextContents()).map((x) => x.trim()).join('|').includes(`Docker · ${nDocker}`));
   await p.keyboard.press('Escape');
+}
+
+// ---- 0.7.4: apply the suggested Docker version
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`update hosts set status='online', modules = modules || '{"docker": true}' where id='${h}'`);
+  sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
+  const meta = (image, latest) => JSON.stringify({ image, state: 'running', latest }).replace(/'/g, "''");
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values
+    ('${h}','docker:zz-apply','docker','nginx:1.27 @aaaa',null,'${meta('nginx:1.27', { tag: '1.29.0', major: false, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
+    ('${h}','docker:zz-major','docker','postgres:17-alpine @bbbb',null,'${meta('postgres:17-alpine', { tag: '18-alpine', major: true, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
+    ('${h}','docker:zz-manual','docker','redis:7 @cccc',null,'${meta('redis:7', { tag: '7.4', major: false, same_major: null, apply: { mode: 'manual', reason: 'l’étiquette vient d’une variable' } })}')`);
+  const openTasks = () => sql(`update tasks set status='failed' where host_id='${h}' and kind='docker' and status in ('queued','pending_approval','running')`);
+  const retagOf = () => sql(`select exec->'retag' from tasks where host_id='${h}' and kind='docker' and exec ? 'retag' order by created_at desc limit 1`);
+  openTasks();
+  await p.goto(`${BASE}/docker/`); await p.waitForSelector('.tbl tbody tr'); await p.fill('input[type=search]', 'zz-'); await p.waitForSelector('.tbl tbody tr:has-text("zz-apply")');
+  const row = (n) => p.locator(`.tbl tbody tr:has-text("${n}")`);
+  check('a suggestion the agent can apply has a button that names the version', (await row('zz-apply').locator('button:has-text("Passer à 1.29.0")').count()) === 1);
+  const manual = await row('zz-manual').textContent();
+  check('one it cannot apply says why and what to write by hand, with no button', manual.includes('À faire à la main : l’étiquette vient d’une variable') && manual.includes('redis:7.4') && (await row('zz-manual').locator('button:has-text("Passer à")').count()) === 0);
+  await row('zz-apply').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  const dlg = await p.locator('dialog[open]').textContent();
+  check('the confirmation shows the change, the file that will be edited and what happens next', dlg.includes('nginx:1.27 → nginx:1.29.0') && dlg.includes('/opt/stacks/zz/compose.yaml') && dlg.includes('recréé') && dlg.includes('point de restauration') && !dlg.includes('majeure'));
+  await p.click('dialog[open] button:has-text("Annuler")');
+  check('cancelling creates nothing', retagOf() === '');
+  await row('zz-apply').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  await p.click('dialog[open] button:has-text("Appliquer 1.29.0")'); await p.waitForSelector('.toast');
+  check('applying creates a container task that carries the new image, built from what the agent reported', retagOf() === '{"docker:zz-apply": "nginx:1.29.0"}', retagOf());
+  openTasks();
+
+  // a major version stays locked until it is acknowledged
+  await p.goto(`${BASE}/docker/`); await p.fill('input[type=search]', 'zz-'); await p.waitForSelector('.tbl tbody tr:has-text("zz-major")');
+  await row('zz-major').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  check('a major version change warns about migrations and keeps the button off until it is acknowledged', (await p.locator('dialog[open]').textContent()).includes('Changement de version majeure') && await p.locator('dialog[open] button:has-text("Appliquer 18-alpine")').isDisabled());
+  await p.check('dialog[open] input[type=checkbox]');
+  check('acknowledging enables it', await p.locator('dialog[open] button:has-text("Appliquer 18-alpine")').isEnabled());
+  await p.click('dialog[open] button:has-text("Appliquer 18-alpine")'); await p.waitForSelector('.toast');
+  check('and the major change goes through, with the confirmation recorded', retagOf() === '{"docker:zz-major": "postgres:18-alpine"}' && sql(`select details->>'allow_major' from audit_log where action='task.patch_requested' order by seq desc limit 1`) === 'true');
+  openTasks();
+  sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
 }
 
 // ---- language + logout

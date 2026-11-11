@@ -8,7 +8,7 @@ import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import type { DockerData } from '@/lib/types';
 import { useToast } from '@/lib/toast';
-import { Button, Chip, ConfirmDialog, Empty, Notice, SearchInput, Spinner, StatCard, Table, Tag } from './ui';
+import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Notice, SearchInput, Spinner, StatCard, Table, Tag } from './ui';
 
 /** Containers with their image state; only the images are ever updated (never start, stop or remove). */
 /** The tag of an image reference (`ghcr.io/x/y:v3.3.1` -> `v3.3.1`), `latest` without one. A port is not a tag. */
@@ -26,6 +26,8 @@ export function DockerList({ hostId }: { hostId?: string }) {
   const [newerOnly, setNewerOnly] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<string[] | null>(null);
+  const [apply, setApply] = useState<DockerData['containers'][number] | null>(null);
+  const [ackMajor, setAckMajor] = useState(false);
   const data = useApi<DockerData>(`/docker?updates=${updatesOnly}&newer=${newerOnly}&q=${encodeURIComponent(q)}${hostId ? `&host=${hostId}` : ''}`, { poll: 20000 });
   const d = data.data;
   const key = (c: { host_id: string; package: string }) => `${c.host_id}|${c.package}`;
@@ -42,6 +44,14 @@ export function DockerList({ hostId }: { hostId?: string }) {
     setConfirm(null);
     setPicked(new Set());
     toast.success(t('docker.queued', { n }));
+    data.reload();
+  });
+
+  /** Move one container to the suggested version: the agent changes the tag in its compose file and recreates it. */
+  const applyVersion = (c: NonNullable<typeof apply>) => act.run(async () => {
+    await api('POST', '/tasks', { host_ids: [c.host_id], scope: 'docker', packages: [c.package], to_latest: true, allow_major: !!c.latest?.major && ackMajor });
+    setApply(null);
+    toast.success(t('docker.apply.queued', { name: c.name }));
     data.reload();
   });
 
@@ -91,13 +101,47 @@ export function DockerList({ hostId }: { hostId?: string }) {
                   <Tag tone="warn">{t('docker.suggested')}</Tag> <span className="mono">{tagOf(c.image)} → {c.latest.tag}</span>
                   {c.latest.major && <> <Tag tone="warn">{t('docker.major')}</Tag></>}
                   {c.latest.major && c.latest.same_major && <span className="muted"> {t('docker.same_major', { tag: c.latest.same_major })}</span>}
-                  <span className="muted" style={{ display: 'block' }}>{t('docker.suggest.how')} <span className="mono">{withTag(c.image, c.latest.tag)}</span></span>
+                  {c.open_task ? null : c.latest.apply?.mode === 'file' ? (
+                    canUpdate && <span style={{ display: 'block', marginTop: 4 }}><Button small icon={<ArrowCircleUp size={14} weight="bold" />} disabled={act.pending} onClick={() => { act.clearError(); setAckMajor(false); setApply(c); }}>{t('docker.apply.button', { tag: c.latest.tag })}</Button></span>
+                  ) : (
+                    <span className="muted" style={{ display: 'block' }}>
+                      {c.latest.apply?.mode === 'manual' ? t('docker.apply.manual', { reason: c.latest.apply.reason ?? '' }) : t('docker.apply.old_agent')} {t('docker.suggest.how')} <span className="mono">{withTag(c.image, c.latest.tag)}</span>
+                    </span>
+                  )}
                 </span>
               )}
             </td>
           </tr>
         ))}
       </Table>
+      <Dialog open={!!apply} title={t('docker.apply.title')} onClose={() => setApply(null)}>
+        {apply?.latest && (
+          <div className="stack">
+            {act.error && <Notice kind="error">{act.error}</Notice>}
+            <p style={{ margin: 0 }}><b>{apply.name}</b> <span className="muted">· {apply.hostname}</span></p>
+            <p className="mono" style={{ margin: 0 }}>{apply.image} → {withTag(apply.image, apply.latest.tag)}</p>
+            <dl className="kv">
+              <dt>{t('docker.apply.file')}</dt><dd className="mono wrap">{apply.latest.apply?.file}</dd>
+            </dl>
+            {apply.latest.apply?.already && <Notice kind="info">{t('docker.apply.already')}</Notice>}
+            <ul className="muted" style={{ margin: 0, paddingLeft: 18 }}>
+              <li>{t('docker.apply.what.file')}</li>
+              <li>{t('docker.apply.what.recreate')}</li>
+              <li>{t('docker.apply.what.rollback')}</li>
+            </ul>
+            {apply.latest.major && (
+              <>
+                <Notice kind="error">{t('docker.apply.major_warn')}</Notice>
+                <Check checked={ackMajor} onChange={setAckMajor}>{t('docker.apply.major_ack')}</Check>
+              </>
+            )}
+            <div className="row">
+              <Button variant="primary" disabled={act.pending || (apply.latest.major && !ackMajor)} onClick={() => void applyVersion(apply)}>{t('docker.apply.go', { tag: apply.latest.tag })}</Button>
+              <Button onClick={() => setApply(null)}>{t('common.cancel')}</Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
       <ConfirmDialog message={confirm ? t('docker.confirm', { n: confirm.length }) : null} onNo={() => setConfirm(null)} onYes={() => { if (confirm) void update(confirm); }} />
     </div>
   );

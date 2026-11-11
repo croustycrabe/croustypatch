@@ -15,7 +15,7 @@ mod reports;
 mod packages;
 pub mod portal;
 mod fleet;
-mod patching;
+pub mod patching;
 mod system;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

@@ -54,7 +54,7 @@ async fn the_docker_menu_lists_containers_and_updates_only_images() {
         let mut c = db.conn();
         let a = add_host(&mut c, "docker-a", json!({"docker": true}), json!({}));
         let b = add_host(&mut c, "docker-b", json!({"docker": true}), json!({}));
-        add_pkg(&mut c, a, "docker:web", "docker", "nginx:1.27 @aaaa", Some("nginx:1.27 @bbbb"), json!({"image": "nginx:1.27", "project": "site", "service": "web", "state": "running", "health": "healthy", "started_at": "2026-11-01T10:00:00Z", "latest": {"tag": "1.29.0", "major": false, "same_major": null}}));
+        add_pkg(&mut c, a, "docker:web", "docker", "nginx:1.27 @aaaa", Some("nginx:1.27 @bbbb"), json!({"image": "nginx:1.27", "project": "site", "service": "web", "state": "running", "health": "healthy", "started_at": "2026-11-01T10:00:00Z", "latest": {"tag": "1.29.0", "major": false, "same_major": null, "apply": {"mode": "file", "file": "/opt/stacks/site/compose.yaml"}}}));
         add_pkg(&mut c, a, "docker:db", "docker", "postgres:17 @cccc", None, json!({"image": "postgres:17", "state": "running"}));
         add_pkg(&mut c, b, "docker:cache", "docker", "redis:7 @dddd", Some("redis:7 @eeee"), json!({"image": "redis:7", "state": "exited", "latest": {"tag": "8", "major": true, "same_major": "7.4"}}));
         add_pkg(&mut c, b, "openssl", "system", "3.0", Some("3.1"), json!({}));
@@ -68,11 +68,12 @@ async fn the_docker_menu_lists_containers_and_updates_only_images() {
     assert_eq!((web["image"].clone(), web["current"].clone(), web["candidate"].clone(), web["update"].clone()), (json!("nginx:1.27"), json!("aaaa"), json!("bbbb"), json!(true)));
     assert_eq!((web["project"].clone(), web["service"].clone(), web["state"].clone(), web["health"].clone()), (json!("site"), json!("web"), json!("running"), json!("healthy")));
     // a newer version tag is information next to the image update the running tag tracks
-    assert_eq!(web["latest"], json!({"tag": "1.29.0", "major": false, "same_major": null}));
+    assert_eq!(web["latest"], json!({"tag": "1.29.0", "major": false, "same_major": null, "apply": {"mode": "file", "file": "/opt/stacks/site/compose.yaml"}}), "the page learns whether it can be applied, and by changing which file");
     let db_row = all["containers"].as_array().unwrap().iter().find(|c| c["name"] == "db").unwrap();
     assert_eq!(db_row["latest"], Value::Null, "no newer version known");
     let cache = all["containers"].as_array().unwrap().iter().find(|c| c["name"] == "cache").unwrap();
     assert_eq!((cache["latest"]["tag"].clone(), cache["latest"]["major"].clone(), cache["latest"]["same_major"].clone()), (json!("8"), json!(true), json!("7.4")));
+    assert_eq!(cache["latest"]["apply"], Value::Null, "an older agent says nothing about it: the page then asks to update the agent");
     let (_, newer) = call(&app, get("?newer=true")).await;
     let names: Vec<&str> = newer["containers"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["web", "cache"], "only the containers with a newer version");
@@ -555,9 +556,12 @@ async fn the_editors_are_added_from_the_suggestions_only_by_someone_who_may_writ
     assert_eq!(st, 201, "{a}");
     assert_eq!(a["has_command"], json!(true));
     assert!(a["recipes"]["apt"]["command"]["install"].as_str().unwrap().contains("packages.microsoft.com"));
-    assert_eq!(a["recipes"]["pacman"]["packages"], json!(["code"]), "Arch gets the repository's package");
+    assert!(a["recipes"]["pacman"]["command"]["install"].as_str().unwrap().contains("visual-studio-code-bin"), "Arch gets Microsoft's build from the AUR");
     let (st, z) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(body(&zed))).await;
     assert_eq!(st, 201, "{z}");
+    let oss = find("Code - OSS");
+    let (st, o) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(admin_only.clone()).set_json(body(&oss))).await;
+    assert_eq!(st, 201, "a packages-only application needs no command permission: {o}");
     assert_eq!(z["icon"], json!("brand:zedindustries"));
     // they are then listed as in the catalog
     let (_, sugg) = call(&app, TestRequest::get().uri("/api/v1/portal/suggestions").cookie(ck.clone())).await;
@@ -576,8 +580,135 @@ async fn the_editors_are_added_from_the_suggestions_only_by_someone_who_may_writ
     assert_eq!(app_of(&v, "Zed").unwrap()["command"]["check"], json!("/usr/local/bin/zed"));
     let (_, v) = call(&app, view(arch)).await;
     let c = app_of(&v, "Visual Studio Code").unwrap();
-    assert_eq!((c["kind"].clone(), c["packages"].clone()), (json!("packages"), json!(["code"])));
+    assert_eq!((c["kind"].clone(), c["command"]["check"].clone()), (json!("command"), json!("/usr/bin/code")), "Microsoft's build on Arch: built from the AUR by a command");
+    assert!(c["command"]["install"].as_str().unwrap().contains("visual-studio-code-bin"));
     assert_eq!(app_of(&v, "Zed").unwrap()["packages"], json!(["zed"]));
+    assert_eq!(app_of(&v, "Code - OSS").unwrap()["packages"], json!(["code"]), "the open-source build is the repository package");
+    let (_, v) = call(&app, view(deb)).await;
+    assert!(app_of(&v, "Code - OSS").is_none(), "and is not offered on Debian");
     let (_, v) = call(&app, view(bsd)).await;
     assert!(app_of(&v, "Zed").is_none() && app_of(&v, "Visual Studio Code").is_none(), "no recipe for pkg: not offered");
+}
+
+// ------------------------------------------------------------------ apply the suggested Docker version
+
+#[actix_web::test]
+async fn a_suggested_docker_version_is_applied_to_named_containers_from_what_the_agent_reported() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let caps = json!({"capabilities": ["settings", "app_command", "self_update", "docker_retag"]});
+    let (host, old_agent) = {
+        let mut c = db.conn();
+        let host = add_host(&mut c, "docker-a", json!({"docker": true}), caps.clone());
+        let old_agent = add_host(&mut c, "docker-old", json!({"docker": true}), json!({"capabilities": ["settings", "app_command", "self_update"]}));
+        let latest = |tag: &str, major: bool, apply: Value| json!({"image": "x", "latest": {"tag": tag, "major": major, "same_major": null, "apply": apply}});
+        let mk = |c: &mut PgConnection, h: Uuid, name: &str, image: &str, tag: &str, major: bool, apply: Value, candidate: Option<&str>| {
+            let mut meta = latest(tag, major, apply);
+            meta["image"] = json!(image);
+            add_pkg(c, h, name, "docker", &format!("{image} @aaaa"), candidate, meta);
+        };
+        mk(&mut c, host, "docker:web", "nginx:1.27", "1.29.0", false, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), Some("nginx:1.27 @bbbb"));
+        mk(&mut c, host, "docker:db", "postgres:17-alpine", "18-alpine", true, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), None);
+        mk(&mut c, host, "docker:cache", "redis:7", "7.4", false, json!({"mode": "manual", "reason": "the tag comes from a variable"}), None);
+        add_pkg(&mut c, host, "docker:plain", "docker", "busybox:1 @cc", None, json!({"image": "busybox:1"}));
+        add_pkg(&mut c, host, "openssl", "system", "3.0", Some("3.1"), json!({}));
+        mk(&mut c, old_agent, "docker:web", "nginx:1.27", "1.29.0", false, json!({"mode": "file", "file": "/x"}), None);
+        (host, old_agent)
+    };
+    let post = |b: Value| TestRequest::post().uri("/api/v1/tasks").cookie(ck.clone()).set_json(b);
+    let task_of = |h: Uuid| -> (String, Value, Value) {
+        let mut v: Vec<(String, Option<Value>, Value)> = tasks::table.filter(tasks::host_id.eq(h)).order(tasks::created_at.desc()).select((tasks::kind, tasks::exec, tasks::packages)).load(&mut db.conn()).unwrap();
+        let (k, e, p) = v.remove(0);
+        (k, e.unwrap_or_default(), p)
+    };
+
+    // what a request must look like
+    for bad in [
+        json!({"host_ids": [host], "scope": "docker", "to_latest": true}),
+        json!({"host_ids": [host], "scope": "system", "packages": ["docker:web"], "to_latest": true}),
+        json!({"host_ids": [host], "scope": "all", "packages": ["docker:web"], "to_latest": true}),
+        json!({"host_ids": [host], "scope": "docker", "packages": ["openssl"], "to_latest": true}),
+    ] {
+        let (st, b) = call(&app, post(bad.clone())).await;
+        assert_eq!(st, 400, "{bad} -> {b}");
+    }
+    // an agent that cannot change a compose file would pull the same tag and report success: it is never sent one
+    let (st, b) = call(&app, post(json!({"host_ids": [old_agent], "scope": "docker", "packages": ["docker:web"], "to_latest": true}))).await;
+    assert_eq!(st, 409, "{b}");
+    assert!(b["message"].as_str().unwrap().contains("update it first"), "{b}");
+    // what the agent says cannot be done, or has no newer version, is refused with the reason
+    let (st, b) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:cache"], "to_latest": true}))).await;
+    assert_eq!(st, 409);
+    assert!(b["message"].as_str().unwrap().contains("by hand") && b["message"].as_str().unwrap().contains("variable"), "{b}");
+    let (st, b) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:plain"], "to_latest": true}))).await;
+    assert_eq!(st, 409);
+    assert!(b["message"].as_str().unwrap().contains("no newer version"), "{b}");
+    // a major version is not applied by accident
+    let (st, b) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:db"], "to_latest": true}))).await;
+    assert_eq!(st, 409);
+    assert!(b["message"].as_str().unwrap().contains("major version change") && b["message"].as_str().unwrap().contains("allow_major"), "{b}");
+    let none: i64 = tasks::table.count().get_result(&mut db.conn()).unwrap();
+    assert_eq!(none, 0, "nothing was created by the refusals");
+
+    // the image comes from the inventory (the running image with the suggested tag), whatever the request says
+    let (st, r) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:web"], "to_latest": true, "retag": {"docker:web": "evil/web:666"}, "image": "evil/web:666"}))).await;
+    assert_eq!(st, 202, "{r}");
+    let (kind, exec, pk) = task_of(host);
+    assert_eq!(kind, "docker");
+    assert_eq!(exec["retag"], json!({"docker:web": "nginx:1.29.0"}));
+    assert!(exec.get("soak_minutes").is_some(), "the policy's options travel with it: {exec}");
+    assert_eq!((pk[0]["name"].clone(), pk[0]["to"].clone()), (json!("docker:web"), json!("nginx:1.29.0")));
+    let state = db.state();
+    actix_web::rt::time::sleep(std::time::Duration::from_secs(2)).await; // a remote test database may run a moment ahead of this machine
+    let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, host).unwrap();
+    let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
+    assert_eq!(payload["action"]["type"], json!("apply_updates"));
+    assert_eq!(payload["action"]["retag"], json!({"docker:web": "nginx:1.29.0"}), "{payload}");
+    assert_eq!(payload["action"]["packages"], json!(["docker:web"]));
+    assert!(payload["action"]["exec"].get("soak_minutes").is_some(), "{payload}");
+    // one container task at a time, and the reason is given
+    let (st, b) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:web"], "to_latest": true}))).await;
+    assert_eq!(st, 409);
+    assert!(b["message"].as_str().unwrap().contains("open container task"), "{b}");
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+
+    // a major version needs the explicit confirmation, then it goes
+    let (st, r) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:db"], "to_latest": true, "allow_major": true}))).await;
+    assert_eq!(st, 202, "{r}");
+    assert_eq!(task_of(host).1["retag"], json!({"docker:db": "postgres:18-alpine"}));
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+
+    // an ordinary container update of the same container pulls the running tag and carries no new image
+    let (st, r) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:web"]}))).await;
+    assert_eq!(st, 202, "{r}");
+    assert!(task_of(host).1.get("retag").is_none());
+    actix_web::rt::time::sleep(std::time::Duration::from_secs(2)).await;
+    let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, host).unwrap();
+    let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
+    assert!(payload["action"].get("retag").is_none(), "no field at all for an agent that does not know it: {payload}");
+
+    // audited with what was asked
+    let details: Vec<Value> = audit_log::table.filter(audit_log::action.eq("task.patch_requested")).select(audit_log::details).load(&mut db.conn()).unwrap();
+    assert!(details.iter().any(|d| d["retag"] == json!({"docker:web": "nginx:1.29.0"}) && d["allow_major"] == json!(false)), "{details:?}");
+    assert!(details.iter().any(|d| d["retag"] == json!({"docker:db": "postgres:18-alpine"}) && d["allow_major"] == json!(true)));
+    // read-only users cannot
+    let auditor = user_with_role(&app, &ck, "audit2", "auditor").await;
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+    let (st, _) = call(&app, TestRequest::post().uri("/api/v1/tasks").cookie(auditor).set_json(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:web"], "to_latest": true}))).await;
+    assert_eq!(st, 403);
+}
+
+#[test]
+fn the_new_image_is_the_running_one_with_the_suggested_tag() {
+    use croustypatch_server::api::patching::retag_ref;
+    assert_eq!(retag_ref("ghcr.io/immich-app/immich-server:v3.3.1", "v3.4.1").as_deref(), Some("ghcr.io/immich-app/immich-server:v3.4.1"));
+    assert_eq!(retag_ref("localhost:5000/app:1.0", "2.0").as_deref(), Some("localhost:5000/app:2.0"));
+    assert_eq!(retag_ref("postgres:17-alpine", "18-alpine").as_deref(), Some("postgres:18-alpine"));
+    assert_eq!(retag_ref("localhost:5000/app", "2.0"), None, "a registry port is not a tag");
+    assert_eq!(retag_ref("nginx", "2.0"), None);
+    assert_eq!(retag_ref("nginx:1.27", "1.28; rm -rf /"), None);
+    assert_eq!(retag_ref("nginx:1.27", "../x"), None);
+    assert_eq!(retag_ref("nginx:1.27", ""), None);
+    assert_eq!(retag_ref("nginx@sha256:abcd", "1.28"), None);
 }

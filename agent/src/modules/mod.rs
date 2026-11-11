@@ -4,6 +4,7 @@ pub mod docker;
 pub mod helper_scripts;
 pub mod openscap;
 pub mod registry;
+pub mod retag;
 
 /// Modules present on this host.
 pub fn detected() -> Vec<String> {

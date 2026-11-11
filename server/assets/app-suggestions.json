@@ -117,7 +117,7 @@
   "name": "Visual Studio Code",
   "category": "Développement",
   "icon": "code",
-  "description": "Éditeur de code de Microsoft. Debian et Ubuntu : installé depuis le dépôt de Microsoft, ses mises à jour arrivent avec celles du système. Arch : la version Microsoft n’est qu’en AUR, c’est donc la version libre Code - OSS du dépôt officiel qui est installée (même éditeur, sans la boutique d’extensions de Microsoft).",
+  "description": "Éditeur de code de Microsoft. Debian et Ubuntu : installé depuis le dépôt de Microsoft, ses mises à jour arrivent avec celles du système. Arch : la version Microsoft n’est pas dans pacman mais dans l’AUR (visual-studio-code-bin) : elle est construite par un utilisateur sans droits, après vérification de ce que le paquet de l’AUR contient, puis installée avec pacman. Pas de mise à jour automatique (réinstaller pour passer à la dernière version). Incompatible avec Code - OSS.",
   "recipes": {
    "apt": {
     "command": {
@@ -126,6 +126,21 @@
      "check": "/usr/bin/code"
     }
    },
+   "pacman": {
+    "command": {
+     "install": "set -eu\n# Microsoft's build comes from the AUR (visual-studio-code-bin), which is not in pacman. It is built by an unprivileged\n# user (makepkg refuses to run as root), then installed with pacman. AUR packages are community packages that nobody at\n# Arch reviews, so the parts that matter are checked below against what was read and tested.\nif [ \"$(pacman -Q code 2>/dev/null | cut -d' ' -f1)\" = code ]; then\n  echo \"Code - OSS (the package 'code') is installed and conflicts with Microsoft's build: remove it first (pacman -R code)\" >&2\n  exit 1\nfi\npacman -S --needed --noconfirm base-devel git || { echo \"pacman could not install base-devel and git: update the system first (pacman -Syu), then install again\" >&2; exit 1; }\ntmp=$(mktemp -d /var/tmp/vscode-aur-XXXXXX)\ntrap 'rm -rf \"$tmp\"' EXIT\nchown nobody:nobody \"$tmp\"\nas_nobody() { runuser -u nobody -- env HOME=\"$tmp\" \"$@\"; }\ncd \"$tmp\"\nas_nobody git clone --depth 1 https://aur.archlinux.org/visual-studio-code-bin.git\ncd visual-studio-code-bin\nfor f in $(ls -A | grep -v '^\\.git$'); do\n  case \"$f\" in\n    PKGBUILD|.SRCINFO|.gitignore|.nvchecker.toml|visual-studio-code-bin.install|visual-studio-code-bin.sh) ;;\n    *) echo \"unexpected file in the AUR package: $f\" >&2; exit 1 ;;\n  esac\ndone\n[ \"$(sha256sum visual-studio-code-bin.install | cut -d' ' -f1)\" = c910a24270895767939b23194673d76641432aa107e6e81ca8ad6f7a8fc6e9b7 ] || { echo \"the install script of the AUR package changed: it runs as root, so it has to be reviewed first\" >&2; exit 1; }\n[ \"$(sha256sum visual-studio-code-bin.sh | cut -d' ' -f1)\" = bd0d9edf69283ebdf4e73e0a7b168d2fcf50acbd01f63674cad93ed4fe42fdad ] || { echo \"the launcher of the AUR package changed: it has to be reviewed first\" >&2; exit 1; }\nhosts=$(grep -E '^source' PKGBUILD | grep -oE 'https?://[^/) ]+' | sort -u)\n[ \"$hosts\" = \"https://update.code.visualstudio.com\" ] || { echo \"the AUR package downloads from somewhere other than Microsoft: $hosts\" >&2; exit 1; }\nif grep -nE 'curl|wget|eval|base64|/dev/tcp|git clone' PKGBUILD >&2; then echo \"the PKGBUILD changed in a way that has to be reviewed first\" >&2; exit 1; fi\n# --nodeps: makepkg would refuse to build until the runtime libraries are installed; pacman -U below installs them.\nas_nobody makepkg --noconfirm --nodeps\nset -- ./visual-studio-code-bin-*.pkg.tar.*\n[ \"$#\" = 1 ] && [ -e \"$1\" ] || { echo \"makepkg did not produce exactly one package\" >&2; exit 1; }\npacman -U --noconfirm \"$1\" || { echo \"pacman could not install the package: update the system first (pacman -Syu), then install again\" >&2; exit 1; }\n",
+     "uninstall": "set -eu\npacman -Rns --noconfirm visual-studio-code-bin\n",
+     "check": "/usr/bin/code"
+    }
+   }
+  }
+ },
+ {
+  "name": "Code - OSS",
+  "category": "Développement",
+  "icon": "code",
+  "description": "La version libre de l’éditeur de Microsoft, sans la marque ni la boutique d’extensions de Microsoft (elle utilise Open VSX). Arch uniquement, depuis le dépôt officiel ; Debian et Ubuntu n’ont pas de paquet. Incompatible avec Visual Studio Code (Microsoft) : installez l’un ou l’autre.",
+  "recipes": {
    "pacman": {
     "packages": [
      "code"

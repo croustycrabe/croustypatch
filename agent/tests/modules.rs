@@ -302,10 +302,15 @@ async fn a_registry_that_lists_tags_in_no_order_is_read_to_the_end() {
     let c = docker::Container { name: "immich_server".into(), image_ref: format!("{host}/immich/server:v3.3.1"), image_id: "sha256:aaaa".into(), repo_digests: vec![], compose: None, mounts: vec![], state: "running".into(), health: String::new(), started_at: String::new() };
     let n = docker::newer_version(&img).await;
     assert_eq!(n.as_ref().unwrap().tag, "v3.10.0");
-    let e = docker::entry_with(&c, None, n.as_ref());
+    let e = docker::entry_with(&c, None, n.as_ref(), None);
     assert_eq!(e.meta["latest"], serde_json::json!({ "tag": "v3.10.0", "major": false, "same_major": null }));
     assert!(e.candidate.is_none(), "a newer version is information: it is not an update this agent can apply");
-    assert!(docker::entry_with(&c, None, None).meta.get("latest").is_none());
+    assert!(docker::entry_with(&c, None, None, None).meta.get("latest").is_none());
+    // the hint of whether the suggestion can be applied, and by changing which file, rides along
+    let hint = serde_json::json!({ "mode": "file", "file": "/opt/stacks/immich/compose.yaml" });
+    let e = docker::entry_with(&c, None, n.as_ref(), Some(hint.clone()));
+    assert_eq!(e.meta["latest"]["apply"], hint);
+    assert_eq!(e.meta["latest"]["tag"], "v3.10.0");
     // asked once: the answer is kept for hours
     let before = seen.lock().unwrap().len();
     assert_eq!(docker::newer_version(&img).await.unwrap().tag, "v3.10.0");

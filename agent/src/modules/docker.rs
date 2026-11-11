@@ -6,7 +6,7 @@
 //! restore point is the previous image ID; rollback re-tags it and runs `up -d` again. Containers started by hand
 //! are reported (with their available update) but never recreated: the agent cannot know which of their settings
 //! are intentional.
-use super::registry;
+use super::{registry, retag};
 use crate::exec::{Cmd, Runner};
 use crate::runner::TaskLog;
 use anyhow::{anyhow, bail, Result};
@@ -112,13 +112,13 @@ pub fn is_current(c: &Container, remote: &str) -> bool {
 }
 
 pub fn entry(c: &Container, remote: Option<&str>) -> PackageEntry {
-    entry_with(c, remote, None)
+    entry_with(c, remote, None, None)
 }
 
 /// The inventory entry of a container. `newer` is a newer version tag the registry offers for the image (the running
 /// tag's own digest is what `candidate` tracks): it is informative, because moving to another tag means changing the
 /// compose file, which CroustyPatch does not do.
-pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::Newer>) -> PackageEntry {
+pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::Newer>, apply: Option<Value>) -> PackageEntry {
     let local = c.repo_digests.first().map(|d| short(d.split('@').nth(1).unwrap_or(d))).unwrap_or_else(|| short(&c.image_id));
     let candidate = remote.filter(|r| !is_current(c, r)).map(|r| format!("{} @{}", c.image_ref, short(r)));
     let mut meta = serde_json::json!({
@@ -127,8 +127,47 @@ pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::
     });
     if let Some(n) = newer {
         meta["latest"] = serde_json::json!({ "tag": n.tag, "major": n.major, "same_major": n.same_major });
+        if let Some(a) = apply {
+            meta["latest"]["apply"] = a;
+        }
     }
     PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into(), meta }
+}
+
+/// What a version change needs for each pinned container that has one: (service, image it runs, image to move to,
+/// compose files), in the order of `names`. A request for a container that is not among the pins is an error.
+pub fn retag_requests(pins: &[Container], retag: &std::collections::BTreeMap<String, String>) -> Result<Vec<(String, String, String, Vec<String>)>> {
+    for k in retag.keys() {
+        if !pins.iter().any(|p| &format!("{PREFIX}{}", p.name) == k) {
+            bail!("a new version was asked for {k}, which is not part of this update");
+        }
+    }
+    pins.iter()
+        .filter_map(|p| retag.get(&format!("{PREFIX}{}", p.name)).map(|new| (p, new)))
+        .map(|(p, new)| {
+            let cp = p.compose.as_ref().ok_or_else(|| anyhow!("{} is not a compose service", p.name))?;
+            Ok((cp.service.clone(), p.image_ref.clone(), new.clone(), cp.config_files.clone()))
+        })
+        .collect()
+}
+
+/// For the inventory: can the suggested version be applied to this container, and by changing which file? Planned
+/// on the real files without writing anything.
+pub fn retag_hint(c: &Container, all_mounts: &[(String, String)], new_ref: &str) -> Value {
+    let manual = |reason: String| serde_json::json!({ "mode": "manual", "reason": reason });
+    let Some(cp) = &c.compose else { return manual("the container was not started by Docker Compose".into()) };
+    let resolved = match resolve_compose(cp, all_mounts, |p| p.exists()) {
+        Ok(r) => r,
+        Err(e) => return manual(format!("{e:#}")),
+    };
+    match retag::plan_all(&[(resolved.service.clone(), c.image_ref.clone(), new_ref.to_string(), resolved.config_files.clone())], &retag::read_files) {
+        Ok((_, outcomes)) => match outcomes.first() {
+            Some(retag::Outcome::AlreadyThere { path }) => serde_json::json!({ "mode": "file", "file": path, "already": true }),
+            Some(retag::Outcome::Changed { path }) => serde_json::json!({ "mode": "file", "file": path }),
+            None => manual("nothing to plan".into()),
+        },
+        Err(reason) => manual(reason),
+    }
 }
 
 type NewerCache = std::sync::Mutex<std::collections::HashMap<(String, String, String), (std::time::Instant, Option<registry::Newer>, bool)>>;
@@ -205,7 +244,15 @@ pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
     while let Some(Ok((i, remote, newer))) = jobs.join_next().await {
         found[i] = (remote, newer);
     }
-    list.iter().zip(found).map(|(c, (remote, newer))| entry_with(c, remote.as_deref(), newer.as_ref())).collect()
+    let all_mounts: Vec<(String, String)> = list.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
+    list.iter()
+        .zip(found)
+        .map(|(c, (remote, newer))| {
+            // can the suggested version be applied (and by changing which file)? Planned on the real compose files.
+            let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag)));
+            entry_with(c, remote.as_deref(), newer.as_ref(), apply)
+        })
+        .collect()
 }
 
 fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {

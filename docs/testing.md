@@ -48,6 +48,16 @@ end to end (a real agent enrols with the wizard's token and the wizard must noti
 cd frontend && npx playwright install chromium && npm run build && npm run e2e
 ```
 
+Two tests are ignored by default because they need the outside world; run them on a machine where throw-away
+containers are fine:
+
+```sh
+# applying a new Docker version against a real Docker daemon with compose (pulls two small nginx images)
+cargo test -p croustypatch-agent --test docker_live -- --ignored --nocapture --test-threads=1
+# the newest versions of real images, against the real registries
+cargo test -p croustypatch-agent --test registry_live -- --ignored --nocapture
+```
+
 The generated installer script was also run for real in a clean Debian container (strict POSIX `sh`): missing token
 refused, checksum verified and a forced mismatch refused, install and enrolment, idempotent re-run, agent connected.
 The systemd unit it writes was validated with `systemd-analyze`; the FreeBSD branch and a real systemd restart were not exercised.

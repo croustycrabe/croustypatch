@@ -33,13 +33,18 @@ pub fn pkg(name: &str, version: &str, candidate: &str, security: bool) -> Value 
 
 /// `db` is the JSON content of the mock package database.
 pub fn rig(db: Value) -> Rig {
+    rig_with(db, true)
+}
+
+/// The same, with commands really run when `dry_run` is false (tests against a real Docker daemon).
+pub fn rig_with(db: Value, dry_run: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let mock_path = dir.path().join("mock.json");
     std::fs::write(&mock_path, serde_json::to_vec(&db).unwrap()).unwrap();
     let cfg = Config {
         server_url: "http://127.0.0.1:1".into(),
         state_dir: dir.path().join("state"),
-        dry_run: true, // the package backend is a file; only firewall changes are skipped
+        dry_run, // the package backend is a file; only firewall changes are skipped
         probe_interval_secs: 1,
         ..Default::default()
     };
@@ -49,7 +54,7 @@ pub fn rig(db: Value) -> Rig {
     let (out, out_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let agent = Arc::new(Agent {
-        runner: Runner { dry_run: true },
+        runner: Runner { dry_run },
         cfg,
         identity,
         backend: Backend::Mock(Mock::new(mock_path.clone())),

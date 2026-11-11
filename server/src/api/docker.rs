@@ -65,6 +65,8 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
                         "update": candidate.is_some(),
                         "latest": meta.get("latest").filter(|l| l.get("tag").is_some_and(|t| t.is_string())).map(|l| json!({
                             "tag": l.get("tag"), "major": l.get("major").and_then(|m| m.as_bool()).unwrap_or(false), "same_major": l.get("same_major").filter(|x| x.is_string()),
+                            // whether the agent can apply it, and by changing which file (agents 0.7.4 and later)
+                            "apply": l.get("apply").filter(|a| a.get("mode").is_some_and(|m| m == "file" || m == "manual")),
                         })),
                         "project": meta.get("project").cloned().unwrap_or(Value::Null), "service": meta.get("service").cloned().unwrap_or(Value::Null),
                         "state": meta.get("state").cloned().unwrap_or(Value::Null), "health": meta.get("health").cloned().unwrap_or(Value::Null), "started_at": meta.get("started_at").cloned().unwrap_or(Value::Null),
