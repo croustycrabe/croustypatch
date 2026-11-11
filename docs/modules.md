@@ -90,16 +90,26 @@ tags of the repository in its registry and reports the highest one of the **same
 other `v#.#.#` tags, `17-alpine` only with `#-alpine`, `16-vectorchord1.1.1` with `#-vectorchord#.#.#`. Release
 candidates, other flavours, build tags (`…-sha-3699278`) and moving tags (`latest`, `release`) are never offered. A
 new first number is marked **major** (and the newest of the running major is named next to it, for a database that
-needs a migration). The Docker page and tab show it as *Version v3.4.0 available*, count it in *New versions* and can
+needs a migration). The Docker page and tab show it as *Update suggested*, count it in *Updates suggested* and can
 filter on it.
 
-It is **information, not an update**: moving to another tag means changing the `image:` line (or the `.env` variable)
-of the compose file, which CroustyPatch does not edit; the *Update* buttons keep pulling the running tag. How it is
+It is shown as a **suggested update** (*v3.3.1 → v3.4.1*, with the image to write in the compose file), not applied:
+moving to another tag means changing the `image:` line (or the `.env` variable) of the compose file, which CroustyPatch
+does not edit; the *Update* buttons keep pulling the running tag. Change the tag, then update. How it is
 checked: Docker Hub lists tags alphabetically, GHCR in no order (immich-server has more than 33 000, 34 pages, about
 7 s), so the agent reads the pages (at most 100 and 60 s per repository), keeps only tags of the right shape as they
 arrive, and stops early only when a page proves the list is alphabetical and past the tag's prefix. The answer is
 kept in memory for 6 hours per image (a failed lookup 20 minutes), so a registry is asked a few times a day at most.
 Agents from 0.7.1; anonymous access only (public images), like the digest check. `GET /api/v1/docker?newer=true`.
+
+**System, Docker, or both (0.7.2).** Starting updates by hand takes a *scope*: the host page and the hosts list's bulk
+bar offer **Update** → *System · n*, *Docker · m* or *System and Docker · n+m* (a plain button when only one kind is
+pending). `POST /api/v1/tasks` takes `"scope": "system" | "docker" | "all"` (default `all`, as before): the system
+packages and the container images stay separate tasks whatever the choice, and the scope only says which are created.
+A request for a kind that is already open on the host is refused with the reason, a scope with nothing pending says
+so (*no pending container updates*), and with several hosts the ones that have something of that kind get a task.
+`GET /api/v1/hosts` adds `docker_updates` (the container images among `updates`). The audit log records the scope.
+The app center on a laptop stays system-only.
 
 CroustyPatch only ever **updates images**. It never starts, stops or removes a container: the *Update* buttons queue
 a task for the chosen containers (or all of those with an update), and the host's policy decides what happens

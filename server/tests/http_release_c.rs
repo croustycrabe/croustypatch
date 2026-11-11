@@ -443,3 +443,91 @@ async fn a_new_app_with_the_default_icon_takes_the_logo_of_its_name() {
     assert_eq!(st, 200);
     assert_eq!(a2["icon"], json!("app-window"));
 }
+
+// ------------------------------------------------------------------- system, Docker, or both
+
+#[actix_web::test]
+async fn updates_can_be_started_for_the_system_the_containers_or_both() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let (both, sys_only, docker_only) = {
+        let mut c = db.conn();
+        let both = add_host(&mut c, "srv-both", json!({"docker": true}), json!({}));
+        let sys_only = add_host(&mut c, "srv-sys", json!({"docker": true}), json!({}));
+        let docker_only = add_host(&mut c, "srv-docker", json!({"docker": true}), json!({}));
+        for h in [both, sys_only] {
+            add_pkg(&mut c, h, "openssl", "system", "3.0", Some("3.1"), json!({}));
+            add_pkg(&mut c, h, "curl", "system", "8.0", Some("8.1"), json!({}));
+        }
+        for h in [both, docker_only] {
+            add_pkg(&mut c, h, "docker:cache", "docker", "redis:7 @aa", Some("redis:7 @bb"), json!({"image": "redis:7"}));
+        }
+        (both, sys_only, docker_only)
+    };
+    let post = |b: Value| TestRequest::post().uri("/api/v1/tasks").cookie(ck.clone()).set_json(b);
+    let kinds = |h: Uuid| -> Vec<(String, Vec<String>)> {
+        let mut v: Vec<(String, Value)> = tasks::table.filter(tasks::host_id.eq(h)).select((tasks::kind, tasks::packages)).load(&mut db.conn()).unwrap();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v.into_iter().map(|(k, p)| (k, p.as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap().to_string()).collect())).collect()
+    };
+
+    // the hosts list says how many of the pending updates are container images
+    let (_, list) = call(&app, TestRequest::get().uri("/api/v1/hosts").cookie(ck.clone())).await;
+    let row = |n: &str| list.as_array().unwrap().iter().find(|h| h["hostname"] == n).unwrap().clone();
+    assert_eq!((row("srv-both")["updates"].clone(), row("srv-both")["docker_updates"].clone()), (json!(3), json!(1)));
+    assert_eq!((row("srv-sys")["updates"].clone(), row("srv-sys")["docker_updates"].clone()), (json!(2), json!(0)));
+
+    // the system only: no container task is created
+    let (st, r) = call(&app, post(json!({"host_ids": [both], "scope": "system"}))).await;
+    assert_eq!(st, 202, "{r}");
+    assert_eq!(r["tasks"].as_array().unwrap().len(), 1);
+    let k = kinds(both);
+    assert_eq!(k.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["patch"]);
+    assert_eq!(k[0].1.len(), 2, "both system updates, and not the container: {k:?}");
+    assert!(!k[0].1.iter().any(|n| n.starts_with("docker:")));
+    // Docker only: a container task, while the system patch is still open (each kind waits for its own)
+    let (st, r) = call(&app, post(json!({"host_ids": [both], "scope": "docker"}))).await;
+    assert_eq!(st, 202, "{r}");
+    assert_eq!(kinds(both).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["docker", "patch"]);
+    assert_eq!(kinds(both)[0].1, vec!["docker:cache"]);
+    // a second request of a kind that is open is refused, with the reason
+    let (st, r) = call(&app, post(json!({"host_ids": [both], "scope": "system"}))).await;
+    assert_eq!(st, 409, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("open patch task"), "{r}");
+    let (st, r) = call(&app, post(json!({"host_ids": [both], "scope": "docker"}))).await;
+    assert_eq!(st, 409, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("open container task"), "{r}");
+
+    // the default is both, as before
+    let (st, r) = call(&app, post(json!({"host_ids": [docker_only]}))).await;
+    assert_eq!(st, 202, "{r}");
+    let (st, _) = call(&app, post(json!({"host_ids": [sys_only], "scope": "all"}))).await;
+    assert_eq!(st, 202);
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+    let (_, r) = call(&app, post(json!({"host_ids": [both]}))).await;
+    assert_eq!(r["tasks"].as_array().unwrap().len(), 2, "no scope: the system patch and the container update: {r}");
+
+    // a scope with nothing to do says which
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+    let (st, r) = call(&app, post(json!({"host_ids": [sys_only], "scope": "docker"}))).await;
+    assert_eq!(st, 409);
+    assert!(r["message"].as_str().unwrap().contains("no pending container updates"), "{r}");
+    let (st, r) = call(&app, post(json!({"host_ids": [docker_only], "scope": "system"}))).await;
+    assert_eq!(st, 409);
+    assert!(r["message"].as_str().unwrap().contains("no pending system updates"), "{r}");
+    // several hosts: the ones with something of that kind get a task, the others are skipped without failing the request
+    let (st, r) = call(&app, post(json!({"host_ids": [sys_only, docker_only, both], "scope": "docker"}))).await;
+    assert_eq!(st, 202, "{r}");
+    let hosts: std::collections::HashSet<String> = r["tasks"].as_array().unwrap().iter().map(|t| t["host_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(hosts, [docker_only.to_string(), both.to_string()].into_iter().collect(), "{r}");
+    // an unknown scope is a bad request, and a named package still has to be of the scope
+    let (st, _) = call(&app, post(json!({"host_ids": [both], "scope": "everything"}))).await;
+    assert_eq!(st, 400);
+    diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
+    let (st, r) = call(&app, post(json!({"host_ids": [both], "scope": "system", "packages": ["docker:cache"]}))).await;
+    assert_eq!(st, 409, "a container named under the system scope is not taken: {r}");
+    // audited with the scope
+    let scopes: Vec<Value> = audit_log::table.filter(audit_log::action.eq("task.patch_requested")).select(audit_log::details).load(&mut db.conn()).unwrap();
+    assert!(scopes.iter().any(|d| d["scope"] == json!("system")) && scopes.iter().any(|d| d["scope"] == json!("docker")) && scopes.iter().any(|d| d["scope"] == json!("all")), "{scopes:?}");
+}

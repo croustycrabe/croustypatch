@@ -4,11 +4,13 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useMemo, useState } from 'react';
 import { AddAgentButton } from '@/components/AddAgent';
+import { UpdateMenu, type Scope } from '@/components/UpdateMenu';
 import { Button, Chip, ConfirmDialog, Empty, GroupTag, HostStatusLabel, Notice, PageHeader, SearchInput, Select, SortHead, Spinner, Table, Tag } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
+import type { MessageKey } from '@/lib/messages';
 import { useToast } from '@/lib/toast';
 import type { HostGroup, HostStatus, HostSummary } from '@/lib/types';
 
@@ -33,7 +35,7 @@ function Hosts() {
   const [q, setQ] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'name', dir: 'asc' });
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [confirm, setConfirm] = useState(false);
+  const [confirm, setConfirm] = useState<Scope | null>(null);
   const [busy, setBusy] = useState(false);
   const hosts = useApi<HostSummary[]>('/hosts', { poll: 10000 });
   const groups = useApi<HostGroup[]>(can('groups:read') ? '/groups' : null);
@@ -66,11 +68,15 @@ function Hosts() {
   const toggleAll = () => setPicked(allSelected ? new Set() : new Set(rows.map((h) => h.id)));
   const toggle = (id: string) => setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
-  const bulkPatch = async () => {
+  // What the selected hosts have waiting, by kind (hosts in quarantine are left out).
+  const selectedRows = rows.filter((h) => picked.has(h.id) && h.status !== 'quarantined');
+  const pendingSystem = selectedRows.reduce((n, h) => n + h.updates - h.docker_updates, 0);
+  const pendingDocker = selectedRows.reduce((n, h) => n + h.docker_updates, 0);
+  const bulkPatch = async (scope: Scope) => {
     setBusy(true);
     try {
-      const withUpdates = rows.filter((h) => picked.has(h.id) && h.updates > 0 && h.status !== 'quarantined').map((h) => h.id);
-      const r = await api<{ tasks: unknown[] }>('POST', '/tasks', { host_ids: withUpdates });
+      const ids = selectedRows.filter((h) => (scope === 'system' ? h.updates - h.docker_updates : scope === 'docker' ? h.docker_updates : h.updates) > 0).map((h) => h.id);
+      const r = await api<{ tasks: unknown[] }>('POST', '/tasks', { host_ids: ids, scope });
       toast.success(t('hosts.bulk.done', { n: r.tasks.length }));
       setPicked(new Set());
       hosts.reload();
@@ -120,7 +126,7 @@ function Hosts() {
             <div className="alert" style={{ marginBottom: 12, alignItems: 'center' }}>
               <b>{t('hosts.selected', { n: picked.size })}</b>
               <span className="row row--tight right">
-                {can('tasks:create') && <Button small variant="primary" disabled={busy} onClick={() => setConfirm(true)}>{t('hosts.bulk.patch')}</Button>}
+                {can('tasks:create') && (pendingSystem + pendingDocker > 0 ? <UpdateMenu small system={pendingSystem} docker={pendingDocker} disabled={busy} onPick={setConfirm} /> : <Button small variant="primary" disabled>{t('hosts.bulk.patch')}</Button>)}
                 {can('tasks:create') && <Button small disabled={busy} icon={<ArrowsClockwise size={14} weight="bold" />} onClick={() => void bulkScan()}>{t('hosts.bulk.scan')}</Button>}
                 <Button small variant="ghost" onClick={() => setPicked(new Set())}>{t('hosts.bulk.clear')}</Button>
               </span>
@@ -153,7 +159,7 @@ function Hosts() {
           <p className="field__hint" style={{ marginTop: 10 }}>{rows.length} / {all.length}</p>
         </>
       )}
-      <ConfirmDialog message={confirm ? t('host.confirm_patch') : null} onNo={() => setConfirm(false)} onYes={() => { setConfirm(false); void bulkPatch(); }} />
+      <ConfirmDialog message={confirm ? t(`upd.confirm.${confirm}` as MessageKey) : null} onNo={() => setConfirm(null)} onYes={() => { const sc = confirm; setConfirm(null); if (sc) void bulkPatch(sc); }} />
     </>
   );
 }

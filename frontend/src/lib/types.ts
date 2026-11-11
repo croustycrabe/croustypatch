@@ -57,8 +57,10 @@ export type HostStatus = 'online' | 'offline' | 'eco' | 'maintenance' | 'alert' 
 
 export interface HostSummary extends Host {
   group_ids: string[];
+  /** Pending updates of every kind; of those, `docker_updates` are container images (the system ones are the rest). */
   updates: number;
   security_updates: number;
+  docker_updates: number;
 }
 
 export interface HostPackage {

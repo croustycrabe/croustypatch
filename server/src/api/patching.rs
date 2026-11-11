@@ -262,9 +262,40 @@ pub struct NewTasks {
     /// Only "patch" is accepted here; scans have their own endpoint.
     #[serde(default = "patch_kind")]
     kind: String,
-    /// Empty = every pending update.
+    /// Empty = every pending update (of the chosen scope).
     #[serde(default)]
     packages: Vec<String>,
+    /// What to update: the operating system, the Docker containers, or both (the default).
+    #[serde(default)]
+    scope: UpdateScope,
+}
+
+/// Which pending updates a manual request takes. System updates and container images are separate tasks whatever
+/// the scope; the scope only chooses which of the two are created.
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateScope {
+    #[default]
+    All,
+    System,
+    Docker,
+}
+
+impl UpdateScope {
+    fn takes(self, source: &str) -> bool {
+        match self {
+            UpdateScope::All => true,
+            UpdateScope::System => source != "docker",
+            UpdateScope::Docker => source == "docker",
+        }
+    }
+    fn nothing(self, host: &str) -> String {
+        match self {
+            UpdateScope::All => format!("{host} has nothing to update"),
+            UpdateScope::System => format!("{host} has no pending system updates"),
+            UpdateScope::Docker => format!("{host} has no pending container updates"),
+        }
+    }
 }
 fn patch_kind() -> String {
     "patch".into()
@@ -298,9 +329,9 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
                     if !b.packages.is_empty() {
                         q = q.filter(host_packages::name.eq_any(b.packages.clone()));
                     }
-                    let pending: Vec<crate::models::HostPackage> = q.select(crate::models::HostPackage::as_select()).load(c)?;
+                    let pending: Vec<crate::models::HostPackage> = q.select(crate::models::HostPackage::as_select()).load(c)?.into_iter().filter(|p| b.scope.takes(&p.source)).collect();
                     if pending.is_empty() {
-                        return Err(ApiError::Conflict(format!("{} has nothing to update", host.hostname)));
+                        return Err(ApiError::Conflict(b.scope.nothing(&host.hostname)));
                     }
                     let groups = planner::host_groups(c, host_id)?;
                     let def = planner::applicable_policy(c, &host, &groups)?;
@@ -331,7 +362,7 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
                             .returning(tasks::id)
                             .get_result(c)?;
                         diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
-                        audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": kind})).ip(&user.ip))?;
+                        audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": kind, "scope": b.scope})).ip(&user.ip))?;
                         made.push(id);
                     }
                     if made.is_empty() {

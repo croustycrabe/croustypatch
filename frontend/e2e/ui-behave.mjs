@@ -47,7 +47,7 @@ const firstName = async () => (await p.locator('.tbl tbody tr .cell-host a').fir
 const a0 = await firstName(); await p.click('th button:has-text("Hôte")'); await p.waitForTimeout(150); const a1 = await firstName();
 check('clicking a column header sorts', a0 !== a1, `${a0} -> ${a1}`);
 await p.locator('.tbl tbody tr input[type=checkbox]').nth(0).check(); await p.locator('.tbl tbody tr input[type=checkbox]').nth(1).check();
-check('selecting rows shows the bulk action bar', (await p.locator('.alert:has-text("sélectionné")').count()) === 1 && (await p.locator('.alert button:has-text("Corriger")').count()) === 1);
+check('selecting rows shows the bulk action bar', (await p.locator('.alert:has-text("sélectionné")').count()) === 1 && (await p.locator('.alert button:has-text("Mettre à jour le système")').count()) === 1, 'with only system updates pending the bulk action says so');
 await p.click('.alert button:has-text("Tout désélectionner")');
 
 // ---- host detail tabs (state kept in the URL)
@@ -354,10 +354,11 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.click('button.chip:has-text("Mises à jour seulement")'); await p.fill('input[type=search]', 'postgres'); await p.waitForTimeout(600);
   check('a search matches the image as well as the container name', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.tbl tbody tr').textContent()).includes('postgres:17'));
   await p.fill('input[type=search]', ''); await p.waitForSelector('.tbl tbody tr:has-text("site-web")');
-  check('a newer version tag is shown next to the image state', (await p.locator('.tbl tbody tr:has-text("site-web")').textContent()).includes('Version 1.29.0 disponible') && (await p.locator('.tbl tbody tr:has-text("site-db")').textContent()).includes('Version') === false);
-  await p.click('button.chip:has-text("Nouvelles versions")'); await p.waitForTimeout(600);
-  check('and the containers with a new version can be listed on their own', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.stat:has-text("Nouvelles versions")').textContent()).includes('1'));
-  await p.click('button.chip:has-text("Nouvelles versions")'); await p.fill('input[type=search]', '');
+  const webRow = (await p.locator('.tbl tbody tr:has-text("site-web")').textContent());
+  check('a newer version is suggested as an update, with what to write in the compose file', webRow.includes('Mise à jour suggérée') && webRow.includes('1.27 → 1.29.0') && webRow.includes('nginx:1.29.0') && !(await p.locator('.tbl tbody tr:has-text("site-db")').textContent()).includes('suggérée'));
+  await p.click('button.chip:has-text("Mises à jour suggérées")'); await p.waitForTimeout(600);
+  check('and the containers with a new version can be listed on their own', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.stat:has-text("Mises à jour suggérées")').textContent()).includes('1'));
+  await p.click('button.chip:has-text("Mises à jour suggérées")'); await p.fill('input[type=search]', '');
   await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tbody tr');
   check('each host has its own Docker tab', (await p.locator('.tbl tbody tr').count()) === 2);
 
@@ -487,6 +488,37 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.evaluate(() => { document.documentElement.dataset.theme = 'dark'; }); await p.waitForTimeout(200);
   await p.screenshot({ path: `${HERE}/.run/logos-dark.png`, clip: { x: 260, y: 100, width: 1100, height: 560 } });
   await p.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+}
+
+// ---- 0.7.2: update the system, Docker, or both
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  const count = (kind) => Number(sql(`select count(*) from tasks where host_id='${h}' and kind='${kind}'`));
+  sql(`update hosts set status='online' where id='${h}'`);
+  await p.goto(`${BASE}/host/?id=${h}`); await p.waitForSelector('.tabs');
+  const nSystem = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source <> 'docker'`));
+  const nDocker = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source = 'docker'`));
+  await p.click('button[aria-label="Mettre à jour"]');
+  const items = (await p.locator('[role=menuitem]').allTextContents()).map((x) => x.trim());
+  check('with system and Docker updates pending, the host offers a choice with the count of each', items.length === 3 && items[0] === `Système · ${nSystem}` && items[1] === `Docker · ${nDocker}` && items[2] === `Système et Docker · ${nSystem + nDocker}`, JSON.stringify(items));
+  const before = { docker: count('docker'), patch: count('patch') };
+  await p.click('[role=menuitem]:has-text("Docker ·")');
+  check('choosing Docker explains that containers are recreated', (await p.locator('dialog[open]').textContent()).includes('recréés'));
+  await p.click('dialog[open] button:has-text("Confirmer")'); await p.waitForSelector('.toast');
+  check('Docker only creates a container task and no system patch', count('docker') === before.docker + 1 && count('patch') === before.patch, JSON.stringify({ before, now: { docker: count('docker'), patch: count('patch') } }));
+  // the same request again is refused while that task is open, and says why
+  await p.click('button[aria-label="Mettre à jour"]'); await p.click('[role=menuitem]:has-text("Docker ·")'); await p.click('dialog[open] button:has-text("Confirmer")');
+  await p.waitForSelector('.alert--error, .toast--error', { timeout: 8000 }).then(() => check('a second Docker request is refused while the first is open', true), () => check('a second Docker request is refused while the first is open', false));
+  await p.keyboard.press('Escape');
+
+  // the bulk bar of the hosts list
+  await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl tbody tr');
+  await p.locator('.tbl tbody tr', { has: p.locator(`a[href*="${h}"]`) }).locator('input[type=checkbox]').check();
+  check('the bulk bar offers the same choice for the selected hosts', (await p.locator('.alert button[aria-label="Mettre à jour"]').count()) === 1);
+  await p.click('.alert button[aria-label="Mettre à jour"]');
+  check('with the counts of the selection', (await p.locator('[role=menuitem]').allTextContents()).map((x) => x.trim()).join('|').includes(`Docker · ${nDocker}`));
+  await p.keyboard.press('Escape');
 }
 
 // ---- language + logout

@@ -11,6 +11,11 @@ import { useToast } from '@/lib/toast';
 import { Button, Chip, ConfirmDialog, Empty, Notice, SearchInput, Spinner, StatCard, Table, Tag } from './ui';
 
 /** Containers with their image state; only the images are ever updated (never start, stop or remove). */
+/** The tag of an image reference (`ghcr.io/x/y:v3.3.1` -> `v3.3.1`), `latest` without one. A port is not a tag. */
+const tagOf = (image: string) => { const i = image.lastIndexOf(':'); return i > image.lastIndexOf('/') ? image.slice(i + 1) : 'latest'; };
+/** The same image with another tag. */
+const withTag = (image: string, tag: string) => { const i = image.lastIndexOf(':'); return `${i > image.lastIndexOf('/') ? image.slice(0, i) : image}:${tag}`; };
+
 export function DockerList({ hostId }: { hostId?: string }) {
   const { t, date } = useI18n();
   const { can } = useAuth();
@@ -80,12 +85,13 @@ export function DockerList({ hostId }: { hostId?: string }) {
               {c.started_at && c.state === 'running' && <span className="sub">{t('docker.since', { d: date(c.started_at, { dateStyle: 'medium' }) })}</span>}
             </td>
             <td className="wrap">
-              {c.open_task ? <Tag tone="info">{t('docker.updating')}</Tag> : c.update ? <span className="row row--tight"><Tag tone="warn">{t('docker.available')}</Tag><span className="mono muted">@{c.candidate}</span></span> : <Tag tone="ok">{t('docker.current')}</Tag>}
+              {c.open_task ? <Tag tone="info">{t('docker.updating')}</Tag> : c.update ? <span className="row row--tight"><Tag tone="warn">{t('docker.available')}</Tag><span className="mono muted">@{c.candidate}</span></span> : !c.latest && <Tag tone="ok">{t('docker.current')}</Tag>}
               {c.latest && (
                 <span className="sub" style={{ display: 'block' }}>
-                  <Tag tone="info">{t('docker.newer', { tag: c.latest.tag })}</Tag>
-                  {c.latest.major && <Tag tone="warn">{t('docker.major')}</Tag>}
+                  <Tag tone="warn">{t('docker.suggested')}</Tag> <span className="mono">{tagOf(c.image)} → {c.latest.tag}</span>
+                  {c.latest.major && <> <Tag tone="warn">{t('docker.major')}</Tag></>}
                   {c.latest.major && c.latest.same_major && <span className="muted"> {t('docker.same_major', { tag: c.latest.same_major })}</span>}
+                  <span className="muted" style={{ display: 'block' }}>{t('docker.suggest.how')} <span className="mono">{withTag(c.image, c.latest.tag)}</span></span>
                 </span>
               )}
             </td>

@@ -2,7 +2,7 @@
 # the server, the agent and their tests must not depend on. Built by docker/Dockerfile (stage "gui").
 [package]
 name = "croustypatch-portal-gui"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 license = "MIT"
 authors = ["Croustycrabe <croustylab>"]

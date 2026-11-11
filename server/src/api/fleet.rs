@@ -21,8 +21,11 @@ struct HostSummary {
     #[serde(flatten)]
     host: Host,
     group_ids: Vec<Uuid>,
+    /// Pending updates of every kind (system packages and container images).
     updates: i64,
     security_updates: i64,
+    /// Of those, the container images: the system updates are `updates - docker_updates`.
+    docker_updates: i64,
 }
 
 #[derive(Deserialize)]
@@ -49,12 +52,13 @@ pub async fn list_hosts(state: web::Data<AppState>, user: AuthUser, q: web::Quer
                 query = query.filter(hosts::id.eq_any(host_group_members::table.filter(host_group_members::group_id.eq(g)).select(host_group_members::host_id)));
             }
             let list: Vec<Host> = query.order(hosts::hostname.asc()).select(Host::as_select()).load(c)?;
-            let counts: Vec<(Uuid, bool)> = host_packages::table.filter(host_packages::candidate.is_not_null()).select((host_packages::host_id, host_packages::is_security)).load(c)?;
-            let mut upd: HashMap<Uuid, (i64, i64)> = HashMap::new();
-            for (h, sec) in counts {
+            let counts: Vec<(Uuid, bool, String)> = host_packages::table.filter(host_packages::candidate.is_not_null()).select((host_packages::host_id, host_packages::is_security, host_packages::source)).load(c)?;
+            let mut upd: HashMap<Uuid, (i64, i64, i64)> = HashMap::new();
+            for (h, sec, source) in counts {
                 let e = upd.entry(h).or_default();
                 e.0 += 1;
                 e.1 += sec as i64;
+                e.2 += (source == "docker") as i64;
             }
             let members: Vec<(Uuid, Uuid)> = host_group_members::table.select((host_group_members::host_id, host_group_members::group_id)).load(c)?;
             let mut groups: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -64,8 +68,8 @@ pub async fn list_hosts(state: web::Data<AppState>, user: AuthUser, q: web::Quer
             Ok(list
                 .into_iter()
                 .map(|h| {
-                    let (updates, security_updates) = upd.get(&h.id).copied().unwrap_or_default();
-                    HostSummary { group_ids: groups.remove(&h.id).unwrap_or_default(), host: h, updates, security_updates }
+                    let (updates, security_updates, docker_updates) = upd.get(&h.id).copied().unwrap_or_default();
+                    HostSummary { group_ids: groups.remove(&h.id).unwrap_or_default(), host: h, updates, security_updates, docker_updates }
                 })
                 .collect::<Vec<_>>())
         })

@@ -12,6 +12,7 @@ import { useToast } from '@/lib/toast';
 import type { MessageKey } from '@/lib/messages';
 import { HostCompliance } from '@/components/Compliance';
 import { Pager, usePageSize } from '@/components/Pager';
+import { UpdateMenu, type Scope } from '@/components/UpdateMenu';
 import { DockerList } from '@/components/DockerList';
 import { HostResources, useSize } from '@/components/Metrics';
 import { Occurrences, safeZone, useWindowText } from '@/components/PatchSchedule';
@@ -151,6 +152,8 @@ function HostDetail() {
     detail.reload();
   });
   const patch = (names: string[]) => setConfirm({ text: t('host.confirm_patch'), run: () => doTask('/tasks', { host_ids: [id], packages: names }) });
+  /** Update the system, the containers, or both: each is a task of its own, the choice only says which are created. */
+  const patchScope = (scope: Scope) => setConfirm({ text: t(`upd.confirm.${scope}` as MessageKey), run: () => doTask('/tasks', { host_ids: [id], packages: [], scope }) });
   const changeTab = (next: TabId) => { setTab(next); router.replace(`/host?id=${id}&tab=${next}`); };
 
   const PkgTable = ({ rows, selectable }: { rows: HostPackage[]; selectable: boolean }) => (
@@ -176,7 +179,7 @@ function HostDetail() {
         subtitle={`${host.distro} ${String(facts.os_version ?? '')} · ${String(facts.kernel ?? '')}`}
         actions={<>
           {can('tasks:create') && <Button icon={<ArrowsClockwise size={16} weight="bold" />} disabled={act.pending || quarantined} onClick={() => void doTask(`/hosts/${id}/scan`)}>{t('host.scan')}</Button>}
-          {can('tasks:create') && !quarantined && pending.length > 0 && <Button variant="primary" icon={<ShieldCheck size={16} weight="bold" />} disabled={act.pending} onClick={() => patch([])}>{t('host.patch_all')}</Button>}
+          {can('tasks:create') && !quarantined && <UpdateMenu system={pending.filter((p) => p.source !== 'docker').length} docker={pending.filter((p) => p.source === 'docker').length} disabled={act.pending} onPick={patchScope} />}
           {(can('tasks:write') || can('hosts:delete') || canWrite) && (
             <Menu label={t('host.more')} trigger={<DotsThree size={20} weight="bold" />}>
               {(close) => (
