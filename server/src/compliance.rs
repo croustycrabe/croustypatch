@@ -49,8 +49,16 @@ pub fn store(c: &mut PgConnection, host_id: Uuid, task_id: Uuid, r: &ComplianceR
                 compliance_reports::collected_at.eq(r.collected_at),
             ))
             .execute(c)?;
-        let details = json!({ "profile": r.profile, "score": r.score, "failed": r.failed, "threshold": limit, "results_sha256": r.results_sha256, "message": format!("score {:.1}% ({} failed rules), threshold {limit}%", r.score, r.failed) });
-        let action = if r.score < limit { "compliance.score_low" } else { "compliance.reported" };
+        // Content written for another release marks every rule "not applicable": there is no score to compare with the
+        // threshold, and a 0 % that is not a finding must not raise an alert.
+        let applicable = r.passed + r.failed;
+        let message = if applicable == 0 {
+            format!("no rule applies to this system ({} not applicable): the SCAP content ({}) does not cover this release", r.not_applicable, r.datastream.rsplit('/').next().unwrap_or(""))
+        } else {
+            format!("score {:.1}% ({} failed rules), threshold {limit}%", r.score, r.failed)
+        };
+        let details = json!({ "profile": r.profile, "score": r.score, "failed": r.failed, "threshold": limit, "results_sha256": r.results_sha256, "message": message });
+        let action = if applicable == 0 { "compliance.no_applicable_rules" } else if r.score < limit { "compliance.score_low" } else { "compliance.reported" };
         audit::record(c, Event::new("agent", action).target("task", &task_id.to_string()).host(host_id).details(details))
     })
 }

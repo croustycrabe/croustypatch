@@ -111,13 +111,22 @@ automatically* (on by default) switches that off: the audit then fails with the 
 | System | Packages the agent installs | Notes |
 | --- | --- | --- |
 | Debian | `openscap-scanner`, `ssg-debian` | content for several Debian releases; the one matching the host is used, else the newest |
-| Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04 only: a newer release (26.04) is audited with the newest one |
+| Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04 only; see *No applicable rule* below for 26.04 |
 | Arch | `openscap` | the SSG content is **not** in the repositories (AUR `scap-security-guide`): the audit says so; put a datastream in `/usr/share/xml/scap/ssg/content` |
 | other | nothing | the audit explains what to install |
 
 The agent reports what it found (`openscap` in the host's facts: oscap version, the datastream it will use and that
 datastream's profiles): the host's **Compliance** tab shows *OpenSCAP 1.4.2 · 7 profiles available*, or that it is
 missing and whether the agent will install it.
+
+**No applicable rule.** SSG content carries the release it was written for. With the content of another release the
+audit still runs but every rule comes back *not applicable*: on Ubuntu 26.04 with the 24.04 content, 405 of 405
+(checked in a 26.04 container). That is not a 0 % score, so the server keeps the audit as evidence, records
+`compliance.no_applicable_rules` instead of `compliance.score_low`, leaves the host out of the fleet score, and the
+host tab and the Compliance page say *no rule applies to this machine* instead of a score. The audit's log says which
+content was chosen (the exact release if present, else the newest of the same distribution). Until content for the
+release exists, put a datastream for it in `/usr/share/xml/scap/ssg/content` (the agent prefers the file named for the
+host's release).
 
 **Profiles.** Each host has its own audit profile (*Compliance* tab, `PATCH /api/v1/hosts/{id}` with
 `{"compliance_profile": …}`): empty (the fleet default of *Compliance > Audit settings*, else the SSG `standard`
@@ -249,7 +258,10 @@ anything runs, a progress bar and a notification log. French or English and ligh
   30 minutes (`CROUSTYPATCH_NOTIFIER_INTERVAL`, 60 s to 1 day) and, when updates can be installed here, sends a desktop
   notification (`notify-send`, else D-Bus) in the session language. It speaks again only when the list of updates
   changes (fingerprint kept in `$XDG_STATE_HOME/croustypatch/last-notified`), never on servers or on machines where
-  the switch is off. The installer adds `libnotify` (`libnotify-bin` on Debian/Ubuntu) when it is missing.
+  the switch is off. The installer adds `libnotify` (`libnotify-bin` on Debian/Ubuntu) when it is missing. A laptop
+  enrolled before 0.7 gets the login entry from *Update agent* (the agent adds it right after replacing the window
+  binary, never over an existing file) but not `libnotify`: without `notify-send` the notifier falls back to D-Bus
+  (`gdbus`), and the installer can be re-run to add the package.
 - **App icons (0.7).** An app's icon is a generic glyph, a **logo** from the bundled collection (121 icons from
   [Simple Icons](https://simpleicons.org), CC0, in `server/assets/brand-icons.json`, rebuilt by
   `server/assets/brand-icons/generate.py`; the suggested apps use them where one exists), or an **uploaded image**

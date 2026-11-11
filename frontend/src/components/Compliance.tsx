@@ -95,12 +95,16 @@ export function HostCompliance({ hostId, modules, canScan, onScan }: { hostId: s
 
       {!r.data ? <Spinner /> : !last ? <Empty>{t('comp.none')}</Empty> : (
         <>
+          {last.passed + last.failed === 0 ? (
+            <Notice kind="info">{t('comp.noapplicable', { n: last.not_applicable })}</Notice>
+          ) : (
           <div className="grid grid--stats" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(10rem, 1fr))' }}>
             <StatCard value={`${last.score}%`} label={t('comp.score')} tone={last.score >= 90 ? 'ok' : last.score >= 70 ? 'warn' : 'danger'} />
             <StatCard value={last.passed} label={t('comp.passed')} />
             <StatCard value={last.failed} label={t('comp.failed')} tone={last.failed ? 'warn' : 'ok'} />
             <StatCard value={last.not_applicable} label={t('comp.na')} />
           </div>
+          )}
           <dl className="kv">
             <dt>{t('comp.profile')}</dt><dd className="mono">{last.profile}</dd>
             <dt>{t('hosts.col.seen')}</dt><dd>{date(last.collected_at)}</dd>
@@ -246,7 +250,7 @@ export function CompliancePage() {
   const writable = can('settings:write');
   const label = useProfileLabel(profiles.data);
 
-  useEffect(() => { if (settings.data) setCfg(settings.data.compliance); }, [settings.data]);
+  useEffect(() => { if (settings.data) setCfg({ ...settings.data.compliance, auto_install: settings.data.compliance.auto_install ?? true }); }, [settings.data]);
 
   if (!fleet.data || !profiles.data) return fleet.error || profiles.error ? <Notice kind="error">{(fleet.error ?? profiles.error)!.message}</Notice> : <Spinner />;
   const f = fleet.data, p = profiles.data;
@@ -280,7 +284,7 @@ export function CompliancePage() {
             <tr key={h.id}>
               <td><Link href={`/host?id=${h.host_id}&tab=compliance`}>{h.hostname ?? h.host_id}</Link></td>
               <td>{h.profile}</td>
-              <td><Tag tone={scoreTone(h.score, f.threshold)}>{h.score}%</Tag></td>
+              <td>{h.passed + h.failed === 0 ? <Tag tone="neutral">{t('comp.noscore')}</Tag> : <Tag tone={scoreTone(h.score, f.threshold)}>{h.score}%</Tag>}</td>
               <td className="num">{h.failed}</td>
               <td>{date(h.collected_at)}</td>
             </tr>

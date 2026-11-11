@@ -367,3 +367,18 @@ async fn app_icons_are_generic_logos_or_small_uploaded_images() {
     let (st, _) = call(&app, TestRequest::get().uri("/api/v1/portal/brand-icons")).await;
     assert_eq!(st, 401);
 }
+
+/// A `compliance` setting saved by 0.6 has no `auto_install`: it reads as on, as the code that uses it assumes.
+#[actix_web::test]
+async fn a_compliance_setting_saved_before_0_7_reads_with_the_new_defaults() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    diesel::sql_query("INSERT INTO settings (key, value) VALUES ('compliance', '{\"threshold\": 85, \"profile\": \"\"}')").execute(&mut db.conn()).unwrap();
+    let (st, s) = call(&app, TestRequest::get().uri("/api/v1/settings").cookie(ck.clone())).await;
+    assert_eq!(st, 200, "{s}");
+    assert_eq!((s["compliance"]["threshold"].clone(), s["compliance"]["auto_install"].clone()), (json!(85), json!(true)), "{s}");
+    // and saving it back without the key is accepted
+    let (st, b) = call(&app, TestRequest::put().uri("/api/v1/settings/compliance").cookie(ck.clone()).set_json(json!({"threshold": 90, "profile": ""}))).await;
+    assert!(st.is_success(), "{b}");
+}

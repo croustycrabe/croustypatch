@@ -268,7 +268,11 @@ async fn compliance(agent: &Agent, id: Uuid, profile: &str, tailoring: Option<&T
     }
     agent.update(id, TaskStatus::Running, "compliance scan running (low priority)", log, vec![], false);
     let report = openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, tailoring, &hint, kind, &facts.distro, log).await?;
-    let msg = format!("compliance {:.1}% ({} passed, {} failed)", report.score, report.passed, report.failed);
+    let msg = if report.passed + report.failed == 0 {
+        format!("compliance: no rule applies to this system ({} not applicable): the SCAP content does not cover this release", report.not_applicable)
+    } else {
+        format!("compliance {:.1}% ({} passed, {} failed)", report.score, report.passed, report.failed)
+    };
     let _ = agent.out.send(AgentMessage::Compliance { task_id: id, report });
     agent.update(id, TaskStatus::Succeeded, msg, log, vec![], false);
     Ok(())

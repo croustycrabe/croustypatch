@@ -79,3 +79,40 @@ async fn container_inventory_is_kept_only_while_the_docker_module_is_on() {
     gateway::handle_messages(&state, host, vec![inv(), inv()]).await;
     assert_eq!(sources(&db), vec!["docker", "helper-script", "system"], "and every source is replaced, never duplicated");
 }
+
+/// Content written for another release (Ubuntu 26.04 audited with the 24.04 datastream) marks every rule "not applicable".
+/// That is not a 0 % score: no alert, and the host stays out of the fleet score.
+#[actix_web::test]
+async fn an_audit_in_which_no_rule_applies_raises_no_alert_and_has_no_score() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let state = web::Data::new(db.state());
+    let (good, empty) = {
+        let mut c = db.conn();
+        let a = add_host(&mut c);
+        let b: Uuid = diesel::insert_into(hosts::table).values((hosts::hostname.eq("ubuntu-26"), hosts::public_key_pem.eq("pem"), hosts::status.eq("online"))).returning(hosts::id).get_result(&mut c).unwrap();
+        diesel::update(hosts::table.filter(hosts::id.eq_any([a, b]))).set(hosts::modules.eq(json!({"openscap": true}))).execute(&mut c).unwrap();
+        (a, b)
+    };
+    let task_for = |h: Uuid| {
+        let t: Uuid = diesel::insert_into(tasks::table).values((tasks::host_id.eq(h), tasks::kind.eq("compliance"), tasks::status.eq("running"), tasks::requested_by.eq("admin"))).returning(tasks::id).get_result(&mut db.conn()).unwrap();
+        t
+    };
+    let (t1, t2) = (task_for(good), task_for(empty));
+    gateway::handle_messages(&state, good, vec![AgentMessage::Compliance { task_id: t1, report: report(70.0) }]).await;
+    let mut none = report(0.0);
+    none.passed = 0;
+    none.failed = 0;
+    none.not_applicable = 405;
+    none.datastream = "/usr/share/xml/scap/ssg/content/ssg-ubuntu2404-ds.xml".into();
+    gateway::handle_messages(&state, empty, vec![AgentMessage::Compliance { task_id: t2, report: none }]).await;
+    let stored: i64 = compliance_reports::table.filter(compliance_reports::host_id.eq(empty)).count().get_result(&mut db.conn()).unwrap();
+    assert_eq!(stored, 1, "the audit is kept as evidence");
+    let (action, details): (String, serde_json::Value) = audit_log::table.filter(audit_log::host_id.eq(empty)).filter(audit_log::action.like("compliance.%")).select((audit_log::action, audit_log::details)).first(&mut db.conn()).unwrap();
+    assert_eq!(action, "compliance.no_applicable_rules", "not compliance.score_low: nothing was found wrong");
+    assert!(details["message"].as_str().unwrap().contains("ssg-ubuntu2404-ds.xml") && details["message"].as_str().unwrap().contains("does not cover this release"), "{details}");
+    let (_, fleet) = call(&app, TestRequest::get().uri("/api/v1/compliance").cookie(ck.clone())).await;
+    assert_eq!(fleet["score"], json!(70.0), "the fleet score is the other host's, not the mean of 70 and 0: {fleet}");
+    assert_eq!(fleet["hosts"].as_array().unwrap().len(), 2, "the audit still shows on the Compliance page");
+}

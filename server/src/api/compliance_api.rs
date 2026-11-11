@@ -30,9 +30,10 @@ fn latest(c: &mut PgConnection) -> QueryResult<Vec<Row>> {
     Ok(all.into_iter().filter(|r| seen.insert(r.1)).collect())
 }
 
-/// Fleet score: mean of each host's latest score (None without any report).
+/// Fleet score: mean of each host's latest score (None without any report). An audit in which no rule applied
+/// (content for another release) has no score and is left out, rather than counting as 0 %.
 pub fn fleet_score(c: &mut PgConnection) -> ApiResult<Option<f64>> {
-    let l = latest(c)?;
+    let l: Vec<Row> = latest(c)?.into_iter().filter(|r| r.3 + r.4 > 0).collect();
     Ok((!l.is_empty()).then(|| (l.iter().map(|r| r.6).sum::<f64>() / l.len() as f64 * 10.0).round() / 10.0))
 }
 

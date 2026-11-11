@@ -244,6 +244,16 @@ pub fn load_setting(c: &mut PgConnection, state: &AppState, key: &str) -> ApiRes
     let row: Option<(Value, bool)> = settings::table.find(key).select((settings::value, settings::encrypted)).first(c).optional()?;
     match row {
         None => Ok(default_setting(key)),
+        // A setting saved by an older version lacks the keys added since: they read as their default, which is also
+        // what the code that uses them assumes.
+        Some((mut v, false)) if key == "compliance" => {
+            if let (Some(o), Some(d)) = (v.as_object_mut(), default_setting(key).as_object()) {
+                for (k, dv) in d {
+                    o.entry(k.clone()).or_insert_with(|| dv.clone());
+                }
+            }
+            Ok(v)
+        }
         Some((v, false)) => Ok(v),
         Some((v, true)) => {
             let ct = v.get("ct").and_then(|x| x.as_str()).ok_or_else(|| ApiError::internal("malformed encrypted setting"))?;

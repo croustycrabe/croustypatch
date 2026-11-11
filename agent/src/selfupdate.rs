@@ -73,6 +73,24 @@ fn stage(target: &std::path::Path, id: Uuid, bytes: &[u8]) -> Result<std::path::
     Ok(staged)
 }
 
+/// Login entry of the update notifier (the installer writes the same file: keep the two in step).
+pub const NOTIFIER_ENTRY: &str = "/etc/xdg/autostart/croustypatch-update-notifier.desktop";
+const NOTIFIER_DESKTOP: &str = "[Desktop Entry]\nType=Application\nName=CroustyPatch update notifier\nName[fr]=CroustyPatch – notification des mises à jour\nComment=Tells you when updates can be installed\nExec=/usr/local/bin/croustypatch-portal-gui --notifier\nIcon=croustypatch-portal\nNoDisplay=true\nX-GNOME-Autostart-Delay=20\n";
+
+/// Laptops enrolled before 0.7 have the desktop app center but no notifier: only the installer adds its login entry,
+/// and *Update agent* does not run the installer. Written after the desktop binary is replaced (an older binary would
+/// open its window for `--notifier`), and never over an entry that is already there. Returns whether it was written.
+pub fn ensure_notifier_entry(path: &std::path::Path) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(path, NOTIFIER_DESKTOP).with_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
+}
+
 pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, version: &str, gui_sha256: Option<&str>, log: &TaskLog) -> Result<()> {
     check_order(platform, sha256, version)?;
     if let Some(g) = gui_sha256 {
@@ -133,6 +151,11 @@ pub async fn start(agent: &Agent, id: Uuid, platform: &str, sha256: &str, versio
             anyhow!("replacing {}: {e}", gui_path.display())
         })?;
         log.line(format!("{} replaced", gui_path.display()));
+        match ensure_notifier_entry(std::path::Path::new(NOTIFIER_ENTRY)) {
+            Ok(true) => log.line("update notifier: login entry added (desktop notifications about updates start at the next login)".to_string()),
+            Ok(false) => {}
+            Err(e) => log.line(format!("update notifier: could not add its login entry: {e:#}")),
+        }
     }
     std::fs::rename(&staged, &exe).map_err(|e| {
         let _ = std::fs::remove_file(&staged);

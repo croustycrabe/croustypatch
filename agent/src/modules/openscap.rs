@@ -189,6 +189,9 @@ pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, tailoring: Option
         anyhow::anyhow!("no SCAP Security Guide content{note}")
     })?;
     let dss = ds.to_string_lossy().to_string();
+    if !distro_hint.is_empty() && !dss.contains(&distro_hint.to_ascii_lowercase()) {
+        log.line(format!("note: there is no SCAP content for {distro_hint} in {CONTENT_DIR}; using {} (the closest release). Rules written for another release often report \"not applicable\".", ds.file_name().and_then(|n| n.to_str()).unwrap_or("")));
+    }
     let mut profile = if profile.trim().is_empty() { "xccdf_org.ssgproject.content_profile_standard".to_string() } else { profile.trim().to_string() };
     if !valid_id(&profile) {
         bail!("invalid profile id");
