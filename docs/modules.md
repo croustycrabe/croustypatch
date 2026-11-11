@@ -77,6 +77,22 @@ Containers started by hand are reported with their available update but never re
 which of their settings are intentional. Tested read-only on the `docker-data` host (18 compose containers,
 registry checks for Docker Hub and GHCR, 12 s).
 
+### Docker menu (0.7)
+
+The **Docker** page lists every container of every host whose Docker module is on, and each host has a **Docker** tab
+with the same list. A row shows the container, its image, the state and health the agent saw, its compose project
+and service, and whether a newer image exists (`current` and `candidate` digests). Search matches the container name
+or the image; *Updates only* keeps the containers with a newer image. `GET /api/v1/docker?host=&updates=&q=`.
+
+CroustyPatch only ever **updates images**. It never starts, stops or removes a container: the *Update* buttons queue
+a task for the chosen containers (or all of those with an update), and the host's policy decides what happens
+around it (see `policies.md`, *Docker*).
+
+Container images are a task of their own (kind `docker`), separate from the system patch of the same host: a
+container that fails to restart never rolls a system update back, and a running container update does not hold up
+a system patch (and the other way round). The planner, the manual *Update* buttons and the policy preview all split
+a batch this way; each kind waits only for its own open task. Agents need no change: both kinds run the same routine.
+
 ## Proxmox VE helper scripts
 
 Applications installed by the community helper scripts leave `/opt/<app>_version.txt`; they are reported as
@@ -85,16 +101,47 @@ run it. (Proxmox host integration through its API is not part of this release.)
 
 ## OpenSCAP
 
-Needs `oscap` and the SCAP Security Guide content (`openscap-scanner` + `ssg-debderived` on Debian/Ubuntu,
-`scap-security-guide` on RHEL-like systems). *Run audit* on a host's **Compliance** tab, or `POST
-/api/v1/hosts/{id}/compliance-scan` with an optional XCCDF profile id (default: *Settings > Compliance*, else the
-SSG `standard` profile).
+An audit evaluates a host against a profile of the **SCAP Security Guide** (SSG) with `oscap xccdf eval`. It needs
+`oscap` and the SSG content on the host; since 0.7 the agent installs them itself when they are missing.
+
+**Automatic installation.** When an audit starts and OpenSCAP or its content is missing, the agent installs them
+first (visible in the audit task's log), then runs the audit. *Compliance > Audit settings > Install OpenSCAP
+automatically* (on by default) switches that off: the audit then fails with the exact packages to install.
+
+| System | Packages the agent installs | Notes |
+| --- | --- | --- |
+| Debian | `openscap-scanner`, `ssg-debian` | content for several Debian releases; the one matching the host is used, else the newest |
+| Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04 only: a newer release (26.04) is audited with the newest one |
+| Arch | `openscap` | the SSG content is **not** in the repositories (AUR `scap-security-guide`): the audit says so; put a datastream in `/usr/share/xml/scap/ssg/content` |
+| other | nothing | the audit explains what to install |
+
+The agent reports what it found (`openscap` in the host's facts: oscap version, the datastream it will use and that
+datastream's profiles): the host's **Compliance** tab shows *OpenSCAP 1.4.2 · 7 profiles available*, or that it is
+missing and whether the agent will install it.
+
+**Profiles.** Each host has its own audit profile (*Compliance* tab, `PATCH /api/v1/hosts/{id}` with
+`{"compliance_profile": …}`): empty (the fleet default of *Compliance > Audit settings*, else the SSG `standard`
+profile), a profile of the SSG content, or a **custom profile**. A request can name another one
+(`POST /api/v1/hosts/{id}/compliance-scan` with `{"profile": …}`).
+
+**Custom profiles** (*Compliance > Custom profiles*, `/api/v1/compliance/profiles`, `settings:write`): a *base
+profile* of the SSG content with some rules **switched off**, shared by any number of hosts. The agent turns it into
+an XCCDF tailoring file (`oscap xccdf eval --tailoring-file`; checked against OpenSCAP 1.4.2 and the Debian SSG) and
+reports the audit as `custom:<name>`. The editor offers the rules that currently fail on the fleet (click one to
+switch it off; `GET /api/v1/compliance/rules`) and accepts any rule by its short name
+(`package_aide_installed`). It does not browse every rule of the datastream, and it cannot change a rule's
+parameters or add rules: only *base profile + rules off* in this release. A profile that hosts use (their own choice,
+or the fleet default) cannot be deleted. Creating, changing and deleting are audited.
 
 The agent runs `oscap xccdf eval` under `nice -n 19 ionice -c 3`, keeps the raw result file on the host and reports
 the counts, the score (passed / (passed + failed)), the failed rules with their severity and the SHA-256 of the
 result file. Reports are append-only in the database (an update trigger refuses edits). A score below the threshold
 (default 80 %) raises the `compliance.score_low` event (high), which notification rules can route to the SIEM
-webhook or e-mail. The dashboard shows the fleet score (mean of each host's latest report).
+webhook or e-mail. The **Compliance** page shows the fleet score (mean of each host's latest report), the latest
+audit of each host and the audit settings; the dashboard tile shows the same score.
+
+Not in this release: scheduled audits (start them from the host or the API), tailoring beyond rules off, and SSG
+content for Arch.
 
 ## App center (portal)
 
@@ -186,7 +233,32 @@ anything runs, a progress bar and a notification log. French or English and ligh
   If the window stays blank under Wayland with some graphics drivers, start it with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
+- **Updates from the app center (0.7).** An **Updates** tab next to *Applications* lists the system updates waiting on
+  this machine (security ones first) with *Update everything*, *Update selected*, and *Check now* (refreshes the
+  repositories and sends a fresh inventory). **No approval step**: the person at the keyboard decides, and the
+  request becomes a queued `patch` task that the agent runs like any other (the host's policy still supplies the
+  health probes and the rollback options). It is allowed only where the **Updates from the app center** switch
+  (`portal_updates`) is on for the host: on by default for **laptops and workstations**, off for servers, per host
+  or per enrolment token (*Add agent > App center updates*: automatic, yes, no). The server checks, for every
+  request, that the app center is on for the host, that the host is not pending or quarantined, that no patch or
+  rollback is already open, and that every name is a **pending system update of that machine** (never a container,
+  never an arbitrary package name). The task is recorded as `local:<user>@<host>` and `portal.update_requested` is
+  audited. The terminal app center does not have this tab.
+- **Notifications.** The installer adds `/etc/xdg/autostart/croustypatch-update-notifier.desktop`: at login the
+  window binary runs in `--notifier` mode, with no window. It asks the agent's socket (same rights as the window) every
+  30 minutes (`CROUSTYPATCH_NOTIFIER_INTERVAL`, 60 s to 1 day) and, when updates can be installed here, sends a desktop
+  notification (`notify-send`, else D-Bus) in the session language. It speaks again only when the list of updates
+  changes (fingerprint kept in `$XDG_STATE_HOME/croustypatch/last-notified`), never on servers or on machines where
+  the switch is off. The installer adds `libnotify` (`libnotify-bin` on Debian/Ubuntu) when it is missing.
+- **App icons (0.7).** An app's icon is a generic glyph, a **logo** from the bundled collection (121 icons from
+  [Simple Icons](https://simpleicons.org), CC0, in `server/assets/brand-icons.json`, rebuilt by
+  `server/assets/brand-icons/generate.py`; the suggested apps use them where one exists), or an **uploaded image**
+  (PNG, JPEG, WebP or SVG; rasters are scaled to 128 px in the browser, SVG up to 64 KB; at most about 72 KB stored).
+  The server stores `brand:<name>` or a `data:` URI, resolves logos to an image (`icon_url`) and checks uploads by
+  content, not by label (magic bytes; an SVG with a script, event handler, foreign object or entity is refused). Images
+  are only displayed through `<img>`, where an SVG cannot run scripts, and nothing is fetched from the internet.
+
 On the web, a command app shows as installed after its last successful install (the server cannot look at the
 machine); the terminal app center checks the machine itself.
 
-Not in this release: a desktop window for FreeBSD and aarch64.
+Not in this release: a desktop window for FreeBSD and aarch64, and updates or notifications in the terminal app center.

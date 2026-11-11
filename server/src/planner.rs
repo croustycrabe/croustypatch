@@ -252,14 +252,17 @@ pub fn plan_for_host(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc>) ->
     plan_for_host_with(c, host_id, now, None)
 }
 
-/// Same, with an AI advisor for policies in AI mode.
+/// Task kinds that block planning another task of `kind` on the same host.
+pub fn blocking_kinds(kind: &str) -> &'static [&'static str] {
+    if kind == "docker" { &["docker"] } else { &["patch", "rollback"] }
+}
+
+/// Same, with an AI advisor for policies in AI mode. System updates and container images are planned as separate
+/// tasks (kinds `patch` and `docker`): a container that fails to restart never rolls a system patch back, and each
+/// kind waits only for its own open task. Returns the first task created.
 pub fn plan_for_host_with(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc>, advisor: Option<&dyn crate::ai::Advisor>) -> ApiResult<Option<Uuid>> {
     let host: Host = hosts::table.find(host_id).select(Host::as_select()).first(c)?;
     if matches!(host.status.as_str(), "pending" | "quarantined") {
-        return Ok(None);
-    }
-    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
-    if open > 0 {
         return Ok(None);
     }
     let pending: Vec<HostPackage> = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::candidate.is_not_null()).select(HostPackage::as_select()).load(c)?;
@@ -270,13 +273,32 @@ pub fn plan_for_host_with(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc
     let (mut verdicts, chosen) = select(c, &host, &pending, &groups, now)?;
     let Some(i) = chosen else { return Ok(None) };
     let Verdict { policy, batch, .. } = verdicts.swap_remove(i);
+    let (docker, system): (Vec<Candidate>, Vec<Candidate>) = batch.into_iter().partition(|b| b.pkg.source == "docker");
+    let mut first = None;
+    for (kind, part) in [("patch", system), ("docker", docker)] {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(id) = plan_part(c, &host, &policy, part, kind, now, advisor)? {
+            first.get_or_insert(id);
+        }
+    }
+    Ok(first)
+}
+
+fn plan_part(c: &mut PgConnection, host: &Host, policy: &Applicable, batch: Vec<Candidate>, kind: &str, now: DateTime<Utc>, advisor: Option<&dyn crate::ai::Advisor>) -> ApiResult<Option<Uuid>> {
+    let host_id = host.id;
+    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(blocking_kinds(kind))).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+    if open > 0 {
+        return Ok(None);
+    }
     let key = batch_key(&batch.iter().map(|b| (b.pkg.name.clone(), b.candidate.clone())).collect::<Vec<_>>());
     let seen: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::batch_key.eq(&key)).filter(tasks::status.ne_all(["cancelled", "expired"])).count().get_result(c)?;
     if seen > 0 {
         return Ok(None); // already handled (or deliberately blocked/rejected/failed): never loop
     }
     let cve_info = load_cve_info(c, &batch)?;
-    let (input, notes) = assess_input(&host, &batch, &cve_info);
+    let (input, notes) = assess_input(host, &batch, &cve_info);
     let mut a: Assessment = risk::assess_deterministic(&policy.def, &input);
     a.rationale.splice(0..0, notes);
     if policy.def.ai_mode_enabled {
@@ -300,7 +322,7 @@ pub fn plan_for_host_with(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc
     let task_id: Uuid = diesel::insert_into(tasks::table)
         .values((
             tasks::host_id.eq(host_id),
-            tasks::kind.eq("patch"),
+            tasks::kind.eq(kind),
             tasks::status.eq(status),
             tasks::policy_id.eq(Some(policy.id)),
             tasks::packages.eq(packages_json(&batch)),
@@ -319,7 +341,7 @@ pub fn plan_for_host_with(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc
     audit::record(
         c,
         Event::new(&format!("policy:{}", policy.name), "task.planned").target("task", &task_id.to_string()).host(host_id).details(json!({
-            "action": a.action, "contextual_risk": a.contextual_risk, "stability_risk": a.stability_risk, "packages": batch.len(), "engine": a.engine
+            "action": a.action, "contextual_risk": a.contextual_risk, "stability_risk": a.stability_risk, "packages": batch.len(), "engine": a.engine, "kind": kind
         })),
     )?;
     Ok(Some(task_id))
@@ -346,7 +368,7 @@ pub fn explain(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc>) -> ApiRe
     let pending: Vec<HostPackage> = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::candidate.is_not_null()).select(HostPackage::as_select()).load(c)?;
     let open: Option<(Uuid, String, String, DateTime<Utc>)> = tasks::table
         .filter(tasks::host_id.eq(host_id))
-        .filter(tasks::kind.eq_any(["patch", "rollback"]))
+        .filter(tasks::kind.eq_any(["patch", "rollback", "docker"]))
         .filter(tasks::status.eq_any(OPEN))
         .order(tasks::created_at.desc())
         .select((tasks::id, tasks::kind, tasks::status, tasks::scheduled_for))

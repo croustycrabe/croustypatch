@@ -143,9 +143,9 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 }
             }
             next_days.sort_by_key(|(t, _)| *t);
-            let week: Vec<(String, i64)> = tasks::table.filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).group_by(tasks::status).select((tasks::status, diesel::dsl::count_star())).load(c)?;
+            let week: Vec<(String, i64)> = tasks::table.filter(tasks::kind.eq_any(["patch", "rollback", "docker"])).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).group_by(tasks::status).select((tasks::status, diesel::dsl::count_star())).load(c)?;
             let wk = |s: &str| week.iter().find(|(st, _)| st == s).map(|(_, n)| *n).unwrap_or(0);
-            let missed: i64 = tasks::table.filter(tasks::kind.eq("patch")).filter(tasks::status.eq("expired")).filter(tasks::message.like("the patch day ended%")).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).count().get_result(c)?;
+            let missed: i64 = tasks::table.filter(tasks::kind.eq_any(["patch", "docker"])).filter(tasks::status.eq("expired")).filter(tasks::message.like("the patch day ended%")).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).count().get_result(c)?;
             // A module counts as in use when at least one host has it switched on.
             let host_modules: Vec<serde_json::Value> = hosts::table.select(hosts::modules).load(c)?;
             let in_use = |m: &str| host_modules.iter().any(|v| crate::modules::parse(v).get(m));

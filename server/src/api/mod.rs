@@ -10,6 +10,7 @@ pub(crate) mod compliance_api;
 mod mcp;
 pub mod agent_dist;
 pub(crate) mod notifications;
+mod docker;
 mod reports;
 mod packages;
 pub mod portal;
@@ -28,6 +29,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/agent/ws", web::get().to(gateway::ws_tunnel))
             .route("/agent/portal", web::get().to(portal::agent_view))
             .route("/agent/portal/install", web::post().to(portal::agent_request))
+            .route("/agent/portal/updates", web::get().to(portal::agent_updates))
+            .route("/agent/portal/update", web::post().to(portal::agent_update))
             // --- "Add agent": installer script and binaries (public, no secrets)
             .route("/agent/install.sh", web::get().to(agent_dist::install_script))
             .route("/agent/platforms", web::get().to(agent_dist::platforms))
@@ -62,7 +65,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/portal/hosts/{id}", web::get().to(portal::host_view))
             .route("/portal/install", web::post().to(portal::request))
             .route("/portal/suggestions", web::get().to(portal::suggestions))
+            .route("/portal/brand-icons", web::get().to(portal::brand_icons))
             .route("/compliance", web::get().to(compliance_api::fleet))
+            .route("/compliance/profiles", web::get().to(compliance_api::profiles))
+            .route("/compliance/profiles", web::post().to(compliance_api::profile_create))
+            .route("/compliance/profiles/{id}", web::put().to(compliance_api::profile_update))
+            .route("/compliance/profiles/{id}", web::delete().to(compliance_api::profile_delete))
+            .route("/compliance/rules", web::get().to(compliance_api::failing_rules))
             .route("/hosts/{id}/compliance", web::get().to(compliance_api::host))
             .route("/hosts/{id}/compliance-scan", web::post().to(compliance_api::scan))
             .route("/mcp", web::post().to(mcp::endpoint))
@@ -100,6 +109,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/hosts/{id}/release", web::post().to(fleet::release_host))
             .route("/hosts/{id}/reboot", web::post().to(fleet::reboot_host))
             .route("/hosts/{id}/agent-update", web::post().to(fleet::update_agent))
+            .route("/docker", web::get().to(docker::list))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))

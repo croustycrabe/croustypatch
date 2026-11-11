@@ -70,6 +70,7 @@ async fn the_app_center_installs_only_catalog_apps_in_scope() {
 
     // the signed command carries the packages
     let state = db.state();
+    std::thread::sleep(std::time::Duration::from_secs(2)); // a remote test database may run a moment ahead of this machine
     let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, dev_host).unwrap();
     let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
     assert_eq!((payload["action"]["type"].clone(), payload["action"]["packages"].clone()), (json!("app"), json!(["git", "make"])), "{payload}");

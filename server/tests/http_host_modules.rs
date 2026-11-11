@@ -90,6 +90,7 @@ async fn apps_follow_each_system_and_commands_need_their_own_permission() {
     let (st, b) = call(&app, req(debian, &tool)).await;
     assert_eq!(st, 202, "{b}");
     let state = db.state();
+    std::thread::sleep(std::time::Duration::from_secs(2)); // a remote test database may run a moment ahead of this machine
     let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, debian).unwrap();
     let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
     assert_eq!(payload["action"]["command"]["install"], json!(script), "the command travels inside the signed order");
@@ -118,12 +119,26 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
         assert_eq!(st, 201, "{r}");
         let t: String = hosts::table.find(r["agent_id"].as_str().unwrap().parse::<Uuid>().unwrap()).select(hosts::asset_type).first(&mut db.conn()).unwrap();
         assert_eq!(t, want);
+        // laptops and workstations may start their own updates from the app center unless the token says otherwise
+        let m: Value = hosts::table.find(r["agent_id"].as_str().unwrap().parse::<Uuid>().unwrap()).select(hosts::modules).first(&mut db.conn()).unwrap();
+        assert_eq!(m["portal_updates"], json!(true), "{name}: {m}");
+    }
+    // ... and the token has the last word, either way
+    let enroll_with = |name: &str, token: &str, laptop: bool| {
+        TestRequest::post().uri("/api/v1/agent/enroll").set_json(EnrollRequest { token: token.into(), facts: HostFacts { hostname: name.into(), is_laptop: laptop, is_desktop: laptop, ..Default::default() }, public_key_pem: kp.public_pem.clone() })
+    };
+    for (name, laptop, flag) in [("lt-off", true, false), ("srv-on", false, true)] {
+        let (_, t) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({"modules": {"portal_updates": flag}}))).await;
+        let (st, r) = call(&app, enroll_with(name, t["token"].as_str().unwrap(), laptop)).await;
+        assert_eq!(st, 201, "{r}");
+        let m: Value = hosts::table.find(r["agent_id"].as_str().unwrap().parse::<Uuid>().unwrap()).select(hosts::modules).first(&mut db.conn()).unwrap();
+        assert_eq!(m["portal_updates"], json!(flag), "{name}: {m}");
     }
     let (st, r) = call(&app, enroll("chosen", tok["token"].as_str().unwrap())).await;
     assert_eq!(st, 201, "{r}");
     let id: Uuid = r["agent_id"].as_str().unwrap().parse().unwrap();
     let m: Value = hosts::table.find(id).select(hosts::modules).first(&mut db.conn()).unwrap();
-    assert_eq!(m, json!({"docker": true, "helper_script": false, "openscap": true, "portal": false, "eco": false}));
+    assert_eq!(m, json!({"docker": true, "helper_script": false, "openscap": true, "portal": false, "portal_updates": false, "eco": false}), "a server does not get the self-service updates unless the token says so");
 
     // without a choice on the token: the defaults of the day (eco on unless switched off)
     let (_, tok2) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({}))).await;

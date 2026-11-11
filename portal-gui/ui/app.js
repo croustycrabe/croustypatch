@@ -16,6 +16,13 @@ const FR = {
   sent: 'Demande envoyée pour {n}.', opened: 'Déjà présentes sur cette machine : {l}', none_present: 'Aucune application du catalogue n’est encore présente.',
   empty: 'Aucune application proposée pour cette machine.', no_match: 'Aucune application ne correspond.',
   unreachable: 'L’agent CroustyPatch ne répond pas sur cette machine ({e}).', command_badge: 'commande',
+  tab_apps: 'Applications', tab_updates: 'Mises à jour', upd_title: 'Mises à jour de cet ordinateur', upd_sub: '{n} mise(s) à jour disponible(s){sec}', upd_sec: ' dont {s} de sécurité',
+  upd_none: 'Cet ordinateur est à jour.', upd_check: 'Rechercher', upd_checking: 'Recherche…', upd_go: 'Mettre à jour ({n})', upd_checked: 'Dernière recherche : {d}',
+  upd_managed: 'Les mises à jour de cet ordinateur sont gérées par votre administrateur : vous pouvez les voir ici, mais pas les lancer.',
+  upd_reboot: 'Un redémarrage est nécessaire pour terminer les mises à jour.', upd_security: 'Sécurité',
+  confirm_upd: 'Mettre à jour {n} paquet(s) ?', upd_body: 'L’agent les installe avec un point de restauration et revient en arrière en cas de problème. L’ordinateur peut demander un redémarrage ensuite.',
+  upd_running: 'Mise à jour du système', ok_upd: 'Mises à jour installées', fail_upd: 'La mise à jour a échoué : {m}', upd_sent: 'Mise à jour demandée ({n} paquet(s)).',
+  check_started: 'Recherche de mises à jour lancée…', check_done: 'Recherche terminée : {n} mise(s) à jour disponible(s).', upd_unavailable: 'Les mises à jour ne sont pas disponibles sur cet ordinateur ({e}).',
   theme_system: 'Thème : celui du système', theme_light: 'Thème : clair', theme_dark: 'Thème : sombre', lang_title: 'Langue : français (cliquer pour passer à l’anglais)',
 };
 const EN = {
@@ -32,6 +39,13 @@ const EN = {
   sent: 'Request sent for {n}.', opened: 'Already on this machine: {l}', none_present: 'No catalog application is on this machine yet.',
   empty: 'No application offered for this machine.', no_match: 'No application matches.',
   unreachable: 'The CroustyPatch agent does not answer on this machine ({e}).', command_badge: 'command',
+  tab_apps: 'Applications', tab_updates: 'Updates', upd_title: 'Updates for this computer', upd_sub: '{n} update(s) available{sec}', upd_sec: ', {s} of them security',
+  upd_none: 'This computer is up to date.', upd_check: 'Check', upd_checking: 'Checking…', upd_go: 'Update ({n})', upd_checked: 'Last check: {d}',
+  upd_managed: 'Updates for this computer are managed by your administrator: you can see them here, but not start them.',
+  upd_reboot: 'A restart is needed to finish the updates.', upd_security: 'Security',
+  confirm_upd: 'Update {n} package(s)?', upd_body: 'The agent installs them with a restore point and rolls back if something goes wrong. The computer may ask for a restart afterwards.',
+  upd_running: 'Updating the system', ok_upd: 'Updates installed', fail_upd: 'The update failed: {m}', upd_sent: 'Update requested ({n} package(s)).',
+  check_started: 'Looking for updates…', check_done: 'Check finished: {n} update(s) available.', upd_unavailable: 'Updates are not available on this computer ({e}).',
   theme_system: 'Theme: follow the system', theme_light: 'Theme: light', theme_dark: 'Theme: dark', lang_title: 'Language: English (click for French)',
 };
 
@@ -75,13 +89,20 @@ function icon(name, cls = 'ico') {
   return svg;
 }
 document.querySelectorAll('[data-icon]').forEach((n) => n.replaceWith(icon(n.dataset.icon)));
+/** The tile of an app: its logo or uploaded image when the catalog has one (an <img>: an SVG cannot run scripts there), else a glyph. */
+function appIcon(a) {
+  const src = a.icon_url || (typeof a.icon === 'string' && /^data:image\/(png|jpeg|webp|svg\+xml);base64,/.test(a.icon) ? a.icon : null);
+  if (src) return el('span', { class: 'card__icon card__icon--img' }, el('img', { src, alt: '', width: 32, height: 32 }));
+  return el('span', { class: 'card__icon' }, icon(a.icon || 'cube', 'ico ico--lg'));
+}
+
 const THEME_ICON = { system: 'auto', light: 'sun', dark: 'moon' };
 
 // ---- backend
 const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
 
 // ---- state
-const S = { host: '', apps: [], cat: '', q: '', loaded: false, error: '', seen: new Map(), notes: [], busy: false };
+const S = { host: '', apps: [], cat: '', q: '', loaded: false, error: '', seen: new Map(), notes: [], busy: false, view: 'apps', upd: null, updOff: new Set(), updSeen: new Map(), updLoaded: false, checking: null };
 
 function presence(a) {
   const l = a.local;
@@ -108,6 +129,33 @@ function trackRecent(recent) {
   }
 }
 
+/** Report each finished system update once (not the ones from before the window opened). */
+function trackUpdates(recent) {
+  for (const r of recent ?? []) {
+    const prev = S.updSeen.get(r.task_id);
+    S.updSeen.set(r.task_id, r.status);
+    if (!S.updLoaded || prev === r.status) continue;
+    if (r.status === 'succeeded') note('ok', t('ok_upd'));
+    else if (['failed', 'rolled_back', 'blocked', 'rejected'].includes(r.status)) note('err', t('fail_upd', { m: r.message }));
+  }
+}
+
+async function refreshUpdates() {
+  try {
+    const u = await invoke('updates');
+    S.upd = u;
+    trackUpdates(u.recent);
+    S.updLoaded = true;
+    if (S.checking && (u.checked_at !== S.checking.from || Date.now() > S.checking.until)) {
+      if (u.checked_at !== S.checking.from) note('info', t('check_done', { n: (u.pending ?? []).length }));
+      S.checking = null;
+    }
+  } catch (e) {
+    S.upd = null;
+    S.updError = String(e);
+  }
+}
+
 async function refresh() {
   try {
     const v = await invoke('list');
@@ -123,6 +171,7 @@ async function refresh() {
   } catch (e) {
     S.error = String(e);
   }
+  await refreshUpdates();
   render();
   schedule();
 }
@@ -131,7 +180,7 @@ let timer;
 function schedule() {
   clearTimeout(timer);
   // Quick while something runs, so progress and the outcome show up promptly.
-  timer = setTimeout(refresh, S.apps.some((a) => a.pending) ? 2500 : 15000);
+  timer = setTimeout(refresh, S.apps.some((a) => a.pending) || S.upd?.open_task || S.checking ? 2500 : 15000);
 }
 
 // ---- actions
@@ -191,7 +240,7 @@ function card(a, locked) {
     : el('span', { class: 'card__what mono' }, (a.packages ?? []).join(' · '));
   return el('article', { class: `card${pending ? ' card--busy' : ''}`, 'data-app': a.name },
     el('div', { class: 'card__head' },
-      el('span', { class: 'card__icon' }, icon(a.icon || 'cube', 'ico ico--lg')),
+      appIcon(a),
       el('div', {}, el('div', { class: 'card__name' }, a.name), el('div', { class: 'card__sub' }, [a.category, a.version].filter(Boolean).join(' · ')))),
     a.description ? el('p', { class: 'card__desc' }, a.description) : el('p', { class: 'card__desc' }),
     what,
@@ -230,17 +279,69 @@ function render() {
   empty.hidden = !S.loaded || shown.length > 0;
   empty.textContent = S.apps.length ? t('no_match') : t('empty');
 
-  // progress of the running operation
+  // progress of the running operation: an app install or a system update
   const run = S.apps.find((a) => a.pending);
-  $('progress').hidden = !run;
-  $('idle').hidden = !!run;
+  const up = S.upd?.open_task;
+  $('progress').hidden = !run && !up;
+  $('idle').hidden = !!run || !!up;
   $('idle').textContent = t('idle');
+  const stage = (st) => ({ queued: 20, sent: 45, running: 75, soaking: 90 })[st] ?? 60;
   if (run) {
     const st = run.pending.status;
     $('progress-text').textContent = t(run.pending.install === false ? 'removing' : 'installing', { n: run.name });
     $('progress-stage').textContent = W[`stage_${st}`] ?? st;
-    $('progress-bar').style.width = `${({ queued: 20, sent: 45, running: 75, soaking: 90 })[st] ?? 60}%`;
+    $('progress-bar').style.width = `${stage(st)}%`;
+  } else if (up) {
+    $('progress-text').textContent = t('upd_running');
+    $('progress-stage').textContent = W[`stage_${up.status}`] ?? up.status;
+    $('progress-bar').style.width = `${stage(up.status)}%`;
   }
+  renderViews();
+}
+
+function renderViews() {
+  const pending = S.upd?.pending ?? [];
+  $('tab-apps').textContent = t('tab_apps');
+  $('tab-updates-label').textContent = t('tab_updates');
+  $('tab-apps').setAttribute('aria-selected', String(S.view === 'apps'));
+  $('tab-updates').setAttribute('aria-selected', String(S.view === 'updates'));
+  const n = $('tab-updates-n');
+  n.hidden = pending.length === 0;
+  n.textContent = String(pending.length);
+  document.querySelector('.layout').hidden = S.view !== 'apps';
+  document.querySelector('.search').hidden = S.view !== 'apps';
+  $('updates').hidden = S.view !== 'updates';
+  if (S.view === 'updates') renderUpdates();
+}
+
+function selectedUpdates() {
+  return (S.upd?.pending ?? []).map((p) => p.name).filter((nme) => !S.updOff.has(nme));
+}
+
+function renderUpdates() {
+  const u = S.upd;
+  const pending = u?.pending ?? [];
+  const sec = pending.filter((p) => p.is_security).length;
+  const busy = !!u?.open_task;
+  $('upd-title').textContent = t('upd_title');
+  $('upd-sub').textContent = !u ? t('upd_unavailable', { e: S.updError ?? '' }) : [pending.length ? t('upd_sub', { n: pending.length, sec: sec ? t('upd_sec', { s: sec }) : '' }) : t('upd_none'), u.checked_at ? t('upd_checked', { d: new Date(u.checked_at).toLocaleString(document.documentElement.lang) }) : ''].filter(Boolean).join(' · ');
+  $('upd-check-label').textContent = S.checking ? t('upd_checking') : t('upd_check');
+  $('upd-check').disabled = !!S.checking || !u;
+  const chosen = selectedUpdates();
+  $('upd-go-label').textContent = t('upd_go', { n: chosen.length });
+  $('upd-go').hidden = !u?.allowed;
+  $('upd-go').disabled = !u?.allowed || busy || chosen.length === 0 || S.busy;
+  $('upd-managed').hidden = !u || u.allowed;
+  $('upd-managed').textContent = t('upd_managed');
+  $('upd-reboot').hidden = !u?.reboot_required;
+  $('upd-reboot').textContent = t('upd_reboot');
+  $('upd-empty').hidden = !u || pending.length > 0;
+  $('upd-empty').textContent = t('upd_none');
+  $('upd-list').replaceChildren(...pending.map((p) => el('li', { 'data-update': p.name },
+    el('input', { type: 'checkbox', checked: !S.updOff.has(p.name) || undefined, disabled: !u.allowed || busy, 'aria-label': p.name, onchange: (e) => { if (e.target.checked) S.updOff.delete(p.name); else S.updOff.add(p.name); renderUpdates(); } }),
+    el('span', { class: 'name' }, p.name),
+    el('span', { class: 'ver' }, `${p.version} → ${p.candidate ?? '?'}`),
+    p.is_security ? el('span', { class: 'badge badge--warn' }, icon('warn'), t('upd_security')) : null)));
 }
 
 function renderLog() {
@@ -252,6 +353,42 @@ function renderLog() {
 }
 
 // ---- wiring
+$('tab-apps').addEventListener('click', () => { S.view = 'apps'; render(); });
+$('tab-updates').addEventListener('click', () => { S.view = 'updates'; render(); });
+$('upd-check').addEventListener('click', async () => {
+  S.checking = { from: S.upd?.checked_at ?? null, until: Date.now() + 120000 };
+  note('info', t('check_started'));
+  render();
+  try { await invoke('check'); } catch (e) { S.checking = null; note('err', String(e)); }
+  render();
+  schedule();
+});
+$('upd-go').addEventListener('click', () => {
+  const names = selectedUpdates();
+  const d = $('confirm');
+  $('confirm-body').replaceChildren(el('p', {}, t('upd_body')), el('pre', {}, names.join(' ')));
+  $('confirm-title').textContent = t('confirm_upd', { n: names.length });
+  const yes = $('confirm-yes');
+  yes.textContent = t('upd_go', { n: names.length });
+  yes.className = 'btn btn--primary';
+  $('confirm-no').textContent = t('cancel');
+  d.onclose = async () => {
+    if (d.returnValue !== 'ok') return;
+    S.busy = true;
+    render();
+    try {
+      await invoke('update', { packages: names });
+      note('info', t('upd_sent', { n: names.length }));
+    } catch (e) {
+      note('err', t('fail_upd', { m: String(e) }));
+    }
+    S.busy = false;
+    await refresh();
+  };
+  d.returnValue = '';
+  d.showModal();
+  $('confirm-no').focus();
+});
 $('lang').addEventListener('click', () => {
   lang = lang === 'fr' ? 'en' : 'fr';
   W = lang === 'fr' ? FR : EN;

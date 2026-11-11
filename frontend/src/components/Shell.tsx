@@ -1,5 +1,5 @@
 'use client';
-import { Bell, ClipboardText, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
+import { Bell, Cube, ClipboardText, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, SealCheck, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -20,6 +20,7 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
     items: [
       { href: '/hosts', key: 'nav.hosts', perm: 'hosts:read', icon: HardDrives },
       { href: '/packages', key: 'nav.packages', perm: 'hosts:read', icon: Package },
+      { href: '/docker', key: 'nav.docker', perm: 'hosts:read', icon: Cube },
       { href: '/groups', key: 'nav.groups', perm: 'groups:read', icon: UsersThree },
       { href: '/portal', key: 'nav.portal', perm: 'hosts:read', icon: SquaresFour },
     ],
@@ -33,7 +34,13 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
       { href: '/vulnerabilities', key: 'nav.vulns', perm: 'vulnerabilities:read', icon: ShieldWarning },
     ],
   },
-  { label: 'nav.group.governance', items: [{ href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText }] },
+  {
+    label: 'nav.group.governance',
+    items: [
+      { href: '/compliance', key: 'nav.compliance', perm: 'hosts:read', icon: SealCheck },
+      { href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText },
+    ],
+  },
   {
     label: 'nav.group.admin',
     items: [

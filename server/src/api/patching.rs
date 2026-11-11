@@ -294,10 +294,6 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
                     if matches!(host.status.as_str(), "pending" | "quarantined") {
                         return Err(ApiError::Conflict(format!("{} is {}", host.hostname, host.status)));
                     }
-                    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
-                    if open > 0 {
-                        return Err(ApiError::Conflict(format!("{} already has an open patch task", host.hostname)));
-                    }
                     let mut q = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::candidate.is_not_null()).into_boxed();
                     if !b.packages.is_empty() {
                         q = q.filter(host_packages::name.eq_any(b.packages.clone()));
@@ -306,35 +302,51 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
                     if pending.is_empty() {
                         return Err(ApiError::Conflict(format!("{} has nothing to update", host.hostname)));
                     }
-                    let batch: Vec<planner::Candidate> = pending.into_iter().filter_map(|p| p.candidate.clone().map(|candidate| planner::Candidate { pkg: p, candidate })).collect();
                     let groups = planner::host_groups(c, host_id)?;
                     let def = planner::applicable_policy(c, &host, &groups)?;
                     let exec: ExecPolicy = def.as_ref().map(|p| planner::exec_policy(&p.def, host.has_staging, &host.criticality)).unwrap_or_default();
-                    let id: Uuid = diesel::insert_into(tasks::table)
-                        .values((
-                            tasks::host_id.eq(host_id),
-                            tasks::kind.eq("patch"),
-                            tasks::status.eq("queued"),
-                            tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
-                            tasks::packages.eq(planner::packages_json(&batch)),
-                            tasks::exec.eq(Some(serde_json::to_value(&exec).unwrap_or_default())),
-                            tasks::requested_by.eq(&user.username),
-                            tasks::message.eq(format!("manual patch by {}", user.username)),
-                        ))
-                        .returning(tasks::id)
-                        .get_result(c)?;
-                    diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
-                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len()})).ip(&user.ip))?;
-                    Ok(id)
+                    // System updates and container images are separate tasks.
+                    let (docker, system): (Vec<_>, Vec<_>) = pending.into_iter().filter_map(|p| p.candidate.clone().map(|candidate| planner::Candidate { pkg: p, candidate })).partition(|b| b.pkg.source == "docker");
+                    let (mut made, mut blocked) = (vec![], vec![]);
+                    for (kind, batch) in [("patch", system), ("docker", docker)] {
+                        if batch.is_empty() {
+                            continue;
+                        }
+                        let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(planner::blocking_kinds(kind))).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+                        if open > 0 {
+                            blocked.push(kind);
+                            continue;
+                        }
+                        let id: Uuid = diesel::insert_into(tasks::table)
+                            .values((
+                                tasks::host_id.eq(host_id),
+                                tasks::kind.eq(kind),
+                                tasks::status.eq("queued"),
+                                tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
+                                tasks::packages.eq(planner::packages_json(&batch)),
+                                tasks::exec.eq(Some(serde_json::to_value(&exec).unwrap_or_default())),
+                                tasks::requested_by.eq(&user.username),
+                                tasks::message.eq(format!("manual {} update by {}", if kind == "docker" { "container" } else { "patch" }, user.username)),
+                            ))
+                            .returning(tasks::id)
+                            .get_result(c)?;
+                        diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
+                        audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": kind})).ip(&user.ip))?;
+                        made.push(id);
+                    }
+                    if made.is_empty() {
+                        return Err(ApiError::Conflict(format!("{} already has an open {} task", host.hostname, if blocked.first() == Some(&"docker") { "container" } else { "patch" })));
+                    }
+                    Ok(made)
                 });
-                created.push(r.map(|id| (host_id, id)));
+                created.push(r.map(|ids| ids.into_iter().map(|id| (host_id, id)).collect::<Vec<_>>()));
             }
             // Report partial failures instead of hiding them.
             let (ok, errs): (Vec<_>, Vec<_>) = created.into_iter().partition(|r| r.is_ok());
             if ok.is_empty() {
                 return Err(errs.into_iter().next().unwrap().unwrap_err());
             }
-            Ok(ok.into_iter().map(|r| r.unwrap()).collect())
+            Ok(ok.into_iter().flat_map(|r| r.unwrap()).collect())
         })
         .await?;
     for h in &host_ids {
@@ -403,10 +415,10 @@ pub async fn rollback_task(state: web::Data<AppState>, user: AuthUser, path: web
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
                 let t: Task = tasks::table.find(parent).select(Task::as_select()).first(c).map_err(|_| ApiError::NotFound("task"))?;
-                if t.kind != "patch" || !matches!(t.status.as_str(), "succeeded" | "failed" | "soaking") {
+                if !matches!(t.kind.as_str(), "patch" | "docker") || !matches!(t.status.as_str(), "succeeded" | "failed" | "soaking") {
                     return Err(ApiError::Conflict("only a finished or soaking patch task can be rolled back".into()));
                 }
-                let open: i64 = tasks::table.filter(tasks::host_id.eq(t.host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).filter(tasks::id.ne(parent)).count().get_result(c)?;
+                let open: i64 = tasks::table.filter(tasks::host_id.eq(t.host_id)).filter(tasks::kind.eq_any(["patch", "rollback", "docker"])).filter(tasks::status.eq_any(OPEN)).filter(tasks::id.ne(parent)).count().get_result(c)?;
                 if open > 0 {
                     return Err(ApiError::Conflict("the host has another open task".into()));
                 }

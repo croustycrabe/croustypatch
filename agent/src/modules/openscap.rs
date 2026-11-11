@@ -1,10 +1,15 @@
 //! OpenSCAP module (spec openscap): runs `oscap xccdf eval` with low CPU and I/O priority, summarises the results and
 //! reports them with the SHA-256 of the raw result file.
-use crate::exec::{Cmd, Runner};
+use crate::exec::{self, Cmd, Runner};
 use crate::runner::TaskLog;
 use anyhow::{bail, Result};
-use croustypatch_common::protocol::{ComplianceReport, FailedRule};
+use croustypatch_common::model::PackageManager;
+use croustypatch_common::protocol::{ComplianceReport, FailedRule, OpenScapInfo, ScapProfile, Tailoring};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Where the SCAP Security Guide installs its datastreams.
+pub const CONTENT_DIR: &str = "/usr/share/xml/scap/ssg/content";
 
 pub fn available() -> bool {
     ["/usr/bin/oscap", "/usr/local/bin/oscap"].iter().any(|p| Path::new(p).exists())
@@ -15,7 +20,17 @@ pub fn find_datastream(dir: &Path, distro_hint: &str) -> Option<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("ssg-") && n.ends_with("-ds.xml"))).collect();
     files.sort();
     let hint = distro_hint.to_ascii_lowercase();
-    files.iter().find(|p| p.to_string_lossy().contains(&hint)).cloned().or_else(|| files.into_iter().next())
+    if let Some(p) = files.iter().find(|p| !hint.is_empty() && p.to_string_lossy().contains(&hint)) {
+        return Some(p.clone());
+    }
+    // No content for this exact release (Ubuntu 26.04 against ssg for 22.04 and 24.04): the newest one of the same distribution.
+    let family = hint.trim_end_matches(|c: char| c.is_ascii_digit());
+    let release = |p: &PathBuf| -> u32 {
+        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        n.trim_start_matches("ssg-").trim_start_matches(family).chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+    };
+    let name = |p: &&PathBuf| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&format!("ssg-{family}")));
+    files.iter().filter(name).max_by_key(|p| release(p)).cloned().or_else(|| files.into_iter().next())
 }
 
 /// Summarise an XCCDF result file: counts per result and the failed rules with their severity.
@@ -58,22 +73,150 @@ pub fn score(pass: u32, fail: u32) -> f64 {
     if pass + fail == 0 { 0.0 } else { (pass as f64 * 10000.0 / (pass + fail) as f64).round() / 100.0 }
 }
 
-pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, distro_hint: &str, log: &TaskLog) -> Result<ComplianceReport> {
-    if !available() {
-        bail!("oscap is not installed (apt install openscap-scanner ssg-debderived, dnf install openscap-scanner scap-security-guide)");
+/// Ids of profiles and rules: letters, digits, `_ . -` only (they end up in a command line and in an XML file).
+pub fn valid_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 300 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Profiles from `oscap info --profiles <datastream>`: one `id:title` per line.
+pub fn parse_profiles(text: &str) -> Vec<ScapProfile> {
+    text.lines()
+        .filter_map(|l| {
+            let (id, title) = l.trim().split_once(':')?;
+            (id.starts_with("xccdf_") && valid_id(id)).then(|| ScapProfile { id: id.to_string(), title: title.trim().to_string() })
+        })
+        .collect()
+}
+
+/// `OpenSCAP Library 1.4.2` / `OpenSCAP command line tool (oscap) 1.4.2` -> "1.4.2"
+pub fn parse_version(text: &str) -> String {
+    text.lines().find(|l| l.contains("OpenSCAP command line tool")).and_then(|l| l.split_whitespace().last()).unwrap_or("").to_string()
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+/// The id of the tailored profile inside the tailoring file.
+pub fn tailoring_profile_id(t: &Tailoring) -> String {
+    format!("xccdf_org.croustypatch_profile_{}", t.id.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>())
+}
+
+/// An XCCDF 1.2 tailoring file: the base profile of the datastream with the listed rules deselected.
+pub fn tailoring_xml(t: &Tailoring, datastream: &str, time: &str) -> String {
+    let pid = tailoring_profile_id(t);
+    let mut x = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<xccdf-1.2:Tailoring xmlns:xccdf-1.2=\"http://checklists.nist.gov/xccdf/1.2\" id=\"xccdf_org.croustypatch_tailoring_{}\">\n  <xccdf-1.2:benchmark href=\"{}\"/>\n  <xccdf-1.2:version time=\"{}\">1</xccdf-1.2:version>\n  <xccdf-1.2:Profile id=\"{}\" extends=\"{}\">\n    <xccdf-1.2:title>{}</xccdf-1.2:title>\n",
+        &pid["xccdf_org.croustypatch_profile_".len()..], xml_escape(datastream), xml_escape(time), pid, xml_escape(&t.base), xml_escape(&t.name)
+    );
+    for r in &t.disabled_rules {
+        x += &format!("    <xccdf-1.2:select idref=\"{}\" selected=\"false\"/>\n", xml_escape(r));
     }
-    let ds = find_datastream(Path::new("/usr/share/xml/scap/ssg/content"), distro_hint).ok_or_else(|| anyhow::anyhow!("no SCAP Security Guide content in /usr/share/xml/scap/ssg/content (install scap-security-guide / ssg-*)"))?;
-    let profile = if profile.trim().is_empty() { "xccdf_org.ssgproject.content_profile_standard".to_string() } else { profile.trim().to_string() };
-    if !profile.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+    x + "  </xccdf-1.2:Profile>\n</xccdf-1.2:Tailoring>\n"
+}
+
+/// Packages that give a machine OpenSCAP and the SCAP Security Guide content, and a note when the content cannot come
+/// from the repositories. None: nothing to offer for this system.
+pub fn packages_for(kind: PackageManager, distro: &str) -> Option<(Vec<&'static str>, Option<&'static str>)> {
+    let d = distro.to_ascii_lowercase();
+    match kind {
+        // Debian ships its own content (ssg-debian); Ubuntu and the other derivatives use ssg-debderived.
+        PackageManager::Apt => Some((vec!["openscap-scanner", if d.starts_with("debian") { "ssg-debian" } else { "ssg-debderived" }], None)),
+        // The SCAP Security Guide is not in Arch's repositories (it is in the AUR, which an agent running as root must not build).
+        PackageManager::Pacman => Some((vec!["openscap"], Some("the SCAP Security Guide content is not in the Arch repositories: install the AUR package scap-security-guide as a normal user, or put a datastream in /usr/share/xml/scap/ssg/content"))),
+        _ => None,
+    }
+}
+
+/// What to do before an audit when OpenSCAP or its SCAP content may be missing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstallPlan {
+    /// Everything is there, the administrator switched installation off, or this system has no packages for it:
+    /// the audit runs (or fails with the instructions of [`install_hint`]).
+    Nothing,
+    /// Install these packages first; `note` says what the system's repositories cannot provide.
+    Install { packages: Vec<&'static str>, note: Option<&'static str> },
+}
+
+pub fn install_plan(have_oscap: bool, have_content: bool, auto_install: bool, kind: PackageManager, distro: &str) -> InstallPlan {
+    if (have_oscap && have_content) || !auto_install {
+        return InstallPlan::Nothing;
+    }
+    match packages_for(kind, distro) {
+        Some((packages, note)) => InstallPlan::Install { packages, note },
+        None => InstallPlan::Nothing,
+    }
+}
+
+/// How an administrator installs what is missing on this system (for the error messages).
+pub fn install_hint(kind: PackageManager, distro: &str) -> String {
+    match packages_for(kind, distro) {
+        Some((p, _)) => format!("install {} with the system's package manager ({})", p.join(" and "), kind.as_str()),
+        None => "OpenSCAP is not available for this system".to_string(),
+    }
+}
+
+type Cache = Mutex<Option<(PathBuf, u64, OpenScapInfo)>>;
+static CACHE: Cache = Mutex::new(None);
+
+/// What OpenSCAP offers on this machine, or None when it is not installed. The profiles are read once per content file.
+pub async fn info(distro_hint: &str) -> Option<OpenScapInfo> {
+    if !available() {
+        return None;
+    }
+    let version = exec::run(&Cmd::new("oscap", &["--version"]).timeout(20)).await.ok().map(|o| parse_version(&o.stdout)).unwrap_or_default();
+    let Some(ds) = find_datastream(Path::new(CONTENT_DIR), distro_hint) else {
+        return Some(OpenScapInfo { version, datastream: String::new(), profiles: vec![] });
+    };
+    let stamp = std::fs::metadata(&ds).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    if let Some((p, s, i)) = CACHE.lock().unwrap().as_ref() {
+        if *p == ds && *s == stamp && i.version == version {
+            return Some(i.clone());
+        }
+    }
+    let profiles = exec::run(&Cmd::new("oscap", &["info", "--profiles", &ds.to_string_lossy()]).timeout(60)).await.ok().filter(|o| o.ok()).map(|o| parse_profiles(&o.stdout)).unwrap_or_default();
+    let out = OpenScapInfo { version, datastream: ds.to_string_lossy().into_owned(), profiles };
+    *CACHE.lock().unwrap() = Some((ds, stamp, out.clone()));
+    Some(out)
+}
+
+pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, tailoring: Option<&Tailoring>, distro_hint: &str, kind: PackageManager, distro: &str, log: &TaskLog) -> Result<ComplianceReport> {
+    if !available() {
+        bail!("oscap is not installed: {}", install_hint(kind, distro));
+    }
+    let ds = find_datastream(Path::new(CONTENT_DIR), distro_hint).ok_or_else(|| {
+        let note = packages_for(kind, distro).and_then(|(_, n)| n).map(|n| format!(": {n}")).unwrap_or_else(|| format!(" in {CONTENT_DIR} ({})", install_hint(kind, distro)));
+        anyhow::anyhow!("no SCAP Security Guide content{note}")
+    })?;
+    let dss = ds.to_string_lossy().to_string();
+    let mut profile = if profile.trim().is_empty() { "xccdf_org.ssgproject.content_profile_standard".to_string() } else { profile.trim().to_string() };
+    if !valid_id(&profile) {
         bail!("invalid profile id");
+    }
+    let mut label = profile.clone();
+    let mut tailoring_file: Option<String> = None;
+    if let Some(t) = tailoring {
+        if !valid_id(&t.base) || t.disabled_rules.len() > 3000 || !t.disabled_rules.iter().all(|x| valid_id(x)) || t.name.len() > 120 || t.id.len() > 64 {
+            bail!("invalid custom profile");
+        }
+        let path = state_dir.join("oscap-tailoring.xml");
+        crate::config::write_private(&path, tailoring_xml(t, &dss, &chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()).as_bytes())?;
+        profile = tailoring_profile_id(t);
+        label = format!("custom:{}", t.name);
+        tailoring_file = Some(path.to_string_lossy().to_string());
+        log.line(format!("custom profile '{}' based on {} ({} rule(s) switched off)", t.name, t.base, t.disabled_rules.len()));
     }
     let results = state_dir.join("oscap-results.xml");
     let _ = std::fs::remove_file(&results);
     let res = results.to_string_lossy().to_string();
-    let dss = ds.to_string_lossy().to_string();
     log.line(format!("evaluating {profile} from {dss}"));
     // Lowest CPU and I/O priority: a compliance audit must never slow production down.
-    let out = r.read(Cmd::new("nice", &["-n", "19", "ionice", "-c", "3", "oscap", "xccdf", "eval", "--profile", &profile, "--results", &res, &dss]).timeout(3600)).await?;
+    let mut args: Vec<&str> = vec!["-n", "19", "ionice", "-c", "3", "oscap", "xccdf", "eval", "--profile", &profile];
+    if let Some(t) = &tailoring_file {
+        args.extend(["--tailoring-file", t]);
+    }
+    args.extend(["--results", &res, &dss]);
+    let out = r.read(Cmd::new("nice", &args).timeout(3600)).await?;
     // oscap exits 2 when some rules fail: that is a result, not an error.
     if out.code != 0 && out.code != 2 {
         bail!("oscap failed ({}): {}", out.code, out.stderr.lines().last().unwrap_or("").trim());
@@ -81,7 +224,7 @@ pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, distro_hint: &str
     let xml = std::fs::read_to_string(&results)?;
     let (pass, fail, na, other, failed_rules) = summarize(&xml);
     Ok(ComplianceReport {
-        profile,
+        profile: label,
         datastream: dss,
         passed: pass,
         failed: fail,

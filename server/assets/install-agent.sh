@@ -148,6 +148,19 @@ Terminal=false
 Categories=System;PackageManager;
 Keywords=software;install;apps;logiciels;applications;
 DESKTOP
+    # Tells the user when updates can be installed (a desktop notification; no window). Started at login.
+    mkdir -p /etc/xdg/autostart
+    cat > /etc/xdg/autostart/croustypatch-update-notifier.desktop <<'AUTOSTART'
+[Desktop Entry]
+Type=Application
+Name=CroustyPatch update notifier
+Name[fr]=CroustyPatch – notification des mises à jour
+Comment=Tells you when updates can be installed
+Exec=/usr/local/bin/croustypatch-portal-gui --notifier
+Icon=croustypatch-portal
+NoDisplay=true
+X-GNOME-Autostart-Delay=20
+AUTOSTART
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
     say "installed $GUI and its menu entry"
@@ -158,9 +171,14 @@ DESKTOP
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libwebkit2gtk-4.1-0 >/dev/null 2>&1 \
           || say "warning: could not install libwebkit2gtk-4.1-0; install it, or use croustypatch-portal --tui"
       fi
+      # notify-send, for the update notifications (optional)
+      if ! command -v notify-send >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libnotify-bin >/dev/null 2>&1 || say "note: install libnotify-bin to get desktop notifications about updates"
+      fi
     elif command -v pacman >/dev/null 2>&1; then
       # Installing one package without a full upgrade could leave Arch partially upgraded: say what to run instead.
       pacman -Q webkit2gtk-4.1 >/dev/null 2>&1 || say "warning: the desktop app center needs webkit2gtk-4.1: run 'pacman -Syu webkit2gtk-4.1'"
+      command -v notify-send >/dev/null 2>&1 || say "note: for desktop notifications about updates, run 'pacman -S libnotify'"
     else
       say "warning: make sure WebKitGTK 4.1 is installed for the desktop app center"
     fi

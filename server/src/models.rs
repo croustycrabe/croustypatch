@@ -77,6 +77,8 @@ pub struct Host {
     /// Latest resource reading (cpu_pct, mem_*, swap_*, load_*, uptime_secs, disks) and when it was taken.
     pub metrics: Value,
     pub metrics_at: Option<Ts>,
+    /// Audit profile for this host: '' (fleet default), an XCCDF profile id, or `custom:<profile uuid>`.
+    pub compliance_profile: String,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]
@@ -88,6 +90,8 @@ pub struct HostPackage {
     pub candidate: Option<String>,
     pub is_security: bool,
     pub cves: Value,
+    /// Containers: image, project, service, state, health, started_at.
+    pub meta: Value,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]

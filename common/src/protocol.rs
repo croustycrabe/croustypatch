@@ -39,6 +39,35 @@ pub struct HostFacts {
     /// What the machine is made of (empty on agents before 0.6).
     #[serde(default)]
     pub hardware: Hardware,
+    /// OpenSCAP as installed on the machine: version, the content found and the profiles it offers (agents 0.7+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openscap: Option<OpenScapInfo>,
+}
+
+/// OpenSCAP on a host: what an administrator can choose from when picking its audit profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenScapInfo {
+    pub version: String,
+    /// The SCAP Security Guide datastream used (empty when no content is installed).
+    pub datastream: String,
+    pub profiles: Vec<ScapProfile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScapProfile {
+    pub id: String,
+    pub title: String,
+}
+
+/// A custom audit profile: a profile of the datastream with some rules switched off (tailoring).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tailoring {
+    pub id: String,
+    pub name: String,
+    /// The datastream profile it extends.
+    pub base: String,
+    pub disabled_rules: Vec<String>,
 }
 
 /// Static description of the machine: CPU, memory and what the firmware says it is. No serial numbers.
@@ -99,16 +128,19 @@ pub struct HostModules {
     pub openscap: bool,
     pub portal: bool,
     pub eco: bool,
+    /// Users of this machine may start its pending system updates from the app center, without approval.
+    pub portal_updates: bool,
 }
 
 impl HostModules {
-    pub const NAMES: &[&str] = &["docker", "helper_script", "openscap", "portal", "eco"];
+    pub const NAMES: &[&str] = &["docker", "helper_script", "openscap", "portal", "portal_updates", "eco"];
     pub fn get(&self, name: &str) -> bool {
         match name {
             "docker" => self.docker,
             "helper_script" | "helper-script" => self.helper_script,
             "openscap" => self.openscap,
             "portal" => self.portal,
+            "portal_updates" => self.portal_updates,
             "eco" => self.eco,
             _ => false,
         }
@@ -165,6 +197,9 @@ pub struct PackageEntry {
     /// "system" for OS packages; later "docker", "helper-script".
     #[serde(default = "system")]
     pub source: String,
+    /// Extra facts about the entry (containers: image, stack, service, state, health, start time).
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub meta: serde_json::Value,
 }
 
 fn system() -> String {
@@ -321,10 +356,15 @@ pub enum CommandAction {
         #[serde(default)]
         message: String,
     },
-    /// OpenSCAP evaluation with a profile id (empty: the SSG "standard" profile).
+    /// OpenSCAP evaluation with a profile id (empty: the SSG "standard" profile), or with a tailored (custom) profile.
+    /// When OpenSCAP or its content is missing and `auto_install` is on, the agent installs them first.
     ComplianceScan {
         #[serde(default)]
         profile: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tailoring: Option<Tailoring>,
+        #[serde(default = "yes")]
+        auto_install: bool,
     },
     /// App center: install or remove a catalog application, from its packages or (agents with
     /// `capability::APP_COMMAND`) from an admin-written command recipe.

@@ -46,6 +46,20 @@ next patch days; the policy list shows how many hosts each policy covers and its
 
 `fallback_contextual_risk` (the name used in the spec) is accepted as an alias of `contextual_risk`.
 
+### Containers (`docker`)
+
+`"docker": "include" | "exclude" | "only"` says what the policy does with **container image updates** (hosts with the
+Docker module on):
+
+- `include` (default, and what policies saved before the option mean): container images are taken with the system
+  updates, under the same window, approval and probes.
+- `exclude`: the policy leaves containers alone; another policy (or a manual update from the **Docker** page) handles them.
+- `only`: a dedicated Docker policy; it takes nothing but container images, so containers can follow their own window
+  and approval rules.
+
+Whatever the mode, system updates and container images are planned as two tasks (kinds `patch` and `docker`): see
+`modules.md`, *Docker menu*.
+
 ## How a decision is made
 
 1. **Candidates**: pending updates of the host (security only when `security_only`), minus anything covered by an approved, unexpired waiver.

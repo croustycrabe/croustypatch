@@ -16,7 +16,7 @@ pub fn detect(dir: &Path) -> Vec<PackageEntry> {
                 return None;
             }
             let v = std::fs::read_to_string(e.path()).ok()?.lines().next()?.trim().chars().take(64).collect::<String>();
-            Some(PackageEntry { name: format!("helper:{app}"), version: if v.is_empty() { "unknown".into() } else { v }, candidate: None, is_security: false, cves: vec![], source: "helper-script".into() })
+            Some(PackageEntry { name: format!("helper:{app}"), version: if v.is_empty() { "unknown".into() } else { v }, candidate: None, is_security: false, cves: vec![], source: "helper-script".into(), meta: Default::default() })
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));

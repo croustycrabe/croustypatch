@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-pub const ICONS: &[&str] = &["", "app-window", "code", "terminal", "browser", "file-text", "chart-bar", "shield-check", "database", "image", "music-notes", "chat-circle", "wrench", "cube"];
+pub use crate::icons::GENERIC as ICONS;
 
 #[derive(Deserialize)]
 pub struct AppBody {
@@ -108,9 +108,7 @@ fn check(b: &AppBody) -> ApiResult<()> {
     if b.version.len() > 40 || b.category.len() > 40 || b.description.len() > 2000 {
         return Err(ApiError::bad("version and category: 40 characters max, description: 2000"));
     }
-    if !ICONS.contains(&b.icon.as_str()) {
-        return Err(ApiError::bad(format!("icon must be one of: {}", ICONS[1..].join(", "))));
-    }
+    crate::icons::check(&b.icon).map_err(ApiError::bad)?;
     check_recipes(&recipes_of(b)?)?;
     Ok(())
 }
@@ -120,7 +118,9 @@ const COLS: (portal_apps::id, portal_apps::name, portal_apps::version, portal_ap
     (portal_apps::id, portal_apps::name, portal_apps::version, portal_apps::category, portal_apps::description, portal_apps::icon, portal_apps::recipes, portal_apps::group_ids, portal_apps::enabled);
 
 fn app_json(r: &Row) -> Value {
-    json!({ "id": r.0, "name": r.1, "version": r.2, "category": r.3, "description": r.4, "icon": r.5, "recipes": r.6, "group_ids": r.7, "enabled": r.8, "has_command": has_command(&r.6) })
+    // `icon_url`: the image of a bundled logo (`brand:<slug>`); generic names are drawn by the interface and uploaded
+    // images are already data URIs in `icon`.
+    json!({ "id": r.0, "name": r.1, "version": r.2, "category": r.3, "description": r.4, "icon": r.5, "icon_url": crate::icons::url(&r.5), "recipes": r.6, "group_ids": r.7, "enabled": r.8, "has_command": has_command(&r.6) })
 }
 fn strs(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default()
@@ -393,6 +393,142 @@ pub async fn suggestions(state: web::Data<AppState>, user: AuthUser) -> ApiResul
     for s in &mut list {
         let n = s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
         s["in_catalog"] = json!(names.contains(&n));
+        s["icon_url"] = json!(s.get("icon").and_then(|i| i.as_str()).and_then(crate::icons::url));
     }
     Ok(HttpResponse::Ok().json(list))
+}
+
+/// GET /portal/brand-icons — the bundled logos, for the icon picker of the catalog editor.
+pub async fn brand_icons(user: AuthUser) -> ApiResult<HttpResponse> {
+    user.require("settings:read")?;
+    Ok(HttpResponse::Ok().json(crate::icons::catalog()))
+}
+
+// ------------------------------------------------------------------ system updates from the app center
+
+/// What the person at a machine sees about its updates, and whether they may start them.
+pub fn updates_view(c: &mut PgConnection, host_id: Uuid) -> ApiResult<Value> {
+    portal_on(c, host_id)?;
+    let modules = crate::modules::for_host(c, host_id)?;
+    let (hostname, status, reboot, checked): (String, String, bool, Option<chrono::DateTime<Utc>>) = hosts::table.find(host_id).select((hosts::hostname, hosts::status, hosts::reboot_required, hosts::last_inventory_at)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+    let pending: Vec<(String, String, Option<String>, bool)> = host_packages::table
+        .filter(host_packages::host_id.eq(host_id))
+        .filter(host_packages::source.eq("system"))
+        .filter(host_packages::candidate.is_not_null())
+        .order((host_packages::is_security.desc(), host_packages::name.asc()))
+        .select((host_packages::name, host_packages::version, host_packages::candidate, host_packages::is_security))
+        .load(c)?;
+    let open: Option<(Uuid, String, String, String, chrono::DateTime<Utc>)> = tasks::table
+        .filter(tasks::host_id.eq(host_id))
+        .filter(tasks::kind.eq_any(["patch", "rollback"]))
+        .filter(tasks::status.eq_any(OPEN))
+        .order(tasks::created_at.desc())
+        .select((tasks::id, tasks::kind, tasks::status, tasks::message, tasks::scheduled_for))
+        .first(c)
+        .optional()?;
+    let since = Utc::now() - chrono::Duration::hours(24);
+    let recent: Vec<(Uuid, String, String, Option<chrono::DateTime<Utc>>)> = tasks::table
+        .filter(tasks::host_id.eq(host_id))
+        .filter(tasks::kind.eq_any(["patch", "rollback"]))
+        .filter(tasks::finished_at.gt(since))
+        .order(tasks::finished_at.desc())
+        .limit(5)
+        .select((tasks::id, tasks::status, tasks::message, tasks::finished_at))
+        .load(c)?;
+    Ok(json!({
+        "host": { "id": host_id, "hostname": hostname, "status": status },
+        "allowed": modules.portal_updates,
+        "reboot_required": reboot,
+        "checked_at": checked,
+        "pending": pending.iter().map(|(name, version, candidate, security)| json!({ "name": name, "version": version, "candidate": candidate, "is_security": security })).collect::<Vec<_>>(),
+        "open_task": open.map(|(id, kind, status, message, at)| json!({ "id": id, "kind": kind, "status": status, "message": message, "scheduled_for": at })),
+        "recent": recent.into_iter().map(|(id, status, message, at)| json!({ "task_id": id, "status": status, "message": message, "finished_at": at })).collect::<Vec<_>>(),
+    }))
+}
+
+/// Create a patch task for the pending system updates of a host, asked for by the person using it. They decide: no
+/// approval step and no waiting for a patch day (the restore point, health checks and rollback are the usual ones).
+pub fn create_update_request(c: &mut PgConnection, host_id: Uuid, packages: &[String], actor: &str, ip: &str, local_user: &str) -> ApiResult<Uuid> {
+    c.transaction(|c| {
+        portal_on(c, host_id)?;
+        if !crate::modules::for_host(c, host_id)?.portal_updates {
+            return Err(ApiError::forbidden("updates from the app center are not allowed on this machine: ask your administrator"));
+        }
+        let host: crate::models::Host = hosts::table.find(host_id).select(crate::models::Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?;
+        if matches!(host.status.as_str(), "pending" | "quarantined") {
+            return Err(ApiError::Conflict(format!("the machine is {}", host.status)));
+        }
+        let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+        if open > 0 {
+            return Err(ApiError::Conflict("an update is already running or waiting on this machine".into()));
+        }
+        if packages.len() > 1000 || packages.iter().any(|p| !is_valid_package_name(p)) {
+            return Err(ApiError::bad("invalid package list"));
+        }
+        let mut q = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::source.eq("system")).filter(host_packages::candidate.is_not_null()).into_boxed();
+        if !packages.is_empty() {
+            q = q.filter(host_packages::name.eq_any(packages.to_vec()));
+        }
+        let pending: Vec<crate::models::HostPackage> = q.select(crate::models::HostPackage::as_select()).load(c)?;
+        if let Some(missing) = packages.iter().find(|p| !pending.iter().any(|x| &x.name == *p)) {
+            return Err(ApiError::Conflict(format!("{missing} has no pending update")));
+        }
+        if pending.is_empty() {
+            return Err(ApiError::Conflict("there is nothing to update".into()));
+        }
+        let batch: Vec<planner::Candidate> = pending.into_iter().filter_map(|p| p.candidate.clone().map(|candidate| planner::Candidate { pkg: p, candidate })).collect();
+        let groups = planner::host_groups(c, host_id)?;
+        let def = planner::applicable_policy(c, &host, &groups)?;
+        let exec = def.as_ref().map(|p| planner::exec_policy(&p.def, host.has_staging, &host.criticality)).unwrap_or_default();
+        let msg = format!("update from the app center for {local_user}");
+        let id: Uuid = diesel::insert_into(tasks::table)
+            .values((
+                tasks::host_id.eq(host_id),
+                tasks::kind.eq("patch"),
+                tasks::status.eq("queued"),
+                tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
+                tasks::packages.eq(planner::packages_json(&batch)),
+                tasks::exec.eq(Some(serde_json::to_value(&exec).unwrap_or_default())),
+                tasks::requested_by.eq(actor),
+                tasks::message.eq(&msg),
+            ))
+            .returning(tasks::id)
+            .get_result(c)?;
+        diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(&msg))).execute(c)?;
+        audit::record(c, Event::new(actor, "portal.update_requested").target("task", &id.to_string()).host(host_id).details(json!({ "packages": batch.len(), "all": packages.is_empty(), "user": local_user })).ip(ip))?;
+        Ok(id)
+    })
+}
+
+/// GET /agent/portal/updates
+pub async fn agent_updates(state: web::Data<AppState>, agent: crate::gateway::AgentAuth) -> ApiResult<HttpResponse> {
+    let id = agent.host_id;
+    Ok(HttpResponse::Ok().json(state.db(move |c| updates_view(c, id)).await?))
+}
+
+#[derive(Deserialize)]
+pub struct AgentUpdateBody {
+    /// Names to update; empty = every pending system update.
+    #[serde(default)]
+    packages: Vec<String>,
+    /// Local account that asked (from the socket's peer credentials).
+    user: String,
+}
+
+/// POST /agent/portal/update
+pub async fn agent_update(state: web::Data<AppState>, agent: crate::gateway::AgentAuth, body: web::Json<AgentUpdateBody>) -> ApiResult<HttpResponse> {
+    let b = body.into_inner();
+    if b.user.is_empty() || b.user.len() > 32 || !b.user.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+        return Err(ApiError::bad("invalid local user name"));
+    }
+    let host = agent.host_id;
+    let ip = agent.ip.clone();
+    let task = state
+        .db(move |c| {
+            let hostname: String = hosts::table.find(host).select(hosts::hostname).first(c)?;
+            create_update_request(c, host, &b.packages, &format!("local:{}@{hostname}", b.user), &ip, &b.user)
+        })
+        .await?;
+    crate::gateway::push_pending(&state, host).await;
+    Ok(HttpResponse::Accepted().json(json!({ "status": "queued", "task_id": task })))
 }

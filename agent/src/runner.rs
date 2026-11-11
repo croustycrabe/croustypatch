@@ -199,7 +199,7 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::Quarantine => isolate::quarantine(&agent.runner, &agent.server_ips(), &agent.isolation(), &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "host isolated from the network", &log, vec![], false)),
         CommandAction::Release => isolate::release(&agent.runner, &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "network isolation lifted", &log, vec![], false)),
         CommandAction::Reboot { delay_minutes, message } => crate::reboot::start(agent, id, delay_minutes, &message, &log).await,
-        CommandAction::ComplianceScan { profile } => compliance(agent, id, &profile, &log).await,
+        CommandAction::ComplianceScan { profile, tailoring, auto_install } => compliance(agent, id, &profile, tailoring.as_ref(), auto_install, &log).await,
         CommandAction::App { install, command: Some(cmd), user, .. } => app_command(agent, id, install, &cmd, user.as_deref(), &log).await,
         CommandAction::App { install, packages, command: None, .. } => app(agent, id, install, &packages, &log).await,
         CommandAction::UpdateAgent { platform, sha256, version, gui_sha256 } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, gui_sha256.as_deref(), &log).await,
@@ -249,11 +249,25 @@ async fn app_command(agent: &Agent, id: Uuid, install: bool, cmd: &AppCommand, u
     Ok(())
 }
 
-async fn compliance(agent: &Agent, id: Uuid, profile: &str, log: &TaskLog) -> Result<()> {
-    agent.update(id, TaskStatus::Running, "compliance scan running (low priority)", log, vec![], false);
+async fn compliance(agent: &Agent, id: Uuid, profile: &str, tailoring: Option<&Tailoring>, auto_install: bool, log: &TaskLog) -> Result<()> {
+    use crate::modules::openscap;
     let facts = crate::facts::collect(&agent.cfg.server_url, agent.backend.kind(), vec![]).await;
+    let kind = agent.backend.kind();
     let hint = format!("{}{}", facts.distro.to_ascii_lowercase().split_whitespace().next().unwrap_or(""), facts.os_version.split('.').next().unwrap_or(""));
-    let report = crate::modules::openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, &hint, log).await?;
+    // OpenSCAP or its content missing: install them first (visible in this task's log), unless the administrator turned that off.
+    let have_content = openscap::find_datastream(std::path::Path::new(openscap::CONTENT_DIR), &hint).is_some();
+    if let openscap::InstallPlan::Install { packages, note } = openscap::install_plan(openscap::available(), have_content, auto_install, kind, &facts.distro) {
+        agent.update(id, TaskStatus::Running, format!("installing OpenSCAP ({})", packages.join(", ")), log, vec![], false);
+        agent.backend.refresh(&agent.runner, log).await;
+        let names: Vec<String> = packages.iter().map(|s| s.to_string()).collect();
+        agent.backend.install(&agent.runner, &names, log).await?;
+        if let Some(n) = note {
+            log.line(format!("note: {n}"));
+        }
+        let _ = agent.send_inventory().await;
+    }
+    agent.update(id, TaskStatus::Running, "compliance scan running (low priority)", log, vec![], false);
+    let report = openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, tailoring, &hint, kind, &facts.distro, log).await?;
     let msg = format!("compliance {:.1}% ({} passed, {} failed)", report.score, report.passed, report.failed);
     let _ = agent.out.send(AgentMessage::Compliance { task_id: id, report });
     agent.update(id, TaskStatus::Succeeded, msg, log, vec![], false);

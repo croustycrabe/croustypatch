@@ -13,9 +13,10 @@ import { Button, Check, Chip, Drawer, Field, Notice, Section, Select, Skeleton, 
 
 interface Platform { id: string; os: string; arch: string; available: boolean }
 interface Created { token: string; details: { expires_at: string } }
-interface Form { comm_mode: 'pull' | 'push'; group_id: string; environment: string; label: string; hours: number; max_uses: number; dry_run: boolean; modules: HostModules }
+interface Form { comm_mode: 'pull' | 'push'; group_id: string; environment: string; label: string; hours: number; max_uses: number; dry_run: boolean; modules: Omit<HostModules, 'portal_updates'>; updates: UpdatesChoice }
 
-const MODULE_KEYS: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
+const MODULE_KEYS: (keyof Omit<HostModules, 'portal_updates'>)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
+type UpdatesChoice = 'auto' | 'yes' | 'no';
 
 const Ctx = createContext<{ open: () => void } | null>(null);
 
@@ -93,7 +94,7 @@ function Wizard({ onClose }: { onClose: () => void }) {
   const act = useAction();
   // Pre-filled with the server's defaults for new hosts (Settings > Modules).
   const [f, setF] = useState<Form>(() => ({
-    comm_mode: 'pull', group_id: '', environment: 'production', label: '', hours: 24, max_uses: 1, dry_run: false,
+    comm_mode: 'pull', group_id: '', environment: 'production', label: '', hours: 24, max_uses: 1, dry_run: false, updates: 'auto',
     modules: { docker: !!defaults?.docker, helper_script: !!defaults?.helper_script, openscap: !!defaults?.openscap, portal: !!defaults?.portal, eco: defaults?.eco ?? true },
   }));
   const [created, setCreated] = useState<{ token: string; expires_at: string; startedAt: number } | null>(null);
@@ -113,7 +114,7 @@ function Wizard({ onClose }: { onClose: () => void }) {
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
   const generate = useCallback(() => act.run(async () => {
     const r = await api<Created>('POST', '/enrollment-tokens', {
-      label: f.label || 'Add agent', group_id: f.group_id || null, environment: f.environment, comm_mode: f.comm_mode, hours: Number(f.hours), max_uses: Number(f.max_uses), modules: f.modules,
+      label: f.label || 'Add agent', group_id: f.group_id || null, environment: f.environment, comm_mode: f.comm_mode, hours: Number(f.hours), max_uses: Number(f.max_uses), modules: f.updates === 'auto' ? f.modules : { ...f.modules, portal_updates: f.updates === 'yes' },
     });
     setCreated({ token: r.token, expires_at: r.details.expires_at, startedAt: Date.now() });
   }), [act, f]);
@@ -157,6 +158,12 @@ function Wizard({ onClose }: { onClose: () => void }) {
           <p className="field__hint" style={{ marginBottom: 10 }}>{t('agent.modules.hint')}</p>
           <div className="row">
             {MODULE_KEYS.map((m) => <Check key={m} checked={f.modules[m]} onChange={(v) => setF({ ...f, modules: { ...f.modules, [m]: v } })}>{t(`mod.${m}` as MessageKey)}</Check>)}
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <Field label={t('mod.portal_updates')} hint={t('mod.portal_updates.desc')}>{(id) => (
+              <Select id={id} value={f.updates} onChange={(e) => setF({ ...f, updates: e.target.value as UpdatesChoice })}>
+                <option value="auto">{t('agent.updates.auto')}</option><option value="yes">{t('agent.updates.yes')}</option><option value="no">{t('agent.updates.no')}</option>
+              </Select>)}</Field>
           </div>
         </fieldset>
         <Section title={t('agent.advanced')}>

@@ -63,7 +63,7 @@ pub fn event_key(action: &str, details: &Value) -> Option<&'static str> {
     match action {
         "task.planned" if details.get("action").and_then(|v| v.as_str()) == Some("REQUIRE_APPROVAL") => Some("approval.required"),
         // A successful scan or control task is routine; patches, rollbacks and reboots are worth telling.
-        "task.succeeded" if !matches!(kind, "patch" | "rollback") => None,
+        "task.succeeded" if !matches!(kind, "patch" | "rollback" | "docker") => None,
         a => catalog_entry(a).map(|e| e.key),
     }
 }

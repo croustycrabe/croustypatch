@@ -33,6 +33,14 @@ pub struct Container {
     /// by a manager running in a container (Arcane, Dockge, Komodo…), whose labels hold the manager's own paths.
     #[serde(default)]
     pub mounts: Vec<(String, String)>,
+    /// running, restarting, exited…
+    #[serde(default)]
+    pub state: String,
+    /// healthy / unhealthy / starting, empty without a health check.
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub started_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,7 +66,10 @@ pub fn container_from_inspect(v: &Value, repo_digests: Vec<String>) -> Option<Co
         .and_then(|m| m.as_array())
         .map(|a| a.iter().filter_map(|m| Some((m.get("Source")?.as_str()?.to_string(), m.get("Destination")?.as_str()?.to_string()))).collect())
         .unwrap_or_default();
-    Some(Container { name, image_ref, image_id, repo_digests, compose, mounts })
+    let state = v.pointer("/State/Status").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let health = v.pointer("/State/Health/Status").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let started_at = v.pointer("/State/StartedAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    Some(Container { name, image_ref, image_id, repo_digests, compose, mounts, state, health, started_at })
 }
 
 /// A path from a compose label, as it exists on the host. If it does not exist as written, it may be a path inside a
@@ -103,7 +114,11 @@ pub fn is_current(c: &Container, remote: &str) -> bool {
 pub fn entry(c: &Container, remote: Option<&str>) -> PackageEntry {
     let local = c.repo_digests.first().map(|d| short(d.split('@').nth(1).unwrap_or(d))).unwrap_or_else(|| short(&c.image_id));
     let candidate = remote.filter(|r| !is_current(c, r)).map(|r| format!("{} @{}", c.image_ref, short(r)));
-    PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into() }
+    let meta = serde_json::json!({
+        "image": c.image_ref, "project": c.compose.as_ref().map(|x| x.project.as_str()), "service": c.compose.as_ref().map(|x| x.service.as_str()),
+        "state": c.state, "health": c.health, "started_at": c.started_at,
+    });
+    PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into(), meta }
 }
 
 pub async fn containers(r: &Runner) -> Result<Vec<Container>> {

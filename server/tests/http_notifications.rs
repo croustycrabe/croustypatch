@@ -155,6 +155,7 @@ async fn a_quarantine_reaches_a_signed_webhook_and_failures_are_retried() {
     let queued: i64 = notifications::table.count().get_result(&mut db.conn()).unwrap();
     assert_eq!(queued, 2, "one event x two channels; the high-severity failure is below the rule's threshold");
 
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await; // a remote test database may run a moment ahead of this machine
     notify::run_once(&state).await.unwrap();
     let got = recv(&mut rx).await;
     let body: Value = serde_json::from_slice(&got.body).unwrap();

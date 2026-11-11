@@ -154,6 +154,53 @@ async fn the_socket_relays_to_the_server_as_the_agent_and_names_the_local_user()
     assert!(String::from_utf8_lossy(&out[..n]).contains("bad request"));
 }
 
+#[tokio::test]
+async fn updates_are_relayed_as_the_agent_for_the_local_user_and_the_names_are_checked_first() {
+    let (url, mut seen) = fake_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("portal.sock").to_string_lossy().to_string();
+    let kp = croustypatch_common::crypto::generate_rsa(2048).unwrap();
+    let cfg = Config { server_url: url, portal_socket: sock.clone(), state_dir: dir.path().to_path_buf(), ..Default::default() };
+    let relay = Arc::new(Relay { agent: None, cfg, identity: Identity { agent_id: uuid::Uuid::new_v4(), server_public_key_pem: String::new(), private_key_pem: kp.private_pem }, server_ips: Arc::new(|| vec!["127.0.0.1".parse().unwrap()]) });
+    tokio::spawn(portal::serve(relay));
+    for _ in 0..50 { if std::path::Path::new(&sock).exists() { break; } tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+
+    let r = portal::ask(&sock, &Request::Updates).await.unwrap();
+    assert!(r.ok, "{}", r.error);
+    let (line, auth, _) = seen.recv().await.unwrap();
+    assert!(line.starts_with("GET /api/v1/agent/portal/updates "), "{line}");
+    assert!(auth.contains("Bearer ey"), "as the agent: {auth}");
+
+    let r = portal::ask(&sock, &Request::Update { packages: vec!["vim".into(), "libssl3".into()] }).await.unwrap();
+    assert!(r.ok, "{}", r.error);
+    let (line, _, body) = seen.recv().await.unwrap();
+    assert!(line.starts_with("POST /api/v1/agent/portal/update "), "{line}");
+    let b: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(b["packages"], json!(["vim", "libssl3"]));
+    let me = std::env::var("USER").unwrap_or_default();
+    if !me.is_empty() { assert_eq!(b["user"], json!(me), "the person is named from the socket's peer credentials, never from the request"); }
+
+    // no names = all of them; a list that is not made of package names never leaves the machine
+    let r = portal::ask(&sock, &Request::Update { packages: vec![] }).await.unwrap();
+    assert!(r.ok);
+    let (_, _, body) = seen.recv().await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["packages"], json!([]));
+    for bad in [vec!["vim;reboot".to_string()], vec!["-rf".to_string()], vec!["a b".to_string()], (0..1001).map(|i| format!("p{i}")).collect()] {
+        let r = portal::ask(&sock, &Request::Update { packages: bad }).await.unwrap();
+        assert!(!r.ok && r.error.contains("bad package list"), "{}", r.error);
+    }
+    // an update check needs the agent itself (the relay has none in this test)
+    let r = portal::ask(&sock, &Request::Check).await.unwrap();
+    assert!(!r.ok);
+    // nothing but the three valid requests reached the server
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(200), seen.recv()).await.is_err());
+
+    // the wire format of the new requests
+    assert_eq!(serde_json::to_string(&Request::Updates).unwrap(), r#"{"op":"updates"}"#);
+    assert_eq!(serde_json::to_string(&Request::Check).unwrap(), r#"{"op":"check"}"#);
+    assert_eq!(serde_json::from_str::<Request>(r#"{"op":"update"}"#).unwrap(), Request::Update { packages: vec![] }, "names are optional");
+}
+
 
 fn screen(s: &State) -> String {
     let mut t = Terminal::new(TestBackend::new(110, 28)).unwrap();

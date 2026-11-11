@@ -26,11 +26,11 @@ const BASE = `http://127.0.0.1:${server.address().port}/`;
 /** Mock of the agent socket behind the three Tauri commands. Runs inside the page. */
 function mock() {
   const apps = [
-    { id: 'a1', name: 'Git', version: '', category: 'Développement', description: 'Gestion de versions distribuée.', icon: 'code', kind: 'packages', packages: ['git'], command: null, installed: true, pending: null, local: { present: 1, total: 1, missing: [] } },
+    { id: 'a1', name: 'Git', version: '', category: 'Développement', description: 'Gestion de versions distribuée.', icon: 'brand:git', icon_url: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI0YwM0MyRSIgZD0iTTAgMGgyNHYyNEgweiIvPjwvc3ZnPg==', kind: 'packages', packages: ['git'], command: null, installed: true, pending: null, local: { present: 1, total: 1, missing: [] } },
     { id: 'a2', name: 'Outils de compilation', version: '', category: 'Développement', description: 'Compilateur C/C++, make et outils de construction.', icon: 'wrench', kind: 'packages', packages: ['base-devel', 'cmake'], command: null, installed: false, pending: null, local: { present: 1, total: 2, missing: ['cmake'] } },
     { id: 'a3', name: 'htop', version: '3.4', category: 'Système', description: 'Moniteur de processus interactif.', icon: 'chart-bar', kind: 'packages', packages: ['htop'], command: null, installed: false, pending: null, local: { present: 0, total: 1, missing: ['htop'] } },
     { id: 'a4', name: 'Outil interne', version: '2.1', category: 'Métier', description: 'Client de l’intranet, installé par le script maison.', icon: 'cube', kind: 'command', packages: [], command: { install: 'curl -fsSL https://intranet/outil.tar.gz | tar -xz -C /opt\nln -sf /opt/outil/bin/outil /usr/local/bin/outil', uninstall: 'rm -rf /opt/outil /usr/local/bin/outil', check: '/usr/local/bin/outil' }, installed: false, pending: null, local: { present: 0, total: 1, missing: ['/usr/local/bin/outil'] } },
-    { id: 'a5', name: 'VLC', version: '', category: 'Multimédia', description: 'Lecteur audio et vidéo.', icon: 'music-notes', kind: 'packages', packages: ['vlc'], command: null, installed: false, pending: null, local: { present: 0, total: 1, missing: ['vlc'] } },
+    { id: 'a5', name: 'VLC', version: '', category: 'Multimédia', description: 'Lecteur audio et vidéo.', icon: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgAAACAAAB4iG8MwAAAABJRU5ErkJggg==', kind: 'packages', packages: ['vlc'], command: null, installed: false, pending: null, local: { present: 0, total: 1, missing: ['vlc'] } },
   ];
   const recent = [{ task_id: 'old', status: 'succeeded', message: '1 package(s) installed', app_id: 'a1', app_name: 'Git', install: true }];
   let ticks = 0;
@@ -49,9 +49,23 @@ function mock() {
       a.installed = install;
     }
   };
+  // system updates of this machine
+  let pendingUpdates = [
+    { name: 'linux', version: '6.1.0', candidate: '6.1.1', is_security: true },
+    { name: 'firefox', version: '131', candidate: '132', is_security: false },
+    { name: 'vim', version: '9.1.1', candidate: '9.1.2', is_security: false },
+  ];
+  let upd = null, updTicks = 0, checkedAt = '2026-11-11T08:00:00Z';
+  const updRecent = [];
   window.__TAURI__ = { core: { invoke: async (cmd, args) => {
     window.__calls.push([cmd, args]);
     if (window.__unreachable) throw 'agent unreachable at /run/croustypatch/portal.sock (No such file or directory)';
+    if (cmd === 'updates') {
+      if (upd) { updTicks += 1; upd.status = updTicks === 1 ? 'sent' : updTicks === 2 ? 'running' : upd.status; if (updTicks >= 3) { updRecent.unshift({ task_id: upd.id, status: 'succeeded', message: 'done', finished_at: 'now' }); pendingUpdates = pendingUpdates.filter((p) => !upd.names.includes(p.name)); upd = null; } }
+      return JSON.parse(JSON.stringify({ host: { id: 'h1', hostname: 'laptop-alice', status: 'online' }, allowed: !window.__managed, reboot_required: !upd && updRecent.length > 0, checked_at: checkedAt, pending: pendingUpdates, open_task: upd && { id: upd.id, kind: 'patch', status: upd.status, message: '' }, recent: updRecent }));
+    }
+    if (cmd === 'check') { setTimeout(() => { checkedAt = '2026-11-11T09:30:00Z'; }, 1500); return { started: true }; }
+    if (cmd === 'update') { if (window.__managed) throw 'updates from the app center are not allowed on this machine: ask your administrator'; updTicks = 0; upd = { id: 'u1', status: 'queued', names: args.packages }; return { status: 'queued', task_id: 'u1' }; }
     if (cmd === 'list') { step(); return JSON.parse(JSON.stringify({ host: { id: 'h1', hostname: 'laptop-alice' }, apps, recent })); }
     const a = apps.find((x) => x.id === args.appId);
     if (!a) throw 'this application is not offered on this host';
@@ -66,11 +80,12 @@ const res = [];
 const check = (n, ok, x = '') => res.push(`${ok ? 'PASS' : 'FAIL'}  ${n}${x ? '  — ' + x : ''}`);
 const browser = await chromium.launch();
 const errors = [];
-const open = async ({ locale = 'fr-FR', scheme = 'light', vp = { width: 1120, height: 740 } } = {}) => {
+const open = async ({ locale = 'fr-FR', scheme = 'light', vp = { width: 1120, height: 740 } } = {}, managed = false) => {
   const ctx = await browser.newContext({ locale, colorScheme: scheme, viewport: vp });
   const p = await ctx.newPage();
   p.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   p.on('pageerror', (e) => errors.push(String(e)));
+  if (managed) await p.addInitScript(() => { window.__managed = true; });
   await p.addInitScript(mock);
   await p.goto(BASE);
   await p.waitForSelector('.card');
@@ -79,6 +94,9 @@ const open = async ({ locale = 'fr-FR', scheme = 'light', vp = { width: 1120, he
 
 const p = await open();
 check('the catalog loads from the agent socket', (await p.locator('.card').count()) === 5);
+check('a logo from the catalog is shown as an image (the CSP allows data images only)', (await p.locator('[data-app="Git"] .card__icon--img img').count()) === 1 && (await p.locator('[data-app="Git"] .card__icon--img img').evaluate((i) => i.complete && i.naturalWidth > 0)));
+check('an uploaded image is shown too', (await p.locator('[data-app="VLC"] .card__icon--img img').evaluate((i) => i.complete && i.naturalWidth > 0)));
+check('apps without a logo keep their generic glyph', (await p.locator('[data-app="htop"] .card__icon svg').count()) === 1 && (await p.locator('[data-app="htop"] img').count()) === 0);
 check('the host is named in the header', (await p.locator('#host').textContent()).includes('laptop-alice'));
 check('presence comes from the machine: present, partial, available', (await p.locator('[data-app="Git"] .badge--ok').count()) === 1 && (await p.locator('[data-app="Outils de compilation"] .badge--warn').textContent()).includes('1/2') && (await p.locator('[data-app="htop"] .badge--neutral').count()) === 1);
 check('the opening note lists what is already installed', (await p.locator('#log li').first().textContent()).includes('Git'));
@@ -130,6 +148,36 @@ await p.evaluate(() => { window.__unreachable = false; });
 await p.click('#refresh');
 await p.waitForSelector('#notice[hidden]', { state: 'attached' });
 check('and the notice goes away once it answers again', true);
+
+// system updates: list, choose, confirm, follow, done; managed machines cannot start them
+{
+  const u = await open();
+  check('the updates tab shows how many are waiting', (await u.locator('#tab-updates-n').textContent()) === '3');
+  await u.click('#tab-updates');
+  check('the updates are listed with their versions, security first', (await u.locator('#upd-list li').count()) === 3 && (await u.locator('#upd-list li').first().textContent()).includes('linux') && (await u.locator('#upd-list li').first().textContent()).includes('6.1.0 → 6.1.1') && (await u.locator('#upd-list li .badge--warn').count()) === 1);
+  check('the apps view is replaced while the updates are shown', await u.locator('.layout').isHidden());
+  await u.uncheck('#upd-list li[data-update=vim] input');
+  check('the button counts what is selected', (await u.locator('#upd-go').textContent()).includes('(2)'));
+  await u.screenshot({ path: `${OUT}/portal-gui-updates.png` });
+  await u.click('#upd-go'); await u.waitForSelector('#confirm[open]');
+  check('the confirmation lists exactly the chosen packages', (await u.locator('#confirm-body pre').textContent()).trim() === 'linux firefox');
+  await u.click('#confirm-yes');
+  await u.waitForSelector('#progress:not([hidden])');
+  check('the request names the packages the user chose', await u.evaluate(() => JSON.stringify(window.__calls.find(([c]) => c === 'update')) === JSON.stringify(['update', { packages: ['linux', 'firefox'] }])));
+  check('progress follows the update', (await u.locator('#progress-text').textContent()).includes('Mise à jour du système'));
+  await u.waitForSelector('#upd-list li[data-update=linux]', { state: 'detached', timeout: 15000 }).then(() => check('the installed updates leave the list', true), () => check('the installed updates leave the list', false));
+  check('the outcome is notified once', (await u.locator('#log li:has-text("Mises à jour installées")').count()) === 1);
+  check('a restart notice appears when one is needed', await u.locator('#upd-reboot').isVisible());
+  await u.click('#upd-check');
+  check('looking for updates shows it is checking', (await u.locator('#upd-check-label').textContent()).includes('Recherche'));
+  await u.waitForFunction(() => document.querySelector('#upd-check-label')?.textContent === 'Rechercher', null, { timeout: 15000 }).then(() => check('and finishes when the agent has a fresh inventory', true), () => check('and finishes when the agent has a fresh inventory', false));
+  await u.context().close();
+  const m = await open({}, true);
+  await m.click('#tab-updates');
+  check('a machine managed by its administrator cannot start updates', await m.locator('#upd-go').isHidden() && await m.locator('#upd-managed').isVisible() && (await m.locator('#upd-list li input').first().isDisabled()));
+  await m.screenshot({ path: `${OUT}/portal-gui-updates-managed.png` });
+  await m.context().close();
+}
 
 // language and theme switches: a choice is remembered; otherwise the system's applies
 {

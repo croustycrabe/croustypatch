@@ -21,8 +21,8 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
 - **Sidebar** with grouped navigation (overview, fleet, patching, governance, administration), the **Add agent**
   button, and the user menu. It collapses to a drawer on small screens. It stays mounted while pages change.
 - **Topbar** with the current section, the **⌘K / Ctrl+K command palette** (pages, hosts, actions) and the language toggle.
-- **Pages:** Dashboard · Hosts · Packages · Groups · Tasks · Policies · Waivers · Vulnerabilities · Audit · Agent tokens ·
-  Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
+- **Pages:** Dashboard · Hosts · Packages · Docker · Groups · App center · Tasks · Policies · Waivers · Vulnerabilities ·
+  Compliance · Audit · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
 - **Panels:** forms and details that should not hide the page open as a slide-over (policy editor, task detail,
   package hosts, Add agent). Confirmations are small centred dialogs. Feedback is a toast; errors tied to a form stay inline.
 - **Hosts** (as in PatchMon): searchable, filterable by status and group, sortable, with bulk patch and scan; a host

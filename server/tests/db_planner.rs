@@ -301,3 +301,40 @@ fn a_policy_decides_whether_container_updates_belong_to_it() {
     let d: croustypatch_server::engine::policy::PolicyDef = serde_json::from_str("{}").unwrap();
     assert!(d.docker.takes("docker") && d.docker.takes("system"));
 }
+
+#[test]
+fn system_updates_and_container_images_are_planned_as_separate_tasks() {
+    let db = support::TestDb::new();
+    let mut c = db.conn();
+    let (host, _) = production_like(&mut c);
+    diesel::insert_into(host_packages::table)
+        .values((host_packages::host_id.eq(host), host_packages::name.eq("docker:hoppscotch-db"), host_packages::source.eq("docker"), host_packages::version.eq("postgres:17 @3540"), host_packages::candidate.eq(Some("postgres:17 @e5d2"))))
+        .execute(&mut c)
+        .unwrap();
+    let sat = at("2026-11-14T03:00:00Z");
+    planner::plan_for_host(&mut c, host, sat).unwrap().expect("something is planned");
+    let names = |c: &mut PgConnection, kind: &str| -> Vec<String> {
+        let rows: Vec<serde_json::Value> = tasks::table.filter(tasks::host_id.eq(host)).filter(tasks::kind.eq(kind)).select(tasks::packages).load(c).unwrap();
+        let mut v: Vec<String> = rows.iter().flat_map(|r| r.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_string())).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(&mut c, "patch"), vec!["docker-compose-plugin", "snapd"], "the system patch carries no container");
+    assert_eq!(names(&mut c, "docker"), vec!["docker:hoppscotch-db"], "the container image is a task of its own: a container that fails never rolls a system patch back");
+    let n: i64 = tasks::table.filter(tasks::host_id.eq(host)).count().get_result(&mut c).unwrap();
+    assert_eq!(n, 2);
+    assert!(planner::plan_for_host(&mut c, host, sat).unwrap().is_none(), "the same batches are not planned again");
+
+    // each kind waits only for its own open task
+    assert_eq!(planner::blocking_kinds("docker"), &["docker"]);
+    assert_eq!(planner::blocking_kinds("patch"), &["patch", "rollback"]);
+    diesel::update(tasks::table.filter(tasks::kind.eq("docker"))).set(tasks::status.eq("succeeded")).execute(&mut c).unwrap();
+    diesel::insert_into(host_packages::table)
+        .values((host_packages::host_id.eq(host), host_packages::name.eq("docker:cache"), host_packages::source.eq("docker"), host_packages::version.eq("redis:7 @aa"), host_packages::candidate.eq(Some("redis:7 @bb"))))
+        .execute(&mut c)
+        .unwrap();
+    let id = planner::plan_for_host(&mut c, host, sat).unwrap().expect("a new container image is planned while the system patch is still open");
+    let kind: String = tasks::table.find(id).select(tasks::kind).first(&mut c).unwrap();
+    assert_eq!(kind, "docker");
+    assert_eq!(names(&mut c, "patch"), vec!["docker-compose-plugin", "snapd"], "the open system patch is left as it was");
+}

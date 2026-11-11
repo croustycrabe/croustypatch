@@ -10,6 +10,7 @@ pub mod db;
 pub mod engine;
 pub mod error;
 pub mod gateway;
+pub mod icons;
 pub mod models;
 pub mod modules;
 pub mod notify;

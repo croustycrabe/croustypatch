@@ -53,7 +53,7 @@ pub async fn inventory(r: &Runner) -> Result<Vec<PackageEntry>> {
         .into_iter()
         .map(|(name, version)| {
             let up = ups.get(&name);
-            PackageEntry { candidate: up.map(|u| u.new.clone()), is_security: up.is_some_and(|u| u.security), cves: vec![], source: "system".into(), name, version }
+            PackageEntry { candidate: up.map(|u| u.new.clone()), is_security: up.is_some_and(|u| u.security), cves: vec![], source: "system".into(), meta: Default::default(), name, version }
         })
         .collect())
 }

@@ -229,11 +229,11 @@ const KNOWN_KEYS: &[&str] = &["modules", "ai", "connectivity", "agent", "complia
 
 pub fn default_setting(key: &str) -> Value {
     match key {
-        "modules" => json!({ "docker": false, "helper_script": false, "openscap": false, "portal": false, "notifications": false, "eco": true }),
+        "modules" => json!({ "docker": false, "helper_script": false, "openscap": false, "portal": false, "portal_updates": false, "notifications": false, "eco": true }),
         "ai" => json!({ "enabled": false, "provider": "openai_compatible", "base_url": "", "model": "", "api_key": "" }),
         "connectivity" => json!({ "mode": "connected" }),
         "agent" => json!({ "heartbeat_secs": 60 }),
-        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "" }),
+        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "", "auto_install": true }),
         "isolation" => serde_json::to_value(croustypatch_common::protocol::IsolationSettings::default()).unwrap_or_default(),
         _ => json!({}),
     }
@@ -346,8 +346,11 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
                 return Err(ApiError::bad("threshold must be 0..=100"));
             }
             let p = v.get("profile").and_then(|h| h.as_str()).unwrap_or("");
-            if p.len() > 200 || !p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
-                return Err(ApiError::bad("profile must be an XCCDF profile id"));
+            if !crate::compliance::valid_profile_ref(p) {
+                return Err(ApiError::bad("profile must be an XCCDF profile id or a custom profile"));
+            }
+            if v.get("auto_install").is_some_and(|a| !a.is_boolean()) {
+                return Err(ApiError::bad("auto_install must be true or false"));
             }
         }
         "isolation" => {

@@ -37,6 +37,17 @@ character set before use. Health probes accept only `tcp`, `http(s)` and service
   tampering after the fact; it cannot prove the *latest* entries were not removed unless you also record the
   head hash elsewhere (export it periodically).
 
+## App center self-service (0.7)
+
+Updates started from the desktop app center need no approval, so the server limits what they can do: the request
+comes from the agent's own signed identity (a host only ever acts on itself), the local user comes from the socket's
+peer credentials, the app center and the host's **Updates from the app center** switch must be on, the host must not
+be pending or quarantined, one patch or rollback at a time, and every name must be a pending *system* update of that
+machine. Everything is audited (`portal.update_requested`, task requested by `local:<user>@<host>`). Uploaded app
+icons are checked by content, size-limited and only shown through `<img>`. The agent installs OpenSCAP packages
+only from the fixed lists in `modules/openscap.rs`, and custom audit profiles are validated (identifiers only
+letters, digits and `_ . -`) before they reach a command line or the XML tailoring file.
+
 ## Known limits
 
 - The server → PostgreSQL link is not TLS-protected (the client library is compiled without OpenSSL). Keep it on a private network or a unix socket.

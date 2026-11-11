@@ -88,6 +88,7 @@ diesel::table! {
         modules -> Jsonb,
         metrics -> Jsonb,
         metrics_at -> Nullable<Timestamptz>,
+        compliance_profile -> Text,
     }
 }
 
@@ -125,6 +126,7 @@ diesel::table! {
         candidate -> Nullable<Text>,
         is_security -> Bool,
         cves -> Jsonb,
+        meta -> Jsonb,
     }
 }
 
@@ -339,6 +341,18 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    compliance_profiles (id) {
+        id -> Uuid,
+        name -> Text,
+        description -> Text,
+        base_profile -> Text,
+        disabled_rules -> Jsonb,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
 diesel::joinable!(compliance_reports -> hosts (host_id));
 diesel::joinable!(api_tokens -> users (user_id));
 diesel::joinable!(policy_groups -> policies (policy_id));
@@ -349,7 +363,7 @@ diesel::joinable!(task_events -> tasks (task_id));
 diesel::allow_tables_to_appear_in_same_query!(
     roles, users, dashboard_layouts, settings, host_groups, hosts, host_group_members,
     enrollment_tokens, host_packages, vulnerabilities, policies, policy_groups, tasks,
-    task_events, waivers, audit_log, notification_channels, notification_rules, notifications, api_tokens, compliance_reports, portal_apps,
+    task_events, waivers, audit_log, notification_channels, notification_rules, notifications, api_tokens, compliance_reports, compliance_profiles, portal_apps,
 );
 
 diesel::table! {

@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Card, Field, Notice, PageHeader, Select, Spinner, Switch, Tag, TextArea, TextInput } from '@/components/ui';
+import { Button, Card, Field, LinkButton, Notice, PageHeader, Select, Spinner, Switch, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
@@ -55,11 +55,9 @@ function Settings() {
         </Card>
 
         {s.compliance && (
-          <Card title={t('settings.compliance')} actions={<SaveBtn k="compliance" />}>
-            <div className="form-grid">
-              <Field label={t('settings.compliance.threshold')}>{(i) => <TextInput id={i} type="number" min={0} max={100} value={s.compliance.threshold} disabled={!writable} onChange={(e) => setS({ ...s, compliance: { ...s.compliance, threshold: Number(e.target.value) } })} />}</Field>
-              <Field label={t('settings.compliance.profile')}>{(i) => <TextInput id={i} className="mono" value={s.compliance.profile} placeholder="xccdf_org.ssgproject.content_profile_cis_level1_server" disabled={!writable} onChange={(e) => setS({ ...s, compliance: { ...s.compliance, profile: e.target.value } })} />}</Field>
-            </div>
+          <Card title={t('settings.compliance')}>
+            <p className="muted" style={{ marginTop: 0 }}>{t('settings.compliance.moved')}</p>
+            <LinkButton href="/compliance">{t('comp.open')}</LinkButton>
           </Card>
         )}
 

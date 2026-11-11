@@ -46,7 +46,7 @@ pub async fn inventory(r: &Runner) -> Result<Vec<PackageEntry>> {
         .map(|(name, version)| {
             let candidate = updates.get(&name).cloned();
             let (cves, fixed) = audit.get(&name).cloned().unwrap_or_default();
-            PackageEntry { is_security: candidate.is_some() && fixed, cves, candidate, source: "system".into(), name, version }
+            PackageEntry { is_security: candidate.is_some() && fixed, cves, candidate, source: "system".into(), meta: Default::default(), name, version }
         })
         .collect())
 }

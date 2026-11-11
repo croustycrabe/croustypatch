@@ -239,6 +239,8 @@ impl Tx {
     }
     fn kind(&self, k: &str) -> String {
         match (k, self.0) {
+            ("docker", true) => "conteneurs",
+            ("docker", false) => "containers",
             ("patch", true) => "correctifs",
             ("patch", false) => "patch",
             ("rollback", true) => "retour arrière",
@@ -343,7 +345,7 @@ pub fn build(c: &mut PgConnection, r: &Report, now: DateTime<Utc>) -> ApiResult<
     let hist: Vec<T> = if s.history {
         let q = tasks::table
             .filter(tasks::host_id.eq_any(&ids))
-            .filter(tasks::kind.eq_any(["patch", "rollback"]))
+            .filter(tasks::kind.eq_any(["patch", "rollback", "docker"]))
             .filter(tasks::finished_at.is_not_null())
             .filter(tasks::status.ne_all(["cancelled"]))
             .order(tasks::finished_at.desc())

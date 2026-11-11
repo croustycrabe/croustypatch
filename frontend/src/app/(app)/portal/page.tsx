@@ -1,10 +1,11 @@
 'use client';
-import { AppWindow, ChartBar, ChatCircle, Code, Cube, Database, FileText, Globe, Image, MusicNotes, Plus, ShieldCheck, Terminal, Trash, Wrench, type Icon } from '@phosphor-icons/react';
+import { Plus, Trash } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
 import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, Notice, PageHeader, Select, Spinner, Table, Tabs, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
+import { AppIcon, IconPicker } from '@/components/AppIcon';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { HostGroup, HostSummary } from '@/lib/types';
@@ -13,13 +14,12 @@ type SystemKey = 'apt' | 'pacman' | 'pkg' | 'dnf' | '*';
 interface Command { install: string; uninstall: string; check: string }
 type Recipe = { packages: string[] } | { command: Command };
 type Recipes = Partial<Record<SystemKey, Recipe>>;
-interface App { id: string; name: string; version: string; category: string; description: string; icon: string; recipes: Recipes; group_ids: string[]; enabled: boolean; has_command?: boolean }
+interface App { id: string; name: string; version: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; group_ids: string[]; enabled: boolean; has_command?: boolean }
 interface HostApp extends App { kind: 'packages' | 'command'; packages: string[]; command: Command | null; installed: boolean; pending: { task_id: string; status: string; install: boolean } | null }
-interface Suggestion { name: string; category: string; description: string; icon: string; recipes: Recipes; in_catalog: boolean }
+interface Suggestion { name: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; in_catalog: boolean }
 
 const SYSTEMS: SystemKey[] = ['apt', 'pacman', 'pkg', 'dnf', '*'];
 
-const ICONS: Record<string, Icon> = { '': Cube, 'app-window': AppWindow, code: Code, terminal: Terminal, browser: Globe, 'file-text': FileText, 'chart-bar': ChartBar, 'shield-check': ShieldCheck, database: Database, image: Image, 'music-notes': MusicNotes, 'chat-circle': ChatCircle, wrench: Wrench, cube: Cube };
 
 function Store() {
   const { t } = useI18n();
@@ -54,11 +54,10 @@ function Store() {
       {host && !view.data && !view.error ? <Spinner /> : shown.length === 0 && !view.error ? <Empty>{t('portal.none')}</Empty> : (
         <div className="appgrid">
           {shown.map((a) => {
-            const I = ICONS[a.icon] ?? Cube;
             const busy = !!a.pending;
             return (
               <div key={a.id} className="cs-card appcard">
-                <div className="appcard__head"><span className="appcard__icon"><I size={22} weight="bold" /></span><div><b>{a.name}</b><span className="sub">{[a.category, a.version].filter(Boolean).join(' · ')}</span></div></div>
+                <div className="appcard__head"><AppIcon icon={a.icon} url={a.icon_url} /><div><b>{a.name}</b><span className="sub">{[a.category, a.version].filter(Boolean).join(' · ')}</span></div></div>
                 <p className="appcard__desc">{a.description}</p>
                 {a.kind === 'command' && <p className="field__hint mono" title={a.command?.install}>{t('portal.command_badge')} · {a.command?.check}</p>}
                 <div className="row row--tight" style={{ marginTop: 'auto' }}>
@@ -175,7 +174,7 @@ function Catalog() {
               <td>{a.category || '—'}</td>
               <td className="wrap"><RecipeSummary recipes={a.recipes} /></td>
               <td><Tag tone={a.enabled ? 'ok' : 'neutral'}>{a.enabled ? t('notif.channel.enabled') : t('users.disabled')}</Tag></td>
-              <td><div className="row row--tight"><Button small onClick={() => { act.clearError(); const { recipes, has_command: _hc, ...rest } = a; setForm({ ...rest, rows: rowsOf(recipes) }); }}>{t('common.edit')}</Button><Button small onClick={() => setDeleting(a)}>{t('common.delete')}</Button></div></td>
+              <td><div className="row row--tight"><Button small onClick={() => { act.clearError(); const { recipes, has_command: _hc, icon_url: _iu, ...rest } = a; setForm({ ...rest, rows: rowsOf(recipes) }); }}>{t('common.edit')}</Button><Button small onClick={() => setDeleting(a)}>{t('common.delete')}</Button></div></td>
             </tr>
           ))}
         </Table>
@@ -187,8 +186,8 @@ function Catalog() {
               <Field label={t('common.name')}>{(i) => <TextInput id={i} value={form.name} onChange={(e) => set('name', e.target.value)} required autoFocus />}</Field>
               <Field label={t('portal.app.version')}>{(i) => <TextInput id={i} value={form.version} onChange={(e) => set('version', e.target.value)} />}</Field>
               <Field label={t('portal.app.category')}>{(i) => <TextInput id={i} value={form.category} onChange={(e) => set('category', e.target.value)} placeholder="Développement" />}</Field>
-              <Field label={t('portal.app.icon')}>{(i) => <Select id={i} value={form.icon} onChange={(e) => set('icon', e.target.value)}>{Object.keys(ICONS).filter(Boolean).map((k) => <option key={k} value={k}>{k}</option>)}</Select>}</Field>
             </div>
+            <fieldset className="fieldset"><legend>{t('portal.app.icon')}</legend><IconPicker value={form.icon} onChange={(v) => set('icon', v)} /></fieldset>
             <Field label={t('common.description')}>{(i) => <TextInput id={i} value={form.description} onChange={(e) => set('description', e.target.value)} />}</Field>
             <RecipeEditor rows={form.rows} onChange={(rows) => set('rows', rows)} />
             <fieldset className="fieldset"><legend>{t('portal.app.scope')}</legend><div className="chips">{groups.data?.map((g) => <GroupTag key={g.id} group={g} active={form.group_ids.includes(g.id)} onClick={() => set('group_ids', form.group_ids.includes(g.id) ? form.group_ids.filter((x) => x !== g.id) : [...form.group_ids, g.id])} />)}</div></fieldset>
@@ -229,10 +228,9 @@ function Suggestions() {
       {act.error && <Notice kind="error">{act.error}</Notice>}
       <div className="appgrid">
         {shown.map((s) => {
-          const I = ICONS[s.icon] ?? Cube;
           return (
             <div key={s.name} className="cs-card appcard">
-              <div className="appcard__head"><span className="appcard__icon"><I size={22} weight="bold" /></span><div><b>{s.name}</b><span className="sub">{s.category}</span></div></div>
+              <div className="appcard__head"><AppIcon icon={s.icon} url={s.icon_url} /><div><b>{s.name}</b><span className="sub">{s.category}</span></div></div>
               <p className="appcard__desc">{s.description}</p>
               <div className="field__hint"><RecipeSummary recipes={s.recipes} /></div>
               <div className="row row--tight" style={{ marginTop: 'auto' }}>

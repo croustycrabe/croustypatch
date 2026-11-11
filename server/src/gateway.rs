@@ -109,10 +109,16 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                     return Ok(None);
                 };
                 let f = &b.facts;
-                // Modules chosen when the token was made, else today's defaults.
-                let modules = token_modules.map(|m| crate::modules::parse(&m)).unwrap_or_else(|| crate::modules::defaults(c));
                 // Detected at enrolment only: administrators may change it afterwards.
                 let asset_type = if f.is_laptop { "laptop" } else if f.is_desktop { "workstation" } else { "server" };
+                // Modules chosen when the token was made, else today's defaults.
+                // Not decided by the person who made the token: left to the machine type.
+                let token_modules_unset = token_modules.as_ref().is_none_or(|m| m.get("portal_updates").is_none());
+                let mut modules = token_modules.map(|m| crate::modules::parse(&m)).unwrap_or_else(|| crate::modules::defaults(c));
+                // People sit at laptops and workstations: they may update them from the app center. Servers: no.
+                if token_modules_unset && matches!(asset_type, "laptop" | "workstation") {
+                    modules.portal_updates = true;
+                }
                 let host_id: Uuid = diesel::insert_into(hosts::table)
                     .values((
                         hosts::hostname.eq(&f.hostname),
@@ -197,6 +203,7 @@ struct NewPkg<'a> {
     candidate: Option<&'a str>,
     is_security: bool,
     cves: Value,
+    meta: Value,
 }
 
 #[derive(Insertable)]
@@ -294,6 +301,7 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
                 candidate: p.candidate.as_deref().filter(|cand| *cand != p.version),
                 is_security: p.is_security && p.candidate.is_some(),
                 cves: json!(p.cves.iter().filter(|x| cve_re().is_match(x)).collect::<Vec<_>>()),
+                meta: if p.meta.is_object() { p.meta.clone() } else { json!({}) },
             })
             .collect();
         for chunk in rows.chunks(2000) {
@@ -426,7 +434,8 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
     for (id, kind, packages, exec, parent) in due {
         let action = match TaskKind::parse(&kind) {
             Some(TaskKind::Scan) => CommandAction::Scan,
-            Some(TaskKind::Patch) => CommandAction::ApplyUpdates {
+            // Container image updates are applied by the same agent routine, as a task of their own.
+            Some(TaskKind::Patch) | Some(TaskKind::Docker) => CommandAction::ApplyUpdates {
                 packages: packages.as_array().map(|a| a.iter().filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect()).unwrap_or_default(),
                 exec: exec.and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
             },
@@ -453,7 +462,14 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
                 let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version"), gui_sha256: e.get("gui_sha256").and_then(|v| v.as_str()).map(str::to_owned) }
             }
-            Some(TaskKind::Compliance) => CommandAction::ComplianceScan { profile: exec.as_ref().and_then(|e| e.get("profile")).and_then(|v| v.as_str()).unwrap_or("").to_string() },
+            Some(TaskKind::Compliance) => {
+                let e = exec.unwrap_or_default();
+                CommandAction::ComplianceScan {
+                    profile: e.get("profile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    tailoring: e.get("tailoring").and_then(|t| serde_json::from_value(t.clone()).ok()),
+                    auto_install: e.get("auto_install").and_then(|v| v.as_bool()).unwrap_or(true),
+                }
+            }
             Some(TaskKind::Reboot) => {
                 let e = exec.unwrap_or_default();
                 CommandAction::Reboot {

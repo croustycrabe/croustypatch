@@ -39,6 +39,8 @@ export interface Host {
   modules: HostModules;
   metrics?: HostMetrics['current'];
   metrics_at?: string | null;
+  /** Audit profile of this host: '' (fleet default), an XCCDF profile id or `custom:<uuid>`. */
+  compliance_profile?: string;
 }
 
 /** Optional features switched on per host. */
@@ -47,6 +49,7 @@ export interface HostModules {
   helper_script: boolean;
   openscap: boolean;
   portal: boolean;
+  portal_updates: boolean;
   eco: boolean;
 }
 
@@ -104,7 +107,7 @@ export interface Task {
   id: string;
   host_id: string;
   hostname: string;
-  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app' | 'agent_update';
+  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app' | 'agent_update' | 'docker';
   status: TaskStatus;
   policy_id: string | null;
   parent_task_id: string | null;
@@ -153,6 +156,15 @@ export interface MaintenanceWindow {
 }
 
 export interface Occurrence { start: string; end: string }
+
+/** GET /docker: every container of every host whose Docker module is on. */
+export interface DockerData {
+  summary: { containers: number; with_updates: number; hosts: number };
+  containers: {
+    host_id: string; hostname: string; name: string; package: string; image: string; current: string; candidate: string | null; update: boolean;
+    project: string | null; service: string | null; state: string | null; health: string | null; started_at: string | null; open_task: { id: string; status: string } | null;
+  }[];
+}
 
 /** Latest resource reading of a host and its history (GET /hosts/{id}/metrics). All fields are absent for agents before 0.6. */
 export interface HostMetrics {
@@ -320,7 +332,7 @@ export interface Settings {
   ai: { enabled: boolean; provider: string; base_url: string; model: string; api_key: string; api_key_set?: boolean };
   connectivity: { mode: 'connected' | 'air_gapped' };
   agent: { heartbeat_secs: number };
-  compliance: { threshold: number; profile: string };
+  compliance: { threshold: number; profile: string; auto_install: boolean };
   /** What stays reachable while a host is isolated, besides the server. */
   isolation: { keep_ssh: boolean; ssh_port: number; ssh_sources: string[] };
 }
@@ -342,3 +354,13 @@ export interface PackageHost {
   is_security: boolean;
   cves: string[];
 }
+
+export interface ScapProfile { id: string; title: string }
+/** What the agent found: oscap version, the SCAP content it uses and that content's profiles. */
+export interface OpenScapInfo { version: string; datastream: string; profiles: ScapProfile[] }
+export interface CompReport { id: string; profile: string; passed: number; failed: number; not_applicable: number; score: number; results_sha256: string; collected_at: string; failed_rules?: { rule_id: string; severity: string }[] }
+export interface CompHost { reports: CompReport[]; openscap: OpenScapInfo | null; module: boolean; profile: string; effective_profile: string; auto_install: boolean }
+export interface CompProfile { id: string; name: string; description: string; base_profile: string; disabled_rules: string[]; used_by: number; created_at: string; updated_at: string }
+export interface CompProfiles { custom: CompProfile[]; available: { id: string; title: string; hosts: number }[]; hosts_with_openscap: number; default: string }
+export interface FailingRule { rule_id: string; severity: string; hosts: number }
+export interface CompFleet { score: number | null; threshold: number; hosts: (CompReport & { host_id: string; hostname: string | null })[] }
