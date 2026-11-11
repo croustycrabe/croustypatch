@@ -244,6 +244,28 @@ fn touch(c: &mut PgConnection, host_id: Uuid, eco: Option<bool>, now: DateTime<U
     Ok(())
 }
 
+/// Keep the latest resource reading of a host, and one point of history every five minutes.
+fn store_metrics(c: &mut PgConnection, host_id: Uuid, h: &Heartbeat, now: DateTime<Utc>) -> ApiResult<()> {
+    use crate::schema::host_metrics;
+    let Some(m) = &h.metrics else { return Ok(()) };
+    let pct = |used: u64, total: u64| (total > 0).then(|| (used as f64 / total as f64 * 100.0) as f32);
+    let mem_pct = pct(m.mem_used_mb, m.mem_total_mb);
+    let reading = json!({
+        "cpu_pct": m.cpu_pct, "mem_total_mb": m.mem_total_mb, "mem_used_mb": m.mem_used_mb, "mem_pct": mem_pct,
+        "swap_total_mb": m.swap_total_mb, "swap_used_mb": m.swap_used_mb,
+        "load_1m": h.load_1m, "load_5m": m.load_5m, "load_15m": m.load_15m, "uptime_secs": h.uptime_secs, "disks": m.disks,
+    });
+    diesel::update(hosts::table.find(host_id)).set((hosts::metrics.eq(reading), hosts::metrics_at.eq(Some(now)))).execute(c)?;
+    let last: Option<DateTime<Utc>> = host_metrics::table.filter(host_metrics::host_id.eq(host_id)).select(diesel::dsl::max(host_metrics::at)).first(c)?;
+    if last.is_none_or(|l| now - l >= Duration::minutes(5)) {
+        diesel::insert_into(host_metrics::table)
+            .values((host_metrics::host_id.eq(host_id), host_metrics::at.eq(now), host_metrics::cpu_pct.eq(m.cpu_pct), host_metrics::mem_pct.eq(mem_pct), host_metrics::load_1m.eq(Some(h.load_1m))))
+            .on_conflict_do_nothing()
+            .execute(c)?;
+    }
+    Ok(())
+}
+
 fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: DateTime<Utc>) -> ApiResult<()> {
     c.transaction::<_, ApiError, _>(|c| {
         apply_facts(c, host_id, &inv.facts)?;
@@ -363,7 +385,10 @@ pub async fn handle_messages(state: &web::Data<AppState>, host_id: Uuid, msgs: V
                     apply_facts(c, host_id, &facts)?;
                     touch(c, host_id, Some(facts.on_battery && facts.is_laptop), now)
                 }
-                AgentMessage::Heartbeat(h) => touch(c, host_id, Some(h.eco), now),
+                AgentMessage::Heartbeat(h) => {
+                    store_metrics(c, host_id, &h, now)?;
+                    touch(c, host_id, Some(h.eco), now)
+                }
                 AgentMessage::Inventory(inv) => {
                     store_inventory(c, host_id, &inv, now)?;
                     touch(c, host_id, Some(inv.facts.on_battery && inv.facts.is_laptop), now)

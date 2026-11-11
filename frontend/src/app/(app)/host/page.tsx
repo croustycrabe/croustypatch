@@ -3,16 +3,18 @@ import { ArrowCircleUp, ArrowsClockwise, DotsThree, Power, Prohibit, ShieldCheck
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, HostStatusLabel, Menu, MenuItem, Notice, PageHeader, Select, Spinner, StatCard, StateIcon, Switch, Table, Tabs, Tag, TaskStatusLabel, TextInput } from '@/components/ui';
+import { Button, Card, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, HostStatusLabel, Menu, MenuItem, Notice, PageHeader, SearchInput, Select, Spinner, StatCard, StateIcon, Switch, Table, Tabs, Tag, TaskStatusLabel, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { MessageKey } from '@/lib/messages';
+import { HostResources, useSize } from '@/components/Metrics';
 import { Occurrences, safeZone, useWindowText } from '@/components/PatchSchedule';
 import type { Host, HostGroup, HostModules, HostPackage, PatchingExplain, Task } from '@/lib/types';
 
+const PAGE = 100;
 const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
 /** Module name -> what the agent reports in its facts when the host has it. */
 const DETECTED: Partial<Record<keyof HostModules, string>> = { docker: 'docker', helper_script: 'helper-script', openscap: 'openscap' };
@@ -68,6 +70,7 @@ function PatchingCard({ hostId }: { hostId: string }) {
 
 function HostDetail() {
   const { t, tr, ago, date } = useI18n();
+  const size = useSize();
   const { can } = useAuth();
   const toast = useToast();
   const router = useRouter();
@@ -83,6 +86,9 @@ function HostDetail() {
   const [dirty, setDirty] = useState(false);
   const [updatesOnly, setUpdatesOnly] = useState(true);
   const [securityOnly, setSecurityOnly] = useState(false);
+  const [pkgQuery, setPkgQuery] = useState('');
+  const [pkgSource, setPkgSource] = useState('');
+  const [pkgPage, setPkgPage] = useState(0);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<{ text: string; run: () => Promise<unknown>; danger?: boolean } | null>(null);
   const act = useAction();
@@ -93,15 +99,20 @@ function HostDetail() {
     if (detail.data && !dirty) setDraft(draftOf(detail.data));
   }, [detail.data, dirty]);
 
-  const pkgs = useMemo(() => (detail.data?.packages ?? []).filter((p) => (!updatesOnly || p.candidate) && (!securityOnly || p.is_security)), [detail.data, updatesOnly, securityOnly]);
+  const pkgs = useMemo(() => {
+    const q = pkgQuery.trim().toLowerCase();
+    return (detail.data?.packages ?? []).filter((p) => (!updatesOnly || p.candidate) && (!securityOnly || p.is_security) && (!pkgSource || p.source === pkgSource) && (!q || p.name.toLowerCase().includes(q)));
+  }, [detail.data, updatesOnly, securityOnly, pkgQuery, pkgSource]);
 
   if (!id || detail.error?.status === 404) return <Notice kind="error">{t('host.notfound')}</Notice>;
   if (!detail.data || !draft) return detail.error ? <Notice kind="error">{detail.error.message}</Notice> : <Spinner />;
 
   const { host, packages, tasks } = detail.data;
   const facts = host.facts as Record<string, unknown>;
+  const hw = facts.hardware as { cpu_model?: string; cpu_cores?: number; mem_total_mb?: number; swap_total_mb?: number; vendor?: string; product?: string; bios?: string } | undefined;
   const ips = Array.isArray(facts.ip_addresses) ? (facts.ip_addresses as string[]).join(', ') : '';
   const pending = packages.filter((p) => p.candidate);
+  const sources = [...new Set(packages.map((p) => p.source))].filter((s) => ['system', 'docker', 'helper-script'].includes(s)).sort();
   const security = pending.filter((p) => p.is_security);
   const quarantined = host.status === 'quarantined';
   const canWrite = can('hosts:write');
@@ -141,7 +152,7 @@ function HostDetail() {
 
   const PkgTable = ({ rows, selectable }: { rows: HostPackage[]; selectable: boolean }) => (
     <Table head={[selectable ? '' : null, t('host.pkg.name'), t('host.pkg.installed'), t('host.pkg.candidate'), t('host.pkg.cves')].filter((h) => h !== null)} empty={rows.length === 0 && <Empty>{t('host.pkg.none')}</Empty>}>
-      {rows.slice(0, 300).map((p) => (
+      {rows.map((p) => (
         <tr key={`${p.source}/${p.name}`}>
           {selectable && <td>{p.candidate && can('tasks:create') && <input type="checkbox" aria-label={p.name} checked={picked.has(p.name)} onChange={(e) => { const n = new Set(picked); if (e.target.checked) n.add(p.name); else n.delete(p.name); setPicked(n); }} style={{ accentColor: 'var(--primary)' }} />}</td>}
           <td className="strong">{p.name} {p.is_security && <Tag tone="brick">{t('pkg.security')}</Tag>}</td>
@@ -212,6 +223,11 @@ function HostDetail() {
                 <dt>{t('host.kernel')}</dt><dd>{String(facts.kernel ?? '—')}</dd>
                 <dt>{t('host.arch')}</dt><dd>{String(facts.arch ?? '—')}</dd>
                 <dt>{t('host.pkgmgr')}</dt><dd>{host.package_manager}</dd>
+                {hw?.cpu_model && <><dt>{t('host.hw.cpu')}</dt><dd>{hw.cpu_model}{hw.cpu_cores ? ` · ${t('host.hw.cores', { n: hw.cpu_cores })}` : ''}</dd></>}
+                {!!hw?.mem_total_mb && <><dt>{t('host.hw.memory')}</dt><dd>{size(hw.mem_total_mb)}{hw.swap_total_mb ? ` · swap ${size(hw.swap_total_mb)}` : ''}</dd></>}
+                {(hw?.vendor || hw?.product) && <><dt>{t('host.hw.model')}</dt><dd>{[hw.vendor, hw.product].filter(Boolean).join(' ')}</dd></>}
+                {hw?.bios && <><dt>BIOS</dt><dd>{hw.bios}</dd></>}
+                {typeof facts.virtualization === 'string' && facts.virtualization && <><dt>{t('host.hw.virt')}</dt><dd>{facts.virtualization}</dd></>}
                 <dt>{t('host.asset_type')}</dt><dd>{tr('asset', host.asset_type)}{facts.is_desktop && host.asset_type === 'server' ? <> <Tag tone="info">{t('host.desktop_detected')}</Tag></> : null}</dd>
                 {ips && <><dt>{t('host.ips')}</dt><dd>{ips}</dd></>}
               </dl>
@@ -233,6 +249,7 @@ function HostDetail() {
               </dl>
             </Card>
           </div>
+          <HostResources hostId={id} />
           <PatchingCard hostId={id} />
           <Card title={t('host.pending_security')} actions={pending.length > 0 && <Button small variant="ghost" onClick={() => changeTab('packages')}>{t('host.tab.packages')} →</Button>} flush>
             {security.length === 0 ? <Empty>{t('host.no_pending')}</Empty> : <PkgTable rows={security.slice(0, 8)} selectable={false} />}
@@ -243,16 +260,26 @@ function HostDetail() {
       {tab === 'packages' && (
         <>
           <div className="toolbar">
-            <Chip active={updatesOnly} onClick={() => setUpdatesOnly((v) => !v)}>{t('host.pending_only')}</Chip>
-            <Chip active={securityOnly} onClick={() => setSecurityOnly((v) => !v)}>{t('host.security_only')}</Chip>
+            <SearchInput value={pkgQuery} onChange={(v) => { setPkgQuery(v); setPkgPage(0); }} placeholder={t('host.pkg.search')} />
+            <Chip active={updatesOnly} onClick={() => { setUpdatesOnly((v) => !v); setPkgPage(0); }}>{t('host.pending_only')}</Chip>
+            <Chip active={securityOnly} onClick={() => { setSecurityOnly((v) => !v); setPkgPage(0); }}>{t('host.security_only')}</Chip>
+            {sources.length > 1 && sources.map((s) => <Chip key={s} active={pkgSource === s} onClick={() => { setPkgSource(pkgSource === s ? '' : s); setPkgPage(0); }}>{t(`host.pkg.source.${s}` as MessageKey)} · {packages.filter((p) => p.source === s).length}</Chip>)}
             {can('tasks:create') && !quarantined && pending.length > 0 && (
               <span className="row row--tight right">
                 <Button small disabled={picked.size === 0 || act.pending} onClick={() => patch([...picked])}>{t('host.patch_selected')}{picked.size ? ` (${picked.size})` : ''}</Button>
               </span>
             )}
           </div>
-          <PkgTable rows={pkgs} selectable />
-          {pkgs.length > 300 && <p className="field__hint" style={{ marginTop: 10 }}>300 / {pkgs.length}</p>}
+          <PkgTable rows={pkgs.slice(pkgPage * PAGE, (pkgPage + 1) * PAGE)} selectable />
+          <div className="row" style={{ justifyContent: 'space-between', marginTop: 12 }}>
+            <span className="muted" style={{ fontSize: 13 }}>{pkgs.length === 0 ? '' : t('host.pkg.range', { from: pkgPage * PAGE + 1, to: Math.min((pkgPage + 1) * PAGE, pkgs.length), total: pkgs.length })}{!updatesOnly && !pkgQuery && !pkgSource ? ` · ${t('host.pkg.all_installed', { n: packages.length })}` : ''}</span>
+            {pkgs.length > PAGE && (
+              <span className="row row--tight">
+                <Button small disabled={pkgPage === 0} onClick={() => setPkgPage((x) => Math.max(0, x - 1))}>{t('common.previous')}</Button>
+                <Button small disabled={(pkgPage + 1) * PAGE >= pkgs.length} onClick={() => setPkgPage((x) => x + 1)}>{t('common.next')}</Button>
+              </span>
+            )}
+          </div>
         </>
       )}
 

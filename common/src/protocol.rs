@@ -36,6 +36,47 @@ pub struct HostFacts {
     /// Protocol features this agent understands (see `capability`); empty on agents before 0.4.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// What the machine is made of (empty on agents before 0.6).
+    #[serde(default)]
+    pub hardware: Hardware,
+}
+
+/// Static description of the machine: CPU, memory and what the firmware says it is. No serial numbers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hardware {
+    pub cpu_model: String,
+    /// Logical processors.
+    pub cpu_cores: u32,
+    pub mem_total_mb: u64,
+    pub swap_total_mb: u64,
+    /// Manufacturer and model as the firmware reports them (a laptop, a server, "QEMU Standard PC"...).
+    pub vendor: String,
+    pub product: String,
+    pub bios: String,
+}
+
+/// How busy the machine is right now (sent with the heartbeat).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Metrics {
+    /// CPU use since the previous sample, 0-100 (None on the first sample or where it cannot be measured).
+    pub cpu_pct: Option<f32>,
+    pub mem_total_mb: u64,
+    pub mem_used_mb: u64,
+    pub swap_total_mb: u64,
+    pub swap_used_mb: u64,
+    pub load_5m: f32,
+    pub load_15m: f32,
+    pub disks: Vec<DiskUsage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DiskUsage {
+    pub mount: String,
+    pub fs: String,
+    pub total_mb: u64,
+    pub used_mb: u64,
 }
 
 /// Feature flags an agent advertises in its facts, so the server never sends an order an older agent would misread.
@@ -202,6 +243,9 @@ pub struct Heartbeat {
     /// Tasks the agent currently runs; lets the server detect lost work.
     #[serde(default)]
     pub running_tasks: Vec<Uuid>,
+    /// Resource use (agents from 0.6).
+    #[serde(default)]
+    pub metrics: Option<Metrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

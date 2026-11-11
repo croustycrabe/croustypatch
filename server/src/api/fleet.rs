@@ -89,6 +89,33 @@ pub async fn get_host(state: web::Data<AppState>, user: AuthUser, path: web::Pat
 }
 
 #[derive(Deserialize)]
+pub struct MetricsQuery {
+    /// How far back, in hours (default 24, at most two weeks).
+    hours: Option<i64>,
+}
+
+/// GET /hosts/{id}/metrics — the latest resource reading and its history (one point every five minutes).
+pub async fn host_metrics(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, q: web::Query<MetricsQuery>) -> ApiResult<HttpResponse> {
+    use crate::schema::host_metrics;
+    user.require("hosts:read")?;
+    let id = path.into_inner();
+    let hours = q.hours.unwrap_or(24).clamp(1, 24 * 14);
+    let out = state
+        .db(move |c| {
+            let (current, at): (serde_json::Value, Option<chrono::DateTime<Utc>>) = hosts::table.find(id).select((hosts::metrics, hosts::metrics_at)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+            let pts: Vec<(chrono::DateTime<Utc>, Option<f32>, Option<f32>, Option<f32>)> = host_metrics::table
+                .filter(host_metrics::host_id.eq(id))
+                .filter(host_metrics::at.ge(Utc::now() - Duration::hours(hours)))
+                .order(host_metrics::at.asc())
+                .select((host_metrics::at, host_metrics::cpu_pct, host_metrics::mem_pct, host_metrics::load_1m))
+                .load(c)?;
+            Ok(json!({ "current": current, "at": at, "points": pts.into_iter().map(|(at, cpu, mem, load)| json!({ "at": at, "cpu": cpu, "mem": mem, "load": load })).collect::<Vec<_>>() }))
+        })
+        .await?;
+    Ok(HttpResponse::Ok().json(out))
+}
+
+#[derive(Deserialize)]
 pub struct HostPatch {
     display_name: Option<String>,
     environment: Option<String>,

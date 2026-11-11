@@ -2,6 +2,20 @@
 
 A flat, app-style interface in the CroustyLab brand. It is a static export (Next.js) served by the Rust server.
 
+## Dashboard
+
+Every indicator is a tile of its own and every panel a widget; all can be shown, hidden, resized (XS to L), reordered (drag, or the
+arrows) and brought back to the default layout (*Personnaliser*). The layout is saved per user.
+
+| tiles (XS by default) | |
+|---|---|
+| machines, needing updates, security updates, outdated packages, needing attention, **machines with no policy** | shown by default |
+| reboots required, awaiting approval, compliance score, patches applied (7 days), failures and missed patch days (7 days) | hidden by default |
+
+Panels: fleet status, **update status**, **patching** (next patch days with their policy and the number of machines, what happened this week,
+and a warning for machines no policy covers), **fleet resources**, packages most behind, vulnerabilities, systems, activity, app center.
+A layout saved before the tiles existed keeps its panels and gets the five original tiles back at the top; the new ones start hidden.
+
 ## Structure
 
 - **Sidebar** with grouped navigation (overview, fleet, patching, governance, administration), the **Add agent**

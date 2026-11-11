@@ -74,6 +74,9 @@ pub struct Host {
     pub last_inventory_at: Option<Ts>,
     pub enrolled_at: Ts,
     pub modules: Value,
+    /// Latest resource reading (cpu_pct, mem_*, swap_*, load_*, uptime_secs, disks) and when it was taken.
+    pub metrics: Value,
+    pub metrics_at: Option<Ts>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]

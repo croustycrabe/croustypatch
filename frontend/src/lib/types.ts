@@ -37,6 +37,8 @@ export interface Host {
   last_inventory_at: string | null;
   enrolled_at: string;
   modules: HostModules;
+  metrics?: HostMetrics['current'];
+  metrics_at?: string | null;
 }
 
 /** Optional features switched on per host. */
@@ -151,6 +153,16 @@ export interface MaintenanceWindow {
 }
 
 export interface Occurrence { start: string; end: string }
+
+/** Latest resource reading of a host and its history (GET /hosts/{id}/metrics). All fields are absent for agents before 0.6. */
+export interface HostMetrics {
+  at: string | null;
+  current: {
+    cpu_pct?: number | null; mem_total_mb?: number; mem_used_mb?: number; mem_pct?: number | null; swap_total_mb?: number; swap_used_mb?: number;
+    load_1m?: number; load_5m?: number; load_15m?: number; uptime_secs?: number; disks?: { mount: string; fs: string; total_mb: number; used_mb: number }[];
+  };
+  points: { at: string; cpu: number | null; mem: number | null; load: number | null }[];
+}
 
 /** Why a host is (not) being patched automatically (GET /hosts/{id}/patching). */
 export interface PatchingExplain {
@@ -291,10 +303,16 @@ export interface Dashboard {
   activity: { id: string; host_id: string; hostname: string; kind: string; status: TaskStatus; message: string; ts: string }[];
   compliance: { enabled: boolean; score: number | null };
   portal: { enabled: boolean; installs: number | null };
+  resources: { reporting: number; avg_cpu: number | null; avg_mem: number | null; busiest: { id: string; hostname: string; cpu: number | null; mem: number | null; disk: number | null }[] };
+  patching: {
+    next: { policy: string; start: string; end: string; hosts: number; auto: boolean; docker?: string }[];
+    week: { succeeded: number; failed: number; rolled_back: number; missed: number };
+    uncovered_hosts: number;
+  };
 }
 
 export interface Layout {
-  widgets: { id: string; visible: boolean; size: 'sm' | 'md' | 'lg' }[];
+  widgets: { id: string; visible: boolean; size: 'xs' | 'sm' | 'md' | 'lg' }[];
 }
 
 export interface Settings {

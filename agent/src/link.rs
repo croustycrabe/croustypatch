@@ -22,11 +22,13 @@ pub struct Link {
     nonces: Mutex<HashMap<String, i64>>,
     /// Messages that could not be delivered yet; retried first on the next connection.
     pending: Mutex<VecDeque<AgentMessage>>,
+    /// CPU samples between heartbeats.
+    sampler: crate::sysinfo::Sampler,
 }
 
 impl Link {
     pub fn new(agent: Arc<Agent>, cmd_tx: mpsc::UnboundedSender<CommandPayload>) -> Self {
-        Self { agent, cmd_tx, nonces: Mutex::new(HashMap::new()), pending: Mutex::new(VecDeque::new()) }
+        Self { agent, cmd_tx, nonces: Mutex::new(HashMap::new()), pending: Mutex::new(VecDeque::new()), sampler: Default::default() }
     }
 
     /// Verify and queue a command. Returns false if it was rejected.
@@ -56,7 +58,8 @@ impl Link {
         let eco = self.agent.eco_allowed() && is_laptop && on_battery;
         let load_1m = std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse().ok())).unwrap_or(0.0);
         let uptime_secs = std::fs::read_to_string("/proc/uptime").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok())).unwrap_or(0.0) as u64;
-        Heartbeat { on_battery, eco, load_1m, uptime_secs, running_tasks: self.agent.running.lock().unwrap().iter().copied().collect() }
+        let metrics = Some(crate::sysinfo::metrics(&self.sampler).await);
+        Heartbeat { on_battery, eco, load_1m, uptime_secs, running_tasks: self.agent.running.lock().unwrap().iter().copied().collect(), metrics }
     }
 
     fn interval(&self, eco: bool) -> Duration {
@@ -159,9 +162,12 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
         }
     }
 
-    let mut last_hb = Instant::now() - Duration::from_secs(3600);
+    // Report resources right away: a host that just connected should not look empty for a minute.
+    let first = link.heartbeat().await;
+    let mut eco = first.eco;
+    send(&mut sink, &AgentMessage::Heartbeat(first)).await?;
+    let mut last_hb = Instant::now();
     let mut last_inv = Instant::now();
-    let mut eco = false;
     loop {
         let wake = link.interval(eco).min(Duration::from_secs(30));
         tokio::select! {

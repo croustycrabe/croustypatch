@@ -48,7 +48,7 @@ pub async fn list_packages(state: web::Data<AppState>, user: AuthUser, q: web::Q
                  FROM host_packages WHERE name ILIKE $1 \
                  GROUP BY name, source \
                  HAVING ($2 = false OR COUNT(*) FILTER (WHERE candidate IS NOT NULL) > 0) \
-                 ORDER BY outdated DESC, security DESC, hosts DESC, name ASC LIMIT 500",
+                 ORDER BY outdated DESC, security DESC, hosts DESC, name ASC LIMIT 1000",
             )
             .bind::<Text, _>(pattern)
             .bind::<Bool, _>(only)

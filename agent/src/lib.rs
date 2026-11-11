@@ -17,3 +17,4 @@ pub mod preflight;
 pub mod reboot;
 pub mod runner;
 pub mod selfupdate;
+pub mod sysinfo;

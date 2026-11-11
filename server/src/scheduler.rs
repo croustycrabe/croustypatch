@@ -67,6 +67,8 @@ pub fn housekeeping(c: &mut PgConnection) -> ApiResult<()> {
     mark_silent_hosts(c, now)?;
     expire_tasks(c, now)?;
     expire_waivers(c, now)?;
+    // Resource history is kept two weeks.
+    diesel::delete(crate::schema::host_metrics::table.filter(crate::schema::host_metrics::at.lt(now - Duration::days(14)))).execute(c)?;
     Ok(())
 }
 

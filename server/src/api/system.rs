@@ -111,6 +111,41 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 .limit(12)
                 .select((tasks::id, tasks::host_id, hosts::hostname, tasks::kind, tasks::status, tasks::message, tasks::updated_at))
                 .load(c)?;
+            // Resource use: hosts that reported in the last quarter of an hour.
+            let now = Utc::now();
+            let fresh: Vec<(Uuid, String, Value)> = hosts::table.filter(hosts::metrics_at.gt(now - chrono::Duration::minutes(15))).select((hosts::id, hosts::hostname, hosts::metrics)).load(c)?;
+            let pct = |m: &Value, k: &str| m.get(k).and_then(|v| v.as_f64());
+            let avg = |k: &str| { let v: Vec<f64> = fresh.iter().filter_map(|(_, _, m)| pct(m, k)).collect(); (!v.is_empty()).then(|| (v.iter().sum::<f64>() / v.len() as f64 * 10.0).round() / 10.0) };
+            let mut busiest: Vec<Value> = fresh
+                .iter()
+                .map(|(id, name, m)| {
+                    let disk = m.get("disks").and_then(|d| d.as_array()).and_then(|d| d.iter().filter_map(|x| { let t = x.get("total_mb")?.as_f64()?; (t > 0.0).then(|| x.get("used_mb").and_then(|u| u.as_f64()).unwrap_or(0.0) / t * 100.0) }).fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b)))));
+                    json!({ "id": id, "hostname": name, "cpu": pct(m, "cpu_pct"), "mem": pct(m, "mem_pct"), "disk": disk })
+                })
+                .collect();
+            busiest.sort_by(|a, b| {
+                let k = |v: &Value| v["cpu"].as_f64().unwrap_or(0.0).max(v["mem"].as_f64().unwrap_or(0.0)).max(v["disk"].as_f64().unwrap_or(0.0));
+                k(b).partial_cmp(&k(a)).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            // Patching: the next patch days, what happened this week, and how many hosts no policy covers.
+            let pols: Vec<(Uuid, String, Value)> = crate::schema::policies::table.filter(crate::schema::policies::enabled.eq(true)).select((crate::schema::policies::id, crate::schema::policies::name, crate::schema::policies::definition)).load(c)?;
+            let links: Vec<(Uuid, Uuid)> = crate::schema::policy_groups::table.select((crate::schema::policy_groups::policy_id, crate::schema::policy_groups::group_id)).load(c)?;
+            let members: Vec<(Uuid, Uuid)> = crate::schema::host_group_members::table.select((crate::schema::host_group_members::group_id, crate::schema::host_group_members::host_id)).load(c)?;
+            let mut covered: HashSet<Uuid> = HashSet::new();
+            let mut next_days: Vec<(chrono::DateTime<Utc>, Value)> = vec![];
+            for (pid, name, def) in pols {
+                let gs: HashSet<Uuid> = links.iter().filter(|(p, _)| *p == pid).map(|(_, g)| *g).collect();
+                let hs: HashSet<Uuid> = members.iter().filter(|(g, _)| gs.contains(g)).map(|(_, h)| *h).collect();
+                covered.extend(hs.iter().copied());
+                let Ok(def) = serde_json::from_value::<crate::engine::policy::PolicyDef>(def) else { continue };
+                if let Some(o) = def.maintenance_window.as_ref().and_then(|w| w.upcoming(now, 1).into_iter().next()) {
+                    next_days.push((o.start, json!({ "policy": name, "start": o.start, "end": o.end, "hosts": hs.len(), "auto": def.default_action == croustypatch_common::model::PolicyAction::AutoDeploy, "docker": def.docker })));
+                }
+            }
+            next_days.sort_by_key(|(t, _)| *t);
+            let week: Vec<(String, i64)> = tasks::table.filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).group_by(tasks::status).select((tasks::status, diesel::dsl::count_star())).load(c)?;
+            let wk = |s: &str| week.iter().find(|(st, _)| st == s).map(|(_, n)| *n).unwrap_or(0);
+            let missed: i64 = tasks::table.filter(tasks::kind.eq("patch")).filter(tasks::status.eq("expired")).filter(tasks::message.like("the patch day ended%")).filter(tasks::finished_at.gt(now - chrono::Duration::days(7))).count().get_result(c)?;
             // A module counts as in use when at least one host has it switched on.
             let host_modules: Vec<serde_json::Value> = hosts::table.select(hosts::modules).load(c)?;
             let in_use = |m: &str| host_modules.iter().any(|v| crate::modules::parse(v).get(m));
@@ -123,6 +158,12 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 // Optional modules are reported as inactive until they exist and are switched on.
                 "compliance": { "enabled": in_use("openscap"), "score": crate::api::compliance_api::fleet_score(c)? },
                 "portal": { "enabled": in_use("portal"), "installs": null },
+                "resources": { "reporting": fresh.len(), "avg_cpu": avg("cpu_pct"), "avg_mem": avg("mem_pct"), "busiest": busiest.into_iter().take(6).collect::<Vec<_>>() },
+                "patching": {
+                    "next": next_days.into_iter().take(4).map(|(_, v)| v).collect::<Vec<_>>(),
+                    "week": { "succeeded": wk("succeeded"), "failed": wk("failed"), "rolled_back": wk("rolled_back"), "missed": missed },
+                    "uncovered_hosts": (total - covered.len() as i64).max(0),
+                },
                 "can": { "approve": perms_allow(&perms, "tasks:write") },
             }))
         })

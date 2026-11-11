@@ -16,6 +16,7 @@ const FR = {
   sent: 'Demande envoyée pour {n}.', opened: 'Déjà présentes sur cette machine : {l}', none_present: 'Aucune application du catalogue n’est encore présente.',
   empty: 'Aucune application proposée pour cette machine.', no_match: 'Aucune application ne correspond.',
   unreachable: 'L’agent CroustyPatch ne répond pas sur cette machine ({e}).', command_badge: 'commande',
+  theme_system: 'Thème : celui du système', theme_light: 'Thème : clair', theme_dark: 'Thème : sombre', lang_title: 'Langue : français (cliquer pour passer à l’anglais)',
 };
 const EN = {
   title: 'App center', host: 'Machine {h} · requests made as your account', all: 'All', search: 'Search an application',
@@ -31,14 +32,20 @@ const EN = {
   sent: 'Request sent for {n}.', opened: 'Already on this machine: {l}', none_present: 'No catalog application is on this machine yet.',
   empty: 'No application offered for this machine.', no_match: 'No application matches.',
   unreachable: 'The CroustyPatch agent does not answer on this machine ({e}).', command_badge: 'command',
+  theme_system: 'Theme: follow the system', theme_light: 'Theme: light', theme_dark: 'Theme: dark', lang_title: 'Language: English (click for French)',
 };
-const W = (navigator.language || 'fr').toLowerCase().startsWith('fr') ? FR : EN;
-const t = (k, v = {}) => W[k].replace(/\{(\w+)\}/g, (_, x) => String(v[x] ?? ''));
-document.documentElement.lang = W === FR ? 'fr' : 'en';
 
-// ---- theme follows the system
+// ---- language and theme: the system's, until the user chooses (remembered on this machine)
+const stored = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const store = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode: the choice lasts for this session */ } };
+let lang = ['fr', 'en'].includes(stored('cp.lang')) ? stored('cp.lang') : (navigator.language || 'fr').toLowerCase().startsWith('fr') ? 'fr' : 'en';
+let W = lang === 'fr' ? FR : EN;
+const t = (k, v = {}) => W[k].replace(/\{(\w+)\}/g, (_, x) => String(v[x] ?? ''));
+document.documentElement.lang = lang;
+
+let themeChoice = ['system', 'light', 'dark'].includes(stored('cp.theme')) ? stored('cp.theme') : 'system';
 const dark = window.matchMedia('(prefers-color-scheme: dark)');
-const applyTheme = () => { document.documentElement.dataset.theme = dark.matches ? 'dark' : 'light'; };
+const applyTheme = () => { document.documentElement.dataset.theme = themeChoice === 'system' ? (dark.matches ? 'dark' : 'light') : themeChoice; };
 applyTheme();
 dark.addEventListener('change', applyTheme);
 
@@ -68,6 +75,7 @@ function icon(name, cls = 'ico') {
   return svg;
 }
 document.querySelectorAll('[data-icon]').forEach((n) => n.replaceWith(icon(n.dataset.icon)));
+const THEME_ICON = { system: 'auto', light: 'sun', dark: 'moon' };
 
 // ---- backend
 const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
@@ -197,6 +205,11 @@ function render() {
   $('refresh-label').textContent = t('refresh');
   $('status-title').textContent = t('status');
   $('clear-label').textContent = t('clear');
+  $('lang-label').textContent = lang.toUpperCase();
+  $('lang').title = t('lang_title');
+  $('theme').title = t(`theme_${themeChoice}`);
+  $('theme-label').textContent = t(`theme_${themeChoice}`);
+  $('theme-icon').replaceChildren(icon(THEME_ICON[themeChoice]));
 
   const notice = $('notice');
   notice.hidden = !S.error;
@@ -239,6 +252,20 @@ function renderLog() {
 }
 
 // ---- wiring
+$('lang').addEventListener('click', () => {
+  lang = lang === 'fr' ? 'en' : 'fr';
+  W = lang === 'fr' ? FR : EN;
+  store('cp.lang', lang);
+  document.documentElement.lang = lang;
+  render();
+  renderLog();
+});
+$('theme').addEventListener('click', () => {
+  themeChoice = ({ system: 'light', light: 'dark', dark: 'system' })[themeChoice];
+  store('cp.theme', themeChoice);
+  applyTheme();
+  render();
+});
 $('q').addEventListener('input', (e) => { S.q = e.target.value; render(); });
 $('refresh').addEventListener('click', () => void refresh());
 $('clear').addEventListener('click', () => { S.notes = []; renderLog(); });

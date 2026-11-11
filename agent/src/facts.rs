@@ -156,10 +156,11 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         is_desktop: desktop_detected(),
         portal_gui: std::path::Path::new(PORTAL_GUI).is_file(),
         on_battery,
-        virtualization: None,
+        virtualization: crate::sysinfo::virtualization(),
         ip_addresses: local_ip(server_url).await,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         modules,
         capabilities: croustypatch_common::protocol::capability::ALL.iter().map(|s| s.to_string()).collect(),
+        hardware: crate::sysinfo::hardware(),
     }
 }

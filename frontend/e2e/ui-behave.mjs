@@ -18,6 +18,20 @@ let p = await open();
 await login(p, 'admin', 'wrong'); await p.waitForSelector('.alert--error'); check('bad credentials show an error on the login page', p.url().endsWith('/login/'));
 await login(p, 'admin', 'e2e-admin-password'); await p.waitForSelector('.sidebar'); await p.waitForSelector('.stat');
 check('dashboard shows fleet stat cards', await p.locator('.stat').count() >= 5);
+check('every indicator is a tile of its own, plus the new panels', (await p.locator('[data-widget^=stat_]').count()) >= 6 && (await p.locator('[data-widget=updates], [data-widget=patching], [data-widget=resources]').count()) === 3);
+{
+  await p.click('button:has-text("Personnaliser")');
+  check('customising offers the tiles and panels that are hidden', (await p.locator('button:has-text("Redémarrages requis")').count()) === 1);
+  await p.click('button:has-text("Afficher · Redémarrages requis")');
+  check('a hidden tile is shown with one click', (await p.locator('[data-widget=stat_reboot]').count()) === 1);
+  await p.waitForFunction(() => { const r = document.querySelector('[data-widget=stat_reboot]')?.getBoundingClientRect(); return !!r && r.top >= 0 && r.bottom <= innerHeight; }, null, { timeout: 5000 }).then(() => check('and brought into view', true), () => check('and brought into view', false));
+  await p.click('[data-widget=stat_reboot] button[aria-label="Masquer"]');
+  check('and hidden again', (await p.locator('[data-widget=stat_reboot]').count()) === 0);
+  await p.click('[data-widget=updates] button[aria-label="Masquer"]'); await p.click('button:has-text("Rétablir la disposition par défaut")');
+  await p.waitForSelector('[data-widget=updates]');
+  check('"Restore the default layout" brings everything back', (await p.locator('[data-widget=updates]').count()) === 1);
+  await p.click('button:has-text("Terminer")');
+}
 check('"Add agent" is offered in the sidebar and on the page', await p.locator('button:has-text("Ajouter un agent")').count() >= 2);
 
 // ---- navigation and hosts table
@@ -263,6 +277,8 @@ await p.waitForSelector('code.cs-inline-code'); const tok = (await p.locator('co
 // ---- compliance tab: an audit can be requested
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.tbl tr:has(.status.tone-ok) .cell-host a >> nth=0'); await p.waitForSelector('.tabs');
 await p.waitForSelector('.panel:has-text("Correctifs automatiques")', { timeout: 8000 }).then(() => check('the host page says why a host is, or is not, patched automatically', true), () => check('the host page says why a host is, or is not, patched automatically', false));
+await p.waitForSelector('.panel:has-text("Ressources") [role=meter]', { timeout: 40000 }).then(() => check('the host page shows live CPU, memory and disk use reported by the agent', true), () => check('the host page shows live CPU, memory and disk use reported by the agent', false));
+check('and the hardware: processor and memory', (await p.locator('.panel:has-text("Système")').first().textContent()).includes('Processeur'));
 check('the agent card shows the agent is up to date', await p.locator('.kv .tag:has-text("à jour")').count() === 1);
 await p.click('[role=tab]:has-text("Réglages")'); await p.waitForSelector('[role=switch]');
 check('the host settings list the five modules', await p.locator('[role=switch]').count() === 5);

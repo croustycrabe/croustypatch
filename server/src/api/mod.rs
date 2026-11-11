@@ -115,6 +115,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/policies/simulate", web::post().to(patching::simulate))
             .route("/policies/preview-schedule", web::post().to(patching::preview_schedule))
             .route("/hosts/{id}/patching", web::get().to(patching::host_patching))
+            .route("/hosts/{id}/metrics", web::get().to(fleet::host_metrics))
             .route("/policies/{id}", web::put().to(patching::update_policy))
             .route("/policies/{id}", web::delete().to(patching::delete_policy))
             .route("/tasks", web::get().to(patching::list_tasks))

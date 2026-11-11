@@ -456,12 +456,28 @@ pub async fn get_layout(state: web::Data<AppState>, user: AuthUser) -> ApiResult
     Ok(HttpResponse::Ok().json(layout.unwrap_or_else(default_layout)))
 }
 
+/// The dashboard as a new user sees it: indicator tiles first, then the panels. Tiles and panels the user has not
+/// seen yet are added by the page when a saved layout predates them.
 pub fn default_layout() -> Value {
     json!({ "widgets": [
+        { "id": "stat_hosts", "visible": true, "size": "xs" },
+        { "id": "stat_needing", "visible": true, "size": "xs" },
+        { "id": "stat_security", "visible": true, "size": "xs" },
+        { "id": "stat_outdated", "visible": true, "size": "xs" },
+        { "id": "stat_attention", "visible": true, "size": "xs" },
+        { "id": "stat_uncovered", "visible": true, "size": "xs" },
+        { "id": "stat_reboot", "visible": false, "size": "xs" },
+        { "id": "stat_approvals", "visible": false, "size": "xs" },
+        { "id": "stat_compliance", "visible": false, "size": "xs" },
+        { "id": "stat_patched_week", "visible": false, "size": "xs" },
+        { "id": "stat_failed_week", "visible": false, "size": "xs" },
         { "id": "fleet", "visible": true, "size": "md" },
-        { "id": "os", "visible": true, "size": "md" },
+        { "id": "updates", "visible": true, "size": "md" },
+        { "id": "patching", "visible": true, "size": "md" },
+        { "id": "resources", "visible": true, "size": "md" },
         { "id": "packages", "visible": true, "size": "md" },
         { "id": "vulns", "visible": true, "size": "md" },
+        { "id": "os", "visible": true, "size": "md" },
         { "id": "activity", "visible": true, "size": "lg" },
         { "id": "portal", "visible": true, "size": "md" }
     ]})
@@ -470,11 +486,11 @@ pub fn default_layout() -> Value {
 pub async fn put_layout(state: web::Data<AppState>, user: AuthUser, body: web::Json<Value>) -> ApiResult<HttpResponse> {
     let layout = body.into_inner();
     let widgets = layout.get("widgets").and_then(|w| w.as_array()).ok_or_else(|| ApiError::bad("layout.widgets must be an array"))?;
-    let valid = widgets.len() <= 20
+    let valid = widgets.len() <= 40
         && widgets.iter().all(|w| {
             w.get("id").and_then(|i| i.as_str()).is_some_and(|i| i.len() <= 40)
                 && w.get("visible").is_some_and(|v| v.is_boolean())
-                && w.get("size").and_then(|s| s.as_str()).is_some_and(|s| matches!(s, "sm" | "md" | "lg"))
+                && w.get("size").and_then(|s| s.as_str()).is_some_and(|s| matches!(s, "xs" | "sm" | "md" | "lg"))
         });
     if !valid {
         return Err(ApiError::bad("invalid widget definition"));

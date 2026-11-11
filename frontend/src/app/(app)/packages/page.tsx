@@ -57,6 +57,8 @@ function Packages() {
         <Chip active={updates} onClick={() => setUpdates((v) => !v)}>{t('pkg.updates_only')}</Chip>
       </div>
       {list.error && <Notice kind="error">{list.error.message}</Notice>}
+      {list.data && !updates && !q && <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>{t('pkg.all_hint', { n: list.data.length })}</p>}
+      {list.data && list.data.length >= 1000 && <Notice>{t('pkg.limit')}</Notice>}
       {!list.data ? <Spinner /> : (
         <Table head={[t('pkg.col.name'), t('pkg.col.hosts'), t('pkg.col.outdated'), t('pkg.col.latest')]} empty={list.data.length === 0 && <Empty>{t('pkg.none')}</Empty>}>
           {list.data.map((p) => (

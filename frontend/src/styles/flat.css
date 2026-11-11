@@ -340,9 +340,14 @@ select.input { appearance: none; padding-right: 32px; background-image: url("dat
 .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .legend a { display: inline-flex; align-items: center; gap: 7px; font: 500 12.5px/18px var(--font-sans); text-decoration: none; }
 .legend a:hover { text-decoration: underline; }
-.widgets { display: grid; gap: 20px; grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.widget { grid-column: span 6; }
-@media (min-width: 1000px) { .widget--sm { grid-column: span 2; } .widget--md { grid-column: span 3; } .widget--lg { grid-column: span 6; } }
+.widgets { display: grid; gap: 20px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.widget { grid-column: span 12; }
+.widget--xs { grid-column: span 6; }
+@media (min-width: 1000px) { .widget--xs { grid-column: span 3; } .widget--sm { grid-column: span 4; } .widget--md { grid-column: span 6; } .widget--lg { grid-column: span 12; } }
+@media (min-width: 1500px) { .widget--xs { grid-column: span 2; } }
+.widget--xs { display: flex; flex-direction: column; }
+.widget--xs .stat { flex: 1; }
+.widget__bar { display: flex; gap: 4px; justify-content: flex-end; margin-top: 6px; }
 .widget[draggable='true'] { cursor: grab; }
 .widget--over { outline: 2px dashed var(--primary); outline-offset: 6px; border-radius: var(--radius-lg); }
 .widget--dragging { opacity: 0.55; }

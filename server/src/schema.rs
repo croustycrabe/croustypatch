@@ -86,6 +86,8 @@ diesel::table! {
         enrolled_at -> Timestamptz,
         created_at -> Timestamptz,
         modules -> Jsonb,
+        metrics -> Jsonb,
+        metrics_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -391,3 +393,16 @@ diesel::table! {
 
 diesel::joinable!(report_runs -> reports (report_id));
 diesel::allow_tables_to_appear_in_same_query!(reports, report_runs);
+
+diesel::table! {
+    host_metrics (host_id, at) {
+        host_id -> Uuid,
+        at -> Timestamptz,
+        cpu_pct -> Nullable<Float4>,
+        mem_pct -> Nullable<Float4>,
+        load_1m -> Nullable<Float4>,
+    }
+}
+
+diesel::joinable!(host_metrics -> hosts (host_id));
+diesel::allow_tables_to_appear_in_same_query!(host_metrics, hosts);

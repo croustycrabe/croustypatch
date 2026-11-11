@@ -22,6 +22,20 @@ and keep the last ones in `settings.json` in their state directory. They then sk
 the helper-script scan when those modules are off, and the eco switch replaces the local `eco_enabled` setting. Older
 agents keep collecting everything (the server still filters it) until they are updated.
 
+## Host information (agents 0.6 and later)
+
+Each host page shows what the machine is made of and how busy it is.
+
+- **Hardware** (in the host's facts, refreshed with each inventory): processor model and logical cores, memory and swap,
+  manufacturer and model as the firmware reports them (`/sys/class/dmi/id`), BIOS, and what it runs on (`lxc`, `kvm/qemu`,
+  `vmware`… or bare metal). No serial numbers or identifiers are collected.
+- **Resources** (sent with every heartbeat; an agent that has just connected sends one at once): CPU use since the previous
+  reading, memory and swap in use, load averages, uptime and every real filesystem (a device mounted several times is listed once,
+  `df -P -k -T` without tmpfs, overlay and squashfs). The server keeps the latest reading and one point every five minutes
+  for two weeks: the card shows meters (green below 75 %, amber to 90 %, red above) and 24-hour charts. `GET /api/v1/hosts/{id}/metrics?hours=24`.
+- The dashboard summarises the fleet (average CPU and memory, the busiest machines), and hosts that stopped reporting for more
+  than 15 minutes drop out of it. Linux only for now: other systems report no resources.
+
 ## Agent version and updates
 
 Agents advertise what they understand in their facts (`capabilities`: `settings`, `app_command`, `self_update`), so

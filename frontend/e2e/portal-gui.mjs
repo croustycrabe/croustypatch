@@ -131,6 +131,25 @@ await p.click('#refresh');
 await p.waitForSelector('#notice[hidden]', { state: 'attached' });
 check('and the notice goes away once it answers again', true);
 
+// language and theme switches: a choice is remembered; otherwise the system's applies
+{
+  const sw = await open({ locale: 'fr-FR', scheme: 'light' });
+  const theme = () => sw.evaluate(() => document.documentElement.dataset.theme);
+  check('the language switch shows the current language', (await sw.locator('#lang-label').textContent()) === 'FR');
+  await sw.click('#lang');
+  check('switching language translates the whole window', (await sw.locator('#title').textContent()) === 'App center' && (await sw.locator('#lang-label').textContent()) === 'EN' && (await sw.locator('[data-app="htop"] button').first().textContent()).includes('Install'));
+  await sw.reload(); await sw.waitForSelector('.card');
+  check('the language choice is remembered', (await sw.locator('#title').textContent()) === 'App center');
+  check('the theme starts with the system (light)', (await theme()) === 'light');
+  await sw.click('#theme'); check('first click: light, whatever the system says', (await theme()) === 'light');
+  await sw.click('#theme'); check('second click: dark', (await theme()) === 'dark');
+  await sw.reload(); await sw.waitForSelector('.card');
+  check('the theme choice is remembered', (await theme()) === 'dark');
+  await sw.click('#theme'); check('third click: back to following the system', (await theme()) === 'light');
+  await sw.screenshot({ path: `${OUT}/portal-gui-switches.png` });
+  await sw.context().close();
+}
+
 const d = await open({ locale: 'en-US', scheme: 'dark' });
 check('English follows the system language', (await d.locator('#title').textContent()) === 'App center' && (await d.locator('[data-app="htop"] button').first().textContent()).includes('Install'));
 check('dark theme follows the system', (await d.evaluate(() => document.documentElement.dataset.theme)) === 'dark' && (await d.evaluate(() => getComputedStyle(document.body).backgroundColor)) !== 'rgb(245, 242, 234)');
