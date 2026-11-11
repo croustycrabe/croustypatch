@@ -65,6 +65,7 @@ fn the_screen_shows_the_brand_the_apps_and_their_state() {
     let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
     t.draw(|f| render(f, &s)).unwrap();
     let text: String = t.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains(&format!("[ CroustyPatch ] v{}", env!("CARGO_PKG_VERSION"))), "the version follows the brand");
     for want in ["[ CroustyPatch ]", "Portail applicatif", "srv-01", "htop", "Dev tools", "● Présent", "○ Disponible", "Installation…", "Process viewer", "q quitter", "État et notifications", "Installation ncdu", "applications déjà présentes"] {
         assert!(text.contains(want), "missing {want:?}");
     }

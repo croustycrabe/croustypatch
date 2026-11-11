@@ -16,7 +16,12 @@ const login = async (p, u, pw) => { await p.goto(`${BASE}/login/`); await p.fill
 
 let p = await open();
 await login(p, 'admin', 'wrong'); await p.waitForSelector('.alert--error'); check('bad credentials show an error on the login page', p.url().endsWith('/login/'));
+const serverVersion = await p.evaluate(async () => (await (await fetch('/api/v1/server-info')).json()).version);
+await p.waitForSelector('[data-testid=app-version]', { timeout: 8000 }).catch(() => {});
+check('the sign-in page shows the version of the running server', (await p.locator('[data-testid=app-version]').first().textContent().catch(() => '')) === `v${serverVersion}` && /^\d+\.\d+\.\d+$/.test(serverVersion), serverVersion);
 await login(p, 'admin', 'e2e-admin-password'); await p.waitForSelector('.sidebar'); await p.waitForSelector('.stat');
+await p.waitForSelector('.sidebar [data-testid=app-version]', { timeout: 8000 }).catch(() => {});
+check('the sidebar shows it once signed in', (await p.locator('.sidebar [data-testid=app-version]').textContent().catch(() => '')) === `v${serverVersion}`);
 check('dashboard shows fleet stat cards', await p.locator('.stat').count() >= 5);
 check('every indicator is a tile of its own, plus the new panels', (await p.locator('[data-widget^=stat_]').count()) >= 6 && (await p.locator('[data-widget=updates], [data-widget=patching], [data-widget=resources]').count()) === 3);
 {
@@ -303,6 +308,19 @@ check('a compliance task is created and answered by the agent', await p.locator(
   check('suggested apps are listed with their packages per system', (await p.locator('.appcard:has-text("htop")').textContent()).includes('pacman'));
   await p.click('.appcard:has-text("htop") button:has-text("Ajouter")'); await p.waitForSelector('.appcard:has-text("htop") .tag:has-text("Dans le catalogue")');
   check('a suggestion is added to the catalog in one click', true);
+  const vs = p.locator('.appcard:has-text("Visual Studio Code")');
+  const vsText = await vs.textContent();
+  check('Visual Studio Code is suggested: a command on Debian, the repository package on Arch, and it says which build', vsText.includes('commande → /usr/bin/code') && vsText.includes('pacman') && vsText.includes('Code - OSS') && (await vs.locator('.tag:has-text("commande")').count()) === 1);
+  check('Zed is suggested with its logo', (await p.locator('.appcard:has-text("Zed") .appcard__icon--img img').count()) === 1 && (await p.locator('.appcard:has-text("Zed")').textContent()).includes('zed'));
+  await vs.locator('button:has-text("Ajouter")').click(); await p.waitForSelector('dialog[open]');
+  check('an application that installs with a command asks first and says it runs as root', (await p.locator('dialog[open]').textContent()).includes('root'));
+  await p.click('dialog[open] button:has-text("Annuler")');
+  check('cancelling adds nothing', (await vs.locator('button:has-text("Ajouter")').count()) === 1);
+  await vs.locator('button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
+  await p.waitForSelector('.appcard:has-text("Visual Studio Code") .tag:has-text("Dans le catalogue")');
+  await p.locator('.appcard:has-text("Zed") button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
+  await p.waitForSelector('.appcard:has-text("Zed") .tag:has-text("Dans le catalogue")');
+  check('once confirmed they join the catalog', true);
   await p.click('[role=tab]:has-text("Catalogue")'); await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
   await p.fill('dialog[open] input >> nth=0', 'Outils dev'); await p.fill('dialog[open] input.mono', 'git, make');
   await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Outils dev")');
@@ -479,6 +497,7 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.fill('dialog[open] input >> nth=0', 'Firefox'); await p.fill('dialog[open] input.mono', 'firefox');
   await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Firefox")');
   check('an application named like a known one gets its logo without choosing it', (await p.locator('.tbl tr:has-text("Firefox") .appcard__icon--img img').count()) === 1);
+  check('the editors are in the catalog: Zed with its logo, VS Code with the generic glyph and its command shown', (await p.locator('.tbl tr:has-text("Zed") .appcard__icon--img img').count()) === 1 && (await p.locator('.tbl tr:has-text("Visual Studio Code") .appcard__icon svg').count()) === 1 && (await p.locator('.tbl tr:has-text("Visual Studio Code")').textContent()).includes('commande → /usr/bin/code'));
   // the tile of a logo is white whatever the theme, so dark logos stay readable
   await p.click('[role=tab]:has-text("Applications")'); await p.waitForSelector('.appcard:has-text("Firefox")');
   const tileBg = await p.locator('.appcard:has-text("Firefox") .appcard__icon--img').first().evaluate((e) => getComputedStyle(e).backgroundColor);

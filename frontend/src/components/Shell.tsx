@@ -90,9 +90,16 @@ function Brand({ onDark }: { onDark?: boolean }) {
   );
 }
 
+/** The version of the running server (`GET /server-info`, public), "0.7.3"; empty until known or when it cannot be read. */
+export function useServerVersion(): string {
+  const info = useApi<{ version: string }>('/server-info');
+  return info.data?.version ?? '';
+}
+
 /** Sign-in style pages: brand panel on the left, the form on the right. */
 export function AuthLayout({ children }: { children: ReactNode }) {
   const { t } = useI18n();
+  const version = useServerVersion();
   return (
     <div className="auth">
       <aside className="auth__brand">
@@ -101,7 +108,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
           <h2><span className="cl-bracket" aria-hidden="true">[</span> {t('app.name')} <span className="cl-bracket" aria-hidden="true">]</span></h2>
           <p>{t('app.pitch')}</p>
         </div>
-        <small>Croustylab · Croustycrabe</small>
+        <small>Croustylab · Croustycrabe{version && <> · <span data-testid="app-version">v{version}</span></>}</small>
       </aside>
       <main className="auth__form">
         <div className="auth__lang"><LanguageToggle /></div>
@@ -233,6 +240,7 @@ function Frame({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', k);
   }, [navOpen]);
   const [palette, setPalette] = useState(false);
+  const version = useServerVersion();
   const dash = useApi<Dashboard>(can('dashboard:read') ? '/dashboard' : null, { poll: 20000 });
   // The palette searches hosts: have the list ready before it opens, and refresh it each time it does.
   const hostList = useApi<HostSummary[]>(can('hosts:read') ? '/hosts' : null);
@@ -276,6 +284,7 @@ function Frame({ children }: { children: ReactNode }) {
           })}
         </nav>
         <div className="sidebar__foot">
+          {version && <div className="sidebar__version" title={t('app.version.title')}>{t('app.name')} <span data-testid="app-version">v{version}</span></div>}
           <Menu up label={me?.username ?? ''} trigger={<><span className="avatar">{me?.username.slice(0, 1)}</span><span style={{ minWidth: 0 }}><div className="usercard__name">{me?.username}</div><div className="usercard__role">{me?.role}</div></span></>}>
             {(close) => (
               <>

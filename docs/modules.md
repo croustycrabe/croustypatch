@@ -289,6 +289,19 @@ anything runs, a progress bar and a notification log. French or English and ligh
   enrolled before 0.7 gets the login entry from *Update agent* (the agent adds it right after replacing the window
   binary, never over an existing file) but not `libnotify`: without `notify-send` the notifier falls back to D-Bus
   (`gdbus`), and the installer can be re-run to add the package.
+- **Suggested editors (0.7.3).** *Visual Studio Code* and *Zed* are in the suggestions, and neither is in the repositories
+  of Debian or Ubuntu, so those systems install them with a **command** (the first suggestions to do so; adding one
+  needs `portal:commands`, the card is flagged *command* and asks for a confirmation that says it runs as root; the shipped
+  list names them in `REVIEWED_COMMANDS` and a test reads their scripts). **VS Code** on Debian and Ubuntu adds Microsoft's
+  apt repository (signed key, `/etc/apt/sources.list.d/vscode.sources`) and installs `code`, so its updates arrive with
+  the system updates; removing it removes the repository. **Arch:** Microsoft's build is only in the AUR (which cannot be
+  built as root by an agent), so Arch installs `code` from the official repository, which is the open-source **Code -
+  OSS** build (same editor, Open VSX instead of Microsoft's extension marketplace); the card says so. **Zed** on Debian
+  and Ubuntu uses Zed's official release archive (the one its own installer downloads), read completely before anything is
+  replaced, unpacked as `root:root` into `/opt/zed.app` with `/usr/local/bin/zed`, a menu entry and an icon; it has no
+  automatic update (install again to get the latest). Arch installs `zed` from `extra`. Both scripts were run on clean
+  Debian 13 and Ubuntu 26.04 containers (install, install again, uninstall). Zed needs a graphical desktop and a Vulkan
+  graphics driver and refuses to run as root.
 - **App icons (0.7).** Applications added before 0.7 kept a generic icon (only the suggestions showed the logos): 0.7.1 gives
   those that carry the name of a suggested application (`git`, `Firefox`, `Python 3`…) its logo, once, and a new
   application left with the default icon takes the logo of the application it is named after. An icon chosen on

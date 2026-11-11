@@ -531,3 +531,53 @@ async fn updates_can_be_started_for_the_system_the_containers_or_both() {
     let scopes: Vec<Value> = audit_log::table.filter(audit_log::action.eq("task.patch_requested")).select(audit_log::details).load(&mut db.conn()).unwrap();
     assert!(scopes.iter().any(|d| d["scope"] == json!("system")) && scopes.iter().any(|d| d["scope"] == json!("docker")) && scopes.iter().any(|d| d["scope"] == json!("all")), "{scopes:?}");
 }
+
+#[actix_web::test]
+async fn the_editors_are_added_from_the_suggestions_only_by_someone_who_may_write_commands() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let (st, sugg) = call(&app, TestRequest::get().uri("/api/v1/portal/suggestions").cookie(ck.clone())).await;
+    assert_eq!(st, 200);
+    let find = |n: &str| sugg.as_array().unwrap().iter().find(|s| s["name"] == n).unwrap_or_else(|| panic!("{n} is not suggested")).clone();
+    let (code, zed) = (find("Visual Studio Code"), find("Zed"));
+    assert!(zed["icon_url"].as_str().unwrap().starts_with("data:image/svg+xml;base64,"), "Zed shows its logo");
+    assert_eq!(code["icon_url"], Value::Null, "VS Code keeps the generic glyph");
+    let body = |s: &Value| json!({"name": s["name"], "category": s["category"], "description": s["description"], "icon": s["icon"], "recipes": s["recipes"], "group_ids": [], "enabled": true});
+
+    // an administrator without portal:commands cannot add an application that installs with a command ...
+    let admin_only = user_with_role(&app, &ck, "adm2", "admin").await;
+    let (st, b) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(admin_only.clone()).set_json(body(&code))).await;
+    assert_eq!(st, 403, "{b}");
+    assert!(b["message"].as_str().unwrap().contains("portal:commands"), "{b}");
+    // ... the full access account can, and the command is kept as written
+    let (st, a) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(body(&code))).await;
+    assert_eq!(st, 201, "{a}");
+    assert_eq!(a["has_command"], json!(true));
+    assert!(a["recipes"]["apt"]["command"]["install"].as_str().unwrap().contains("packages.microsoft.com"));
+    assert_eq!(a["recipes"]["pacman"]["packages"], json!(["code"]), "Arch gets the repository's package");
+    let (st, z) = call(&app, TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(body(&zed))).await;
+    assert_eq!(st, 201, "{z}");
+    assert_eq!(z["icon"], json!("brand:zedindustries"));
+    // they are then listed as in the catalog
+    let (_, sugg) = call(&app, TestRequest::get().uri("/api/v1/portal/suggestions").cookie(ck.clone())).await;
+    assert!(sugg.as_array().unwrap().iter().filter(|s| s["name"] == "Zed" || s["name"] == "Visual Studio Code").all(|s| s["in_catalog"] == json!(true)));
+
+    // each system sees what it can install: Debian runs the command, Arch installs the package, FreeBSD is not offered either
+    let (deb, arch, bsd) = {
+        let mut c = db.conn();
+        let mk = |c: &mut PgConnection, n: &str, pm: &str| diesel::insert_into(hosts::table).values((hosts::hostname.eq(n), hosts::public_key_pem.eq("pem"), hosts::status.eq("online"), hosts::package_manager.eq(pm), hosts::modules.eq(json!({"portal": true})), hosts::facts.eq(json!({"capabilities": croustypatch_common::protocol::capability::ALL})))).returning(hosts::id).get_result::<Uuid>(c).unwrap();
+        (mk(&mut c, "deb", "apt"), mk(&mut c, "arch", "pacman"), mk(&mut c, "bsd", "pkg"))
+    };
+    let view = |h: Uuid| TestRequest::get().uri(&format!("/api/v1/portal/hosts/{h}")).cookie(ck.clone());
+    let app_of = |v: &Value, n: &str| v["apps"].as_array().unwrap().iter().find(|a| a["name"] == n).cloned();
+    let (_, v) = call(&app, view(deb)).await;
+    assert_eq!(app_of(&v, "Visual Studio Code").unwrap()["kind"], json!("command"));
+    assert_eq!(app_of(&v, "Zed").unwrap()["command"]["check"], json!("/usr/local/bin/zed"));
+    let (_, v) = call(&app, view(arch)).await;
+    let c = app_of(&v, "Visual Studio Code").unwrap();
+    assert_eq!((c["kind"].clone(), c["packages"].clone()), (json!("packages"), json!(["code"])));
+    assert_eq!(app_of(&v, "Zed").unwrap()["packages"], json!(["zed"]));
+    let (_, v) = call(&app, view(bsd)).await;
+    assert!(app_of(&v, "Zed").is_none() && app_of(&v, "Visual Studio Code").is_none(), "no recipe for pkg: not offered");
+}

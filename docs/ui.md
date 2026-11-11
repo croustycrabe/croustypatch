@@ -20,6 +20,9 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
 
 - **Sidebar** with grouped navigation (overview, fleet, patching, governance, administration), the **Add agent**
   button, and the user menu. It collapses to a drawer on small screens. It stays mounted while pages change.
+- **Version:** the version of the running server is shown at the foot of the sidebar and on the sign-in page (from the
+  public `GET /api/v1/server-info`); the desktop app center shows its own version in its header and the terminal app
+  center after its title.
 - **Topbar** with the current section, the **⌘K / Ctrl+K command palette** (pages, hosts, actions) and the language toggle.
 - **Pages:** Dashboard · Hosts · Packages · Docker · Groups · App center · Tasks · Policies · Waivers · Vulnerabilities ·
   Compliance · Audit · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.

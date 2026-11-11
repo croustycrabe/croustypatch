@@ -3,6 +3,7 @@
 export const fr = {
   // --- common
   'app.name': 'CroustyPatch',
+  'app.version.title': 'Version du serveur en cours d’exécution',
   'common.save': 'Enregistrer',
   'common.cancel': 'Annuler',
   'common.close': 'Fermer',
@@ -810,8 +811,10 @@ export const fr = {
   'portal.recipe.command_perm': 'Une commande s’exécute en root sur chaque machine ciblée : l’écrire ou la modifier demande la permission portal:commands. Elle est lisible dans le catalogue et le journal d’audit : n’y mettez jamais de mot de passe ni de jeton.',
   'portal.recipe.remove': 'Retirer',
   'portal.command_badge': 'commande',
+  'portal.sugg.confirm_command': '« {name} » s’installe avec une commande exécutée en root sur les machines concernées (le dépôt de l’éditeur ou son archive officielle). Elle sera lisible dans le catalogue et dans le journal d’audit. Ajouter l’application au catalogue ?',
+  'portal.sugg.needs_perm': 'Ajouter une application qui s’installe par une commande demande la permission portal:commands.',
   'portal.tab.suggestions': 'Suggestions',
-  'portal.sugg.sub': 'Applications courantes, avec leurs noms de paquets vérifiés pour apt (Debian) et pacman (Arch). Ajoutez-les au catalogue, puis réglez la portée si besoin.',
+  'portal.sugg.sub': 'Applications courantes, avec leurs noms de paquets vérifiés pour apt (Debian) et pacman (Arch). Les rares qui ne sont pas dans les dépôts (Visual Studio Code, Zed) s’installent par une commande, signalée. Ajoutez-les au catalogue, puis réglez la portée si besoin.',
   'portal.sugg.add': 'Ajouter',
   'portal.sugg.in_catalog': 'Dans le catalogue',
   'portal.sugg.added': '{name} est ajoutée au catalogue.',
@@ -1068,6 +1071,7 @@ export type MessageKey = keyof typeof fr;
 
 export const en: Record<MessageKey, string> = {
   'app.name': 'CroustyPatch',
+  'app.version.title': 'Version of the running server',
   'common.save': 'Save',
   'common.cancel': 'Cancel',
   'common.close': 'Close',
@@ -1860,8 +1864,10 @@ export const en: Record<MessageKey, string> = {
   'portal.recipe.command_perm': 'A command runs as root on every targeted machine: writing or changing one needs the portal:commands permission. It is readable in the catalog and the audit log: never put a password or token in it.',
   'portal.recipe.remove': 'Remove',
   'portal.command_badge': 'command',
+  'portal.sugg.confirm_command': '"{name}" installs with a command that runs as root on the machines concerned (the vendor\'s repository or its official archive). It will be readable in the catalog and in the audit log. Add the application to the catalog?',
+  'portal.sugg.needs_perm': 'Adding an application that installs with a command needs the portal:commands permission.',
   'portal.tab.suggestions': 'Suggestions',
-  'portal.sugg.sub': 'Common applications, with package names checked for apt (Debian) and pacman (Arch). Add them to the catalog, then adjust the scope if needed.',
+  'portal.sugg.sub': 'Common applications, with package names checked for apt (Debian) and pacman (Arch). The few that are not in the repositories (Visual Studio Code, Zed) install with a command, which is flagged. Add them to the catalog, then adjust the scope if needed.',
   'portal.sugg.add': 'Add',
   'portal.sugg.in_catalog': 'In the catalog',
   'portal.sugg.added': '{name} added to the catalog.',

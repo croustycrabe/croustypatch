@@ -74,6 +74,8 @@ button { font: inherit; color: inherit; }
 .navitem[aria-current='page'] .icon { color: var(--primary); }
 .navitem .count { margin-left: auto; min-width: 20px; padding: 0 6px; height: 20px; display: inline-grid; place-items: center; border-radius: var(--radius-pill); background: var(--surface-active); color: var(--fg); font: 700 11px/1 var(--font-mono); }
 .sidebar__foot { padding: 10px; border-top: 1px solid var(--hair); flex: none; position: relative; }
+.sidebar__version { margin: 0 4px 8px; font-size: 12px; color: var(--muted, var(--fg-muted)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shell--collapsed .sidebar__version { display: none; }
 .usercard { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px; border: 0; background: transparent; border-radius: var(--radius); cursor: pointer; text-align: left; }
 .usercard:hover { background: var(--hover); }
 .usercard__name { font: 700 13px/18px var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

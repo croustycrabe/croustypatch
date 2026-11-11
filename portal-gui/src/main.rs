@@ -86,6 +86,12 @@ async fn update(packages: Vec<String>) -> Result<Value, String> {
 }
 
 /// Ask the agent to look for updates now.
+/// The version of this window (the same as the agent it ships with): shown in the header.
+#[tauri::command]
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 #[tauri::command]
 async fn check() -> Result<Value, String> {
     blocking(json!({ "op": "check" })).await
@@ -98,7 +104,7 @@ fn main() {
         return;
     }
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![list, install, uninstall, updates, update, check])
+        .invoke_handler(tauri::generate_handler![list, install, uninstall, updates, update, check, version])
         .run(tauri::generate_context!())
         .expect("cannot start the CroustyPatch app center");
 }

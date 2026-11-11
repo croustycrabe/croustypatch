@@ -24,7 +24,7 @@ steam lutris wine
 ubuntu debian archlinux fedora linuxmint opensuse alpinelinux nixos freebsd linux proxmox truenas
 nginx apache traefikproxy caddy haproxy grafana prometheus elastic kibana zabbix
 home-assistant homeassistant pihole adguard jellyfin plex immich vaultwarden portainer
-kde gnome xfce
+kde gnome xfce zedindustries
 libreoffice vscodium inkscape ffmpeg imagemagick""".split()
 
 def main(pkg):

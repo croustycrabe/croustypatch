@@ -114,6 +114,46 @@
   }
  },
  {
+  "name": "Visual Studio Code",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Éditeur de code de Microsoft. Debian et Ubuntu : installé depuis le dépôt de Microsoft, ses mises à jour arrivent avec celles du système. Arch : la version Microsoft n’est qu’en AUR, c’est donc la version libre Code - OSS du dépôt officiel qui est installée (même éditeur, sans la boutique d’extensions de Microsoft).",
+  "recipes": {
+   "apt": {
+    "command": {
+     "install": "set -eu\nexport DEBIAN_FRONTEND=noninteractive\n# Microsoft's own repository: apt checks its signature and brings new versions with the system updates.\napt-get update -qq\napt-get install -y -qq ca-certificates curl gpg\ncurl -fsSL --retry 3 https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --yes -o /usr/share/keyrings/microsoft.gpg\nchmod 644 /usr/share/keyrings/microsoft.gpg\nrm -f /etc/apt/sources.list.d/vscode.list\ncat > /etc/apt/sources.list.d/vscode.sources <<'EOF'\nTypes: deb\nURIs: https://packages.microsoft.com/repos/code\nSuites: stable\nComponents: main\nArchitectures: amd64,arm64,armhf\nSigned-By: /usr/share/keyrings/microsoft.gpg\nEOF\napt-get update -qq\napt-get install -y code\n",
+     "uninstall": "set -eu\nexport DEBIAN_FRONTEND=noninteractive\napt-get remove -y code\n# The repository goes with the application.\nrm -f /etc/apt/sources.list.d/vscode.sources /etc/apt/sources.list.d/vscode.list\napt-get update -qq || true\n",
+     "check": "/usr/bin/code"
+    }
+   },
+   "pacman": {
+    "packages": [
+     "code"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Zed",
+  "category": "Développement",
+  "icon": "brand:zedindustries",
+  "description": "Éditeur de code rapide et collaboratif, écrit en Rust. Debian et Ubuntu : archive officielle installée dans /opt (pas de mise à jour automatique : réinstaller pour passer à la dernière version). Arch : dépôt officiel. Demande un bureau graphique et un processeur graphique compatible Vulkan.",
+  "recipes": {
+   "apt": {
+    "command": {
+     "install": "set -eu\ncase \"$(uname -m)\" in\n  x86_64|amd64) arch=x86_64 ;;\n  aarch64|arm64) arch=aarch64 ;;\n  *) echo \"Zed is not published for $(uname -m)\" >&2; exit 1 ;;\nesac\nif ! command -v curl >/dev/null 2>&1; then\n  export DEBIAN_FRONTEND=noninteractive\n  apt-get update -qq\n  apt-get install -y -qq ca-certificates curl\nfi\ntmp=$(mktemp -d /tmp/zed-XXXXXX)\ntrap 'rm -rf \"$tmp\"' EXIT\n# Zed's official release archive (the one its own installer uses), read completely before anything is replaced.\ncurl -fsSL --retry 3 -o \"$tmp/zed.tar.gz\" \"https://cloud.zed.dev/releases/stable/latest/download?asset=zed&arch=$arch&os=linux&source=install.sh\"\ntar -tzf \"$tmp/zed.tar.gz\" >/dev/null\nmkdir \"$tmp/x\"\ntar -xzf \"$tmp/zed.tar.gz\" -C \"$tmp/x\" --no-same-owner\ntest -x \"$tmp/x/zed.app/bin/zed\"\nchown -R root:root \"$tmp/x/zed.app\"\nrm -rf /opt/zed.app\nmv \"$tmp/x/zed.app\" /opt/zed.app\nln -sf /opt/zed.app/bin/zed /usr/local/bin/zed\ninstall -D -m 644 /opt/zed.app/share/applications/dev.zed.Zed.desktop /usr/share/applications/dev.zed.Zed.desktop\ninstall -D -m 644 /opt/zed.app/share/icons/hicolor/512x512/apps/zed.png /usr/share/icons/hicolor/512x512/apps/zed.png\nif command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi\nif command -v gtk-update-icon-cache >/dev/null 2>&1; then gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true; fi\n",
+     "uninstall": "set -eu\nif [ \"$(readlink /usr/local/bin/zed 2>/dev/null)\" = /opt/zed.app/bin/zed ]; then rm -f /usr/local/bin/zed; fi\nrm -rf /opt/zed.app\nrm -f /usr/share/applications/dev.zed.Zed.desktop /usr/share/icons/hicolor/512x512/apps/zed.png\nif command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi\n",
+     "check": "/usr/local/bin/zed"
+    }
+   },
+   "pacman": {
+    "packages": [
+     "zed"
+    ]
+   }
+  }
+ },
+ {
   "name": "Neovim",
   "category": "Développement",
   "icon": "brand:neovim",

@@ -323,6 +323,7 @@ pub fn render(f: &mut Frame, s: &State) {
         Span::styled("[ ", Style::new().fg(BRICK).add_modifier(Modifier::BOLD)),
         Span::styled("CroustyPatch", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(" ]", Style::new().fg(BRICK).add_modifier(Modifier::BOLD)),
+        Span::styled(concat!(" v", env!("CARGO_PKG_VERSION")), Style::new().fg(MUTED)),
         Span::raw(format!("  {} · ", s.w.title)),
         Span::styled(s.host.clone(), Style::new().fg(MUTED)),
     ]);

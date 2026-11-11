@@ -97,7 +97,7 @@ function RecipeSummary({ recipes }: { recipes: Recipes }) {
     <div className="stack" style={{ gap: 2 }}>
       {SYSTEMS.filter((k) => recipes[k]).map((k) => {
         const r = recipes[k]!;
-        return <span key={k}><b>{k === '*' ? t('portal.recipe.all') : k}</b> <span className="mono">{'command' in r ? `$ ${r.command.install.split('\n')[0]}` : r.packages.join(', ')}</span></span>;
+        return <span key={k}><b>{k === '*' ? t('portal.recipe.all') : k}</b> <span className="mono">{'command' in r ? `${t('portal.command_badge')} → ${r.command.check}` : r.packages.join(', ')}</span></span>;
       })}
     </div>
   );
@@ -207,9 +207,14 @@ function Suggestions() {
   const toast = useToast();
   const list = useApi<Suggestion[]>('/portal/suggestions');
   const act = useAction();
+  const { can } = useAuth();
   const [q, setQ] = useState('');
   const [cat, setCat] = useState('');
+  const [confirm, setConfirm] = useState<Suggestion | null>(null);
+  /** An application that installs with a command (a repository, an archive) runs a script as root on the machines. */
+  const runsCommand = (s: Suggestion) => Object.values(s.recipes).some((r) => r && 'command' in r);
   const add = (s: Suggestion) => act.run(async () => {
+    setConfirm(null);
     await api('POST', '/portal/apps', { name: s.name, category: s.category, description: s.description, icon: s.icon, recipes: s.recipes, group_ids: [], enabled: true });
     toast.success(t('portal.sugg.added', { name: s.name }));
     list.reload();
@@ -234,12 +239,18 @@ function Suggestions() {
               <p className="appcard__desc">{s.description}</p>
               <div className="field__hint"><RecipeSummary recipes={s.recipes} /></div>
               <div className="row row--tight" style={{ marginTop: 'auto' }}>
-                {s.in_catalog ? <Tag tone="ok">{t('portal.sugg.in_catalog')}</Tag> : <Button small variant="primary" icon={<Plus size={14} weight="bold" />} disabled={act.pending} onClick={() => void add(s)}>{t('portal.sugg.add')}</Button>}
+                {s.in_catalog ? <Tag tone="ok">{t('portal.sugg.in_catalog')}</Tag> : (
+                  <>
+                    <Button small variant="primary" icon={<Plus size={14} weight="bold" />} disabled={act.pending || (runsCommand(s) && !can('portal:commands'))} title={runsCommand(s) && !can('portal:commands') ? t('portal.sugg.needs_perm') : undefined} onClick={() => (runsCommand(s) ? setConfirm(s) : void add(s))}>{t('portal.sugg.add')}</Button>
+                    {runsCommand(s) && <Tag tone="warn">{t('portal.command_badge')}</Tag>}
+                  </>
+                )}
               </div>
             </div>
           );
         })}
       </div>
+      <ConfirmDialog message={confirm ? t('portal.sugg.confirm_command', { name: confirm.name }) : null} onNo={() => setConfirm(null)} onYes={() => { if (confirm) void add(confirm); }} />
     </div>
   );
 }

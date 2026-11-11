@@ -415,3 +415,6 @@ window.addEventListener('focus', () => void refresh());
 render();
 renderLog();
 void refresh();
+
+// The version of this window, in the header.
+invoke('version').then((v) => { $('version').textContent = `v${v}`; }).catch(() => {});

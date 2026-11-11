@@ -64,6 +64,7 @@ function mock() {
       if (upd) { updTicks += 1; upd.status = updTicks === 1 ? 'sent' : updTicks === 2 ? 'running' : upd.status; if (updTicks >= 3) { updRecent.unshift({ task_id: upd.id, status: 'succeeded', message: 'done', finished_at: 'now' }); pendingUpdates = pendingUpdates.filter((p) => !upd.names.includes(p.name)); upd = null; } }
       return JSON.parse(JSON.stringify({ host: { id: 'h1', hostname: 'laptop-alice', status: 'online' }, allowed: !window.__managed, reboot_required: !upd && updRecent.length > 0, checked_at: checkedAt, pending: pendingUpdates, open_task: upd && { id: upd.id, kind: 'patch', status: upd.status, message: '' }, recent: updRecent }));
     }
+    if (cmd === 'version') return '0.7.3';
     if (cmd === 'check') { setTimeout(() => { checkedAt = '2026-11-11T09:30:00Z'; }, 1500); return { started: true }; }
     if (cmd === 'update') { if (window.__managed) throw 'updates from the app center are not allowed on this machine: ask your administrator'; updTicks = 0; upd = { id: 'u1', status: 'queued', names: args.packages }; return { status: 'queued', task_id: 'u1' }; }
     if (cmd === 'list') { step(); return JSON.parse(JSON.stringify({ host: { id: 'h1', hostname: 'laptop-alice' }, apps, recent })); }
@@ -97,6 +98,7 @@ check('the catalog loads from the agent socket', (await p.locator('.card').count
 check('a logo from the catalog is shown as an image (the CSP allows data images only)', (await p.locator('[data-app="Git"] .card__icon--img img').count()) === 1 && (await p.locator('[data-app="Git"] .card__icon--img img').evaluate((i) => i.complete && i.naturalWidth > 0)));
 check('an uploaded image is shown too', (await p.locator('[data-app="VLC"] .card__icon--img img').evaluate((i) => i.complete && i.naturalWidth > 0)));
 check('apps without a logo keep their generic glyph', (await p.locator('[data-app="htop"] .card__icon svg').count()) === 1 && (await p.locator('[data-app="htop"] img').count()) === 0);
+check('the window shows its own version next to the host', (await p.locator('#version').textContent()) === 'v0.7.3' && (await p.locator('#host').textContent()).includes('laptop-alice'));
 check('the host is named in the header', (await p.locator('#host').textContent()).includes('laptop-alice'));
 check('presence comes from the machine: present, partial, available', (await p.locator('[data-app="Git"] .badge--ok').count()) === 1 && (await p.locator('[data-app="Outils de compilation"] .badge--warn').textContent()).includes('1/2') && (await p.locator('[data-app="htop"] .badge--neutral').count()) === 1);
 check('the opening note lists what is already installed', (await p.locator('#log li').first().textContent()).includes('Git'));
