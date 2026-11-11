@@ -116,7 +116,8 @@ async fn packages_are_aggregated_across_the_fleet() {
     }
     let (st, rows) = call(&app, TestRequest::get().uri("/api/v1/packages").cookie(admin.clone())).await;
     assert_eq!(st, StatusCode::OK);
-    let rows = rows.as_array().unwrap();
+    assert_eq!((rows["total"].clone(), rows["page"].clone(), rows["per_page"].clone()), (json!(4), json!(1), json!(50)), "{rows}");
+    let rows = rows["items"].as_array().unwrap();
     let find = |n: &str| rows.iter().find(|r| r["name"] == n).unwrap().clone();
     let ssl = find("libssl3");
     assert_eq!((ssl["hosts"].clone(), ssl["outdated"].clone(), ssl["security"].clone(), ssl["latest"].clone()), (json!(3), json!(2), json!(true), json!("3.0.2")));
@@ -128,7 +129,7 @@ async fn packages_are_aggregated_across_the_fleet() {
     let names = |uri: &str| {
         let req = TestRequest::get().uri(uri).cookie(admin.clone());
         let app = &app;
-        async move { call(app, req).await.1.as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect::<Vec<_>>() }
+        async move { call(app, req).await.1["items"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect::<Vec<_>>() }
     };
     assert_eq!(names("/api/v1/packages?updates=true").await, ["libssl3", "curl"], "only packages that need an update");
     assert_eq!(names("/api/v1/packages?q=SSL").await, ["libssl3"], "search is case-insensitive");
@@ -204,4 +205,52 @@ async fn groups_carry_a_validated_colour_that_can_be_changed() {
 
     let (_, list) = call(&app, TestRequest::get().uri("/api/v1/groups").cookie(admin.clone())).await;
     assert!(list.as_array().unwrap().iter().all(|g| g.get("color").is_some()), "the list carries colours");
+}
+
+#[actix_web::test]
+async fn the_packages_list_is_paged_across_the_whole_fleet() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let admin = admin(&app).await;
+    {
+        let mut c = db.conn();
+        let a = add_host(&mut c, "web-01", "Debian");
+        // 130 packages, more than the old 1000-row ceiling would ever have shown per page, in a known order
+        for i in 0..130 {
+            add_pkg(&mut c, a, &format!("pkg-{i:03}"), "1.0", if i < 3 { Some("2.0") } else { None }, false);
+        }
+    }
+    let get = |q: &str| {
+        let req = TestRequest::get().uri(&format!("/api/v1/packages{q}")).cookie(admin.clone());
+        let app = &app;
+        async move { call(app, req).await }
+    };
+    let (_, p1) = get("?per_page=25").await;
+    assert_eq!((p1["total"].clone(), p1["page"].clone(), p1["per_page"].clone(), p1["items"].as_array().unwrap().len()), (json!(130), json!(1), json!(25), 25));
+    let first: Vec<&str> = p1["items"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(&first[..4], ["pkg-000", "pkg-001", "pkg-002", "pkg-003"], "the outdated ones first, then by name");
+    let (_, p2) = get("?per_page=25&page=2").await;
+    assert_eq!(p2["items"][0]["name"], json!("pkg-025"), "page 2 continues where page 1 stopped");
+    let (_, p6) = get("?per_page=25&page=6").await;
+    assert_eq!((p6["items"].as_array().unwrap().len(), p6["total"].clone()), (5, json!(130)), "the last page holds the rest");
+    let (_, past) = get("?per_page=25&page=99").await;
+    assert_eq!((past["items"].as_array().unwrap().len(), past["total"].clone()), (0, json!(130)), "past the end: no rows, but the total is still known");
+    // every package is reachable by paging (no ceiling)
+    let mut seen = std::collections::HashSet::new();
+    for page in 1..=3 {
+        let (_, p) = get(&format!("?per_page=50&page={page}")).await;
+        seen.extend(p["items"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()));
+    }
+    assert_eq!(seen.len(), 130);
+    // sizes are clamped, odd pages do not fail
+    let (_, big) = get("?per_page=5000").await;
+    assert_eq!((big["per_page"].clone(), big["items"].as_array().unwrap().len()), (json!(100), 100));
+    let (st, small) = get("?per_page=0&page=0").await;
+    assert!(st.is_success());
+    assert_eq!((small["per_page"].clone(), small["page"].clone()), (json!(1), json!(1)));
+    // filters count their own total
+    let (_, upd) = get("?updates=true&per_page=2").await;
+    assert_eq!((upd["total"].clone(), upd["items"].as_array().unwrap().len()), (json!(3), 2));
+    let (_, q) = get("?q=pkg-12&per_page=25").await;
+    assert_eq!(q["total"], json!(10), "pkg-120 to pkg-129");
 }

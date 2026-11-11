@@ -413,7 +413,9 @@ button.gtag:disabled { opacity: 0.55; cursor: not-allowed; }
 .appcard { padding: var(--space-4); gap: var(--space-3); min-height: 11rem; }
 .appcard__head { display: flex; gap: var(--space-3); align-items: center; }
 .appcard__head .sub { display: block; }
-.appcard__icon--img { background: #fff; border: 1px solid var(--border); padding: 4px; }
+.appcard__icon.appcard__icon--sm { width: 28px; height: 28px; border-radius: var(--radius-sm); flex: none; }
+.appcard__icon.appcard__icon--img { background: #fff; border: 1px solid var(--border); padding: 4px; }
+.appcard__icon.appcard__icon--sm.appcard__icon--img { padding: 3px; }
 .appcard__icon--img img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .iconpick { display: grid; grid-template-columns: repeat(auto-fill, 44px); gap: 6px; max-height: 176px; overflow: auto; padding: 2px; }
 .iconpick__item { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: #fff; cursor: pointer; }

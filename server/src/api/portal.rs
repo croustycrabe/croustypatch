@@ -150,12 +150,14 @@ pub async fn save(state: web::Data<AppState>, user: AuthUser, id: Option<Uuid>, 
                         return Err(ApiError::forbidden(format!("this application runs commands: changing it needs the {COMMANDS_PERMISSION} permission")));
                     }
                 }
+                // A new app left with the generic default icon takes the logo of the application it is named after.
+                let icon = if id.is_none() && matches!(b.icon.as_str(), "" | "app-window") { crate::icons::guess(&b.name).unwrap_or_else(|| b.icon.clone()) } else { b.icon.clone() };
                 let vals = (
                     portal_apps::name.eq(b.name.trim().to_string()),
                     portal_apps::version.eq(b.version.trim().to_string()),
                     portal_apps::category.eq(b.category.trim().to_string()),
                     portal_apps::description.eq(b.description.clone()),
-                    portal_apps::icon.eq(b.icon.clone()),
+                    portal_apps::icon.eq(icon),
                     portal_apps::recipes.eq(&recipes),
                     portal_apps::group_ids.eq(json!(b.group_ids)),
                     portal_apps::enabled.eq(b.enabled),

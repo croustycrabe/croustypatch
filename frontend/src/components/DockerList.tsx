@@ -18,9 +18,10 @@ export function DockerList({ hostId }: { hostId?: string }) {
   const act = useAction();
   const [q, setQ] = useState('');
   const [updatesOnly, setUpdatesOnly] = useState(false);
+  const [newerOnly, setNewerOnly] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<string[] | null>(null);
-  const data = useApi<DockerData>(`/docker?updates=${updatesOnly}&q=${encodeURIComponent(q)}${hostId ? `&host=${hostId}` : ''}`, { poll: 20000 });
+  const data = useApi<DockerData>(`/docker?updates=${updatesOnly}&newer=${newerOnly}&q=${encodeURIComponent(q)}${hostId ? `&host=${hostId}` : ''}`, { poll: 20000 });
   const d = data.data;
   const key = (c: { host_id: string; package: string }) => `${c.host_id}|${c.package}`;
 
@@ -49,13 +50,15 @@ export function DockerList({ hostId }: { hostId?: string }) {
         <div className="grid grid--stats">
           <StatCard value={d.summary.containers} label={t('docker.stat.containers')} />
           <StatCard value={d.summary.with_updates} tone={d.summary.with_updates > 0 ? 'warn' : 'ok'} label={t('docker.stat.updates')} />
+          <StatCard value={d.summary.with_newer_version} label={t('docker.stat.newer')} />
           <StatCard value={d.summary.hosts} label={t('docker.stat.hosts')} />
         </div>
       )}
-      <p className="muted" style={{ margin: 0 }}>{t('docker.note')}</p>
+      <p className="muted" style={{ margin: 0 }}>{t('docker.note')}{d.summary.with_newer_version > 0 ? ` ${t('docker.newer.note')}` : ''}</p>
       <div className="toolbar">
         <SearchInput value={q} onChange={setQ} placeholder={t('docker.search')} />
         <Chip active={updatesOnly} onClick={() => setUpdatesOnly((v) => !v)}>{t('docker.updates_only')}</Chip>
+        <Chip active={newerOnly} onClick={() => setNewerOnly((v) => !v)}>{t('docker.newer_only')}</Chip>
         {canUpdate && (
           <span className="row row--tight right">
             {updatable.length > 0 && <Button small onClick={() => setPicked(new Set(updatable.map(key)))}>{t('docker.pick_all', { n: updatable.length })}</Button>}
@@ -78,6 +81,13 @@ export function DockerList({ hostId }: { hostId?: string }) {
             </td>
             <td className="wrap">
               {c.open_task ? <Tag tone="info">{t('docker.updating')}</Tag> : c.update ? <span className="row row--tight"><Tag tone="warn">{t('docker.available')}</Tag><span className="mono muted">@{c.candidate}</span></span> : <Tag tone="ok">{t('docker.current')}</Tag>}
+              {c.latest && (
+                <span className="sub" style={{ display: 'block' }}>
+                  <Tag tone="info">{t('docker.newer', { tag: c.latest.tag })}</Tag>
+                  {c.latest.major && <Tag tone="warn">{t('docker.major')}</Tag>}
+                  {c.latest.major && c.latest.same_major && <span className="muted"> {t('docker.same_major', { tag: c.latest.same_major })}</span>}
+                </span>
+              )}
             </td>
           </tr>
         ))}

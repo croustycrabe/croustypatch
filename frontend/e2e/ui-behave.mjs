@@ -342,7 +342,7 @@ check('a compliance task is created and answered by the agent', await p.locator(
   const h = sql("select id from hosts order by enrolled_at limit 1");
   sql(`update hosts set modules = modules || '{"docker": true, "openscap": true}' where id='${h}'`);
   sql(`delete from host_packages where host_id='${h}' and source='docker'`);
-  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:site-web','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27","project":"site","service":"web","state":"running","health":"healthy"}'), ('${h}','docker:site-db','docker','postgres:17 @cccc',null,'{"image":"postgres:17","project":"site","service":"db","state":"running"}')`);
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:site-web','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27","project":"site","service":"web","state":"running","health":"healthy","latest":{"tag":"1.29.0","major":false,"same_major":null}}'), ('${h}','docker:site-db','docker','postgres:17 @cccc',null,'{"image":"postgres:17","project":"site","service":"db","state":"running"}')`);
 
   // Docker menu
   await p.goto(`${BASE}/`); await p.waitForSelector('.sidebar');
@@ -353,6 +353,11 @@ check('a compliance task is created and answered by the agent', await p.locator(
   check('only the containers with a newer image can be shown', (await p.locator('.tbl tbody tr').count()) === 1);
   await p.click('button.chip:has-text("Mises à jour seulement")'); await p.fill('input[type=search]', 'postgres'); await p.waitForTimeout(600);
   check('a search matches the image as well as the container name', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.tbl tbody tr').textContent()).includes('postgres:17'));
+  await p.fill('input[type=search]', ''); await p.waitForSelector('.tbl tbody tr:has-text("site-web")');
+  check('a newer version tag is shown next to the image state', (await p.locator('.tbl tbody tr:has-text("site-web")').textContent()).includes('Version 1.29.0 disponible') && (await p.locator('.tbl tbody tr:has-text("site-db")').textContent()).includes('Version') === false);
+  await p.click('button.chip:has-text("Nouvelles versions")'); await p.waitForTimeout(600);
+  check('and the containers with a new version can be listed on their own', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.stat:has-text("Nouvelles versions")').textContent()).includes('1'));
+  await p.click('button.chip:has-text("Nouvelles versions")'); await p.fill('input[type=search]', '');
   await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tbody tr');
   check('each host has its own Docker tab', (await p.locator('.tbl tbody tr').count()) === 2);
 
@@ -425,6 +430,63 @@ check('a compliance task is created and answered by the agent', await p.locator(
   check('an uploaded image is stored with the app (scaled down, as a data image)', mine?.icon?.startsWith('data:image/png;base64,') && mine.icon.length < 2000, String(mine?.icon).slice(0, 40));
   await p.click('[role=tab]:has-text("Applications")'); await p.waitForSelector('.appcard:has-text("Git perso")');
   check('the app shows its image in the app center', (await p.locator('.appcard:has-text("Git perso") .appcard__icon--img img').count()) === 1);
+}
+
+// ---- 0.7.1: pager on the packages views, logos in the catalog
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`delete from host_packages where host_id='${h}' and name like 'zz-fill-%'`);
+  sql(`insert into host_packages (host_id,name,source,version) select '${h}', 'zz-fill-' || lpad(i::text, 3, '0'), 'system', '1.0' from generate_series(1, 70) i`);
+  await p.evaluate(() => { try { localStorage.removeItem('cp.pagesize'); } catch {} });
+
+  // fleet packages page: 25 a page by default, 50 on request, every package reachable
+  await p.goto(`${BASE}/packages/`); await p.waitForSelector('.tbl'); await p.fill('input[type=search]', 'zz-fill'); await p.waitForSelector('.pager');
+  const rowsNow = () => p.locator('.tbl tbody tr').count();
+  const range = async () => (await p.locator('.pager .muted').first().textContent()).trim();
+  await p.waitForFunction(() => document.querySelector('.pager .muted')?.textContent?.includes('sur 70'), null, { timeout: 8000 });
+  check('the packages page shows 25 packages a page and the range', (await rowsNow()) === 25 && (await range()).includes('1–25 sur 70'), await range());
+  check('the first page cannot go back', await p.locator('.pager button:has-text("Précédent")').isDisabled());
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelector('.tbl tbody tr td')?.textContent?.includes('zz-fill-026'), null, { timeout: 8000 });
+  check('next shows the following 25', (await rowsNow()) === 25 && (await p.locator('.pager').textContent()).includes('Page 2 sur 3'));
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 20, null, { timeout: 8000 });
+  check('the last page holds the rest and cannot go further', (await rowsNow()) === 20 && (await p.locator('.pager button:has-text("Suivant")').isDisabled()));
+  await p.selectOption('.pager select', '50'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 50, null, { timeout: 8000 });
+  check('50 a page is offered and starts again from the first page', (await rowsNow()) === 50 && (await range()).includes('1–50 sur 70'));
+  check('the choice is kept for next time', await p.evaluate(() => localStorage.getItem('cp.pagesize')) === '50');
+  await p.reload(); await p.waitForSelector('.tbl'); await p.fill('input[type=search]', 'zz-fill'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 50, null, { timeout: 8000 });
+  check('and used again after a reload', (await rowsNow()) === 50);
+  await p.fill('input[type=search]', 'zz-fill-07'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 1, null, { timeout: 8000 });
+  check('a new search goes back to the first page', (await rowsNow()) === 1 && (await p.locator('.pager').textContent()).includes('1–1 sur 1'));
+  await p.fill('input[type=search]', '');
+  await p.waitForFunction(() => !document.querySelector('.pager .muted')?.textContent?.includes('sur 1'), null, { timeout: 8000 });
+  check('with no search, every package of the fleet is counted (no 1000 ceiling)', Number((await range()).split(' sur ')[1]) >= 70, await range());
+
+  // the same pager on a host's packages
+  await p.evaluate(() => localStorage.setItem('cp.pagesize', '25'));
+  await p.goto(`${BASE}/host/?id=${h}&tab=packages`); await p.waitForSelector('.pager');
+  await p.click('button.chip[aria-pressed=true]:has-text("Mises à jour seulement")'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 25, null, { timeout: 8000 });
+  check('a host\'s packages are paged the same way', (await rowsNow()) === 25 && (await p.locator('.pager select').inputValue()) === '25');
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelector('.pager .muted')?.textContent?.includes('26–50'), null, { timeout: 8000 });
+  check('and turns pages', (await rowsNow()) === 25);
+  sql(`delete from host_packages where host_id='${h}' and name like 'zz-fill-%'`);
+
+  // logos in the catalog: the table, and a hand-written entry named like a known application
+  await p.goto(`${BASE}/portal/`); await p.click('[role=tab]:has-text("Catalogue")'); await p.waitForSelector('.tbl tr:has-text("Git perso")');
+  check('the catalog table shows each application\'s icon', (await p.locator('.tbl tr:has-text("Git perso") .appcard__icon--img img').count()) === 1 && (await p.locator('.tbl tr:has-text("Outils dev") .appcard__icon svg').count()) === 1 && (await p.locator('.tbl tr:has-text("htop") .appcard__icon--img img').count()) === 1);
+  await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
+  await p.fill('dialog[open] input >> nth=0', 'Firefox'); await p.fill('dialog[open] input.mono', 'firefox');
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Firefox")');
+  check('an application named like a known one gets its logo without choosing it', (await p.locator('.tbl tr:has-text("Firefox") .appcard__icon--img img').count()) === 1);
+  // the tile of a logo is white whatever the theme, so dark logos stay readable
+  await p.click('[role=tab]:has-text("Applications")'); await p.waitForSelector('.appcard:has-text("Firefox")');
+  const tileBg = await p.locator('.appcard:has-text("Firefox") .appcard__icon--img').first().evaluate((e) => getComputedStyle(e).backgroundColor);
+  check('a logo sits on a white tile', tileBg === 'rgb(255, 255, 255)', tileBg);
+  await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("Rust")');
+  await p.screenshot({ path: `${HERE}/.run/logos-light.png`, clip: { x: 260, y: 100, width: 1100, height: 560 } });
+  await p.evaluate(() => { document.documentElement.dataset.theme = 'dark'; }); await p.waitForTimeout(200);
+  await p.screenshot({ path: `${HERE}/.run/logos-dark.png`, clip: { x: 260, y: 100, width: 1100, height: 560 } });
+  await p.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
 }
 
 // ---- language + logout

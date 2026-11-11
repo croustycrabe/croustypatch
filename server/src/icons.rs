@@ -41,6 +41,14 @@ pub fn url(icon: &str) -> Option<String> {
     brands().get(icon.strip_prefix(BRAND_PREFIX)?).map(|b| svg_uri(&svg_of(b)))
 }
 
+/// The bundled logo of an application, by its name: `Firefox`, `git` or `Python 3` find theirs. For an app created
+/// with no icon of its own (the generic default), so that a hand-written catalog entry looks like a suggested one.
+pub fn guess(name: &str) -> Option<String> {
+    let n = name.trim().to_lowercase();
+    let bare = n.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ').trim_end();
+    brands().iter().find(|(slug, b)| [n.as_str(), bare].iter().any(|k| !k.is_empty() && (*k == slug.as_str() || *k == b.title.to_lowercase()))).map(|(slug, _)| format!("{BRAND_PREFIX}{slug}"))
+}
+
 /// The bundled logos, for the icon picker of the catalog editor.
 pub fn catalog() -> Vec<Value> {
     brands().iter().map(|(slug, b)| json!({ "slug": slug, "title": b.title, "hex": b.hex, "url": svg_uri(&svg_of(b)) })).collect()
@@ -93,6 +101,16 @@ mod tests {
         assert!(check("brand:no-such-logo").is_err() && check("brand:").is_err());
         assert!(check("https://example.org/x.png").is_err(), "no remote icons: nothing is fetched from elsewhere");
         assert!(check("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn an_app_is_matched_to_its_logo_by_name() {
+        assert_eq!(guess("Firefox").as_deref(), Some("brand:firefox"));
+        assert_eq!(guess("  git ").as_deref(), Some("brand:git"));
+        assert_eq!(guess("Python 3").as_deref(), Some("brand:python"), "a version number is ignored");
+        assert_eq!(guess("Node.js").as_deref(), Some("brand:nodedotjs"), "or the logo's own title");
+        assert_eq!(guess("OBS Studio").as_deref(), Some("brand:obsstudio"));
+        assert!(guess("Outil interne").is_none() && guess("").is_none() && guess("3").is_none() && guess("ncdu").is_none());
     }
 
     #[test]

@@ -11,12 +11,12 @@ import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { MessageKey } from '@/lib/messages';
 import { HostCompliance } from '@/components/Compliance';
+import { Pager, usePageSize } from '@/components/Pager';
 import { DockerList } from '@/components/DockerList';
 import { HostResources, useSize } from '@/components/Metrics';
 import { Occurrences, safeZone, useWindowText } from '@/components/PatchSchedule';
 import type { Host, HostGroup, HostModules, HostPackage, PatchingExplain, Task } from '@/lib/types';
 
-const PAGE = 100;
 const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'portal_updates', 'eco'];
 /** Module name -> what the agent reports in its facts when the host has it. */
 const DETECTED: Partial<Record<keyof HostModules, string>> = { docker: 'docker', helper_script: 'helper-script', openscap: 'openscap' };
@@ -91,6 +91,7 @@ function HostDetail() {
   const [pkgQuery, setPkgQuery] = useState('');
   const [pkgSource, setPkgSource] = useState('');
   const [pkgPage, setPkgPage] = useState(0);
+  const [perPage, setPerPage] = usePageSize();
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [confirm, setConfirm] = useState<{ text: string; run: () => Promise<unknown>; danger?: boolean } | null>(null);
   const act = useAction();
@@ -273,16 +274,8 @@ function HostDetail() {
               </span>
             )}
           </div>
-          <PkgTable rows={pkgs.slice(pkgPage * PAGE, (pkgPage + 1) * PAGE)} selectable />
-          <div className="row" style={{ justifyContent: 'space-between', marginTop: 12 }}>
-            <span className="muted" style={{ fontSize: 13 }}>{pkgs.length === 0 ? '' : t('host.pkg.range', { from: pkgPage * PAGE + 1, to: Math.min((pkgPage + 1) * PAGE, pkgs.length), total: pkgs.length })}{!updatesOnly && !pkgQuery && !pkgSource ? ` · ${t('host.pkg.all_installed', { n: packages.length })}` : ''}</span>
-            {pkgs.length > PAGE && (
-              <span className="row row--tight">
-                <Button small disabled={pkgPage === 0} onClick={() => setPkgPage((x) => Math.max(0, x - 1))}>{t('common.previous')}</Button>
-                <Button small disabled={(pkgPage + 1) * PAGE >= pkgs.length} onClick={() => setPkgPage((x) => x + 1)}>{t('common.next')}</Button>
-              </span>
-            )}
-          </div>
+          <PkgTable rows={pkgs.slice(pkgPage * perPage, (pkgPage + 1) * perPage)} selectable />
+          <Pager page={Math.min(pkgPage, Math.max(0, Math.ceil(pkgs.length / perPage) - 1))} perPage={perPage} total={pkgs.length} onPage={setPkgPage} onPerPage={setPerPage} note={!updatesOnly && !pkgQuery && !pkgSource ? t('host.pkg.all_installed', { n: packages.length }) : undefined} />
         </>
       )}
 

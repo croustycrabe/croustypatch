@@ -11,11 +11,12 @@ export interface BrandIcon { slug: string; title: string; hex: string; url: stri
 export const GENERIC_ICONS: Record<string, Icon> = { '': Cube, 'app-window': AppWindow, code: Code, terminal: Terminal, browser: Globe, 'file-text': FileText, 'chart-bar': ChartBar, 'shield-check': ShieldCheck, database: Database, image: ImageIcon, 'music-notes': MusicNotes, 'chat-circle': ChatCircle, wrench: Wrench, cube: Cube };
 
 /** The icon tile of an app: its logo or uploaded image when it has one, else a generic glyph. */
-export function AppIcon({ icon, url, size = 22 }: { icon: string; url?: string | null; size?: number }) {
+export function AppIcon({ icon, url, size = 22, small }: { icon: string; url?: string | null; size?: number; small?: boolean }) {
   const src = url ?? (icon.startsWith('data:image/') ? icon : null);
-  if (src) return <span className="appcard__icon appcard__icon--img" aria-hidden="true"><img src={src} alt="" width={size + 4} height={size + 4} /></span>;
+  const tile = `appcard__icon${small ? ' appcard__icon--sm' : ''}`;
+  if (src) return <span className={`${tile} appcard__icon--img`} aria-hidden="true"><img src={src} alt="" width={size + 4} height={size + 4} /></span>;
   const I = GENERIC_ICONS[icon] ?? Cube;
-  return <span className="appcard__icon" aria-hidden="true"><I size={size} weight="bold" /></span>;
+  return <span className={tile} aria-hidden="true"><I size={size} weight="bold" /></span>;
 }
 
 const MAX_RASTER = 128;

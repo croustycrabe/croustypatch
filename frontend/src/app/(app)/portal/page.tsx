@@ -170,7 +170,7 @@ function Catalog() {
         <Table head={[t('common.name'), t('portal.app.category'), t('portal.app.systems'), t('common.status'), t('common.actions')]} empty={apps.data.length === 0 && <Empty>{t('portal.app.none')}</Empty>}>
           {apps.data.map((a) => (
             <tr key={a.id}>
-              <td className="strong">{a.name}{a.version && <span className="sub">{a.version}</span>}</td>
+              <td className="strong"><span className="row row--tight" style={{ flexWrap: 'nowrap' }}><AppIcon icon={a.icon} url={a.icon_url} size={16} small /><span>{a.name}{a.version && <span className="sub">{a.version}</span>}</span></span></td>
               <td>{a.category || '—'}</td>
               <td className="wrap"><RecipeSummary recipes={a.recipes} /></td>
               <td><Tag tone={a.enabled ? 'ok' : 'neutral'}>{a.enabled ? t('notif.channel.enabled') : t('users.disabled')}</Tag></td>

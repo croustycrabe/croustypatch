@@ -196,3 +196,150 @@ fn openscap_is_installed_before_an_audit_only_when_it_is_missing_and_allowed() {
     assert_eq!(install_plan(false, false, true, Pkg, "FreeBSD"), InstallPlan::Nothing);
     assert_eq!(install_plan(false, false, true, Unknown, ""), InstallPlan::Nothing);
 }
+
+fn tags(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn a_tag_is_compared_only_with_tags_of_the_same_shape() {
+    use registry::{newer_version, tag_shape};
+    // the shapes of the tags running on the docker hosts
+    assert_eq!(tag_shape("v3.3.1"), Some(("v#.#.#".into(), vec![3, 3, 1])));
+    assert_eq!(tag_shape("16-vectorchord1.1.1"), Some(("#-vectorchord#.#.#".into(), vec![16, 1, 1, 1])));
+    assert_eq!(tag_shape("17.6.1.136"), Some(("#.#.#.#".into(), vec![17, 6, 1, 136])));
+    assert_eq!(tag_shape("17-alpine"), Some(("#-alpine".into(), vec![17])));
+    assert_eq!(tag_shape("2026.10.12-sha-3699278"), None, "a build hash is not a version");
+    assert!(tag_shape("latest").is_none() && tag_shape("release").is_none() && tag_shape("").is_none());
+    assert!(tag_shape(&format!("v1.{}", "9".repeat(30))).is_none(), "a number that does not fit is not a version");
+
+    let immich = tags(&["v3.3.0", "v3.3.1", "v3.4.0", "v3.4.0-rc.1", "v3.10.0", "v3.9.0", "v2.7.5", "release", "pr-12345", "sha-abc1234", "3.5.0", "v3.5"]);
+    let n = newer_version("v3.3.1", &immich).unwrap();
+    assert_eq!((n.tag.as_str(), n.major), ("v3.10.0", false), "versions are compared as numbers: 3.10 is above 3.9; a candidate or another shape is ignored");
+    assert!(newer_version("v3.10.0", &immich).is_none(), "already the newest");
+    assert!(newer_version("v3.3.1", &tags(&["v3.3.1", "v3.3.0", "v3.4.0-rc.1", "latest"])).is_none(), "nothing newer of this shape");
+    // a new major is flagged
+    let n = newer_version("v2.7.5", &tags(&["v2.7.5", "v2.8.0", "v3.0.0"])).unwrap();
+    assert_eq!((n.tag.as_str(), n.major), ("v3.0.0", true));
+    let n = newer_version("17-alpine", &tags(&["16-alpine", "17-alpine", "17-bookworm", "18-alpine", "18.1-alpine", "18-bookworm"])).unwrap();
+    assert_eq!((n.tag.as_str(), n.major), ("18-alpine", true), "a flavour stays a flavour");
+    // pgvecto-style tags: only the part after the flavour moves
+    let n = newer_version("16-vectorchord1.1.1", &tags(&["16-vectorchord1.1.1", "16-vectorchord1.2.0", "17-vectorchord1.3.0", "16-vectorchord1.2.0-rc1"])).unwrap();
+    assert_eq!(n.tag, "17-vectorchord1.3.0");
+    // another numbering scheme next to a single number is not a release
+    assert!(newer_version("4", &tags(&["4", "20261111"])).is_none());
+    assert_eq!(newer_version("4", &tags(&["4", "5"])).unwrap().tag, "5");
+    // a tag with a build hash, or a moving tag, has no version to compare
+    assert!(newer_version("2026.10.12-sha-3699278", &tags(&["2026.10.13-sha-aaaaaaa", "2026.11.1"])).is_none());
+    assert!(newer_version("latest", &tags(&["v1.0.0"])).is_none());
+}
+
+#[test]
+fn only_a_next_link_on_the_registry_itself_is_followed() {
+    use registry::next_link;
+    assert_eq!(next_link("</v2/library/postgres/tags/list?last=17&n=1000>; rel=\"next\"", "registry-1.docker.io").unwrap(), "https://registry-1.docker.io/v2/library/postgres/tags/list?last=17&n=1000");
+    assert_eq!(next_link("<https://ghcr.io/v2/a/b/tags/list?last=x>; rel=\"next\"", "ghcr.io").unwrap(), "https://ghcr.io/v2/a/b/tags/list?last=x");
+    assert!(next_link("<https://evil.example/v2/a/b/tags/list>; rel=\"next\"", "ghcr.io").is_none(), "another host is ignored");
+    assert!(next_link("<//evil.example/x>; rel=\"next\"", "ghcr.io").is_none());
+    assert!(next_link("</v2/a/tags/list>; rel=\"prev\"", "ghcr.io").is_none());
+    assert_eq!(next_link("</v2/a>; rel=\"prev\", </v2/b>; rel=\"next\"", "localhost:5000").unwrap(), "http://localhost:5000/v2/b", "a registry on this machine speaks plain http");
+}
+
+/// A registry on loopback: anonymous token flow, tags served four to a page through a `last=` cursor, as the real ones do.
+async fn fake_registry(all_tags: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else { return };
+            let (log, all_tags) = (log.clone(), all_tags.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let authed = head.to_lowercase().contains("authorization: bearer t1");
+                let (status, extra, body) = if path.starts_with("/token") {
+                    ("200 OK", String::new(), r#"{"token":"t1"}"#.to_string())
+                } else if !authed {
+                    ("401 Unauthorized", format!("www-authenticate: Bearer realm=\"http://127.0.0.1:{port}/token\",service=\"fake\"\r\n"), "{}".to_string())
+                } else {
+                    let start = path.split("last=").nth(1).and_then(|c| all_tags.iter().position(|t| t == &c.split('&').next().unwrap_or(""))).map_or(0, |i| i + 1);
+                    let page: Vec<&str> = all_tags.iter().skip(start).take(4).copied().collect();
+                    let more = start + page.len() < all_tags.len();
+                    let link = if more { format!("link: </v2/immich/server/tags/list?n=1000&last={}>; rel=\"next\"\r\n", page.last().unwrap()) } else { String::new() };
+                    ("200 OK", link, serde_json::json!({ "name": "immich/server", "tags": page }).to_string())
+                };
+                let _ = s.write_all(format!("HTTP/1.1 {status}\r\n{extra}content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+            });
+        }
+    });
+    (format!("127.0.0.1:{port}"), seen)
+}
+
+fn tag_pages(seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> usize {
+    seen.lock().unwrap().iter().filter(|p| p.contains("/tags/list")).count()
+}
+
+#[tokio::test]
+async fn a_registry_that_lists_tags_in_no_order_is_read_to_the_end() {
+    // like GHCR: the newest versions can be on any page
+    let (host, seen) = fake_registry(vec!["release", "v3.10.0", "pr-5", "v3.3.0", "v3.3.1", "v3.4.0-rc.1", "v3.9.0", "latest", "sha-abc1234", "v3.4.0", "nightly", "v2.7.5"]).await;
+    let img = registry::parse(&format!("{host}/immich/server:v3.3.1")).unwrap();
+    let kept = registry::list_tags(&img).await.unwrap();
+    let mut sorted = kept.clone();
+    sorted.sort();
+    assert_eq!(sorted, tags(&["v2.7.5", "v3.10.0", "v3.3.0", "v3.3.1", "v3.4.0", "v3.9.0"]), "only tags of the shape v#.#.# are kept");
+    assert_eq!(registry::newer_version(&img.tag, &kept).unwrap().tag, "v3.10.0", "3.10 is above 3.9");
+    assert_eq!(tag_pages(&seen), 4, "denied once, then three pages of four: {:?}", seen.lock().unwrap());
+    assert_eq!(seen.lock().unwrap().iter().filter(|p| p.starts_with("/token")).count(), 1, "one token for the whole listing");
+
+    // the inventory entry carries it, next to the digest the running tag tracks
+    let c = docker::Container { name: "immich_server".into(), image_ref: format!("{host}/immich/server:v3.3.1"), image_id: "sha256:aaaa".into(), repo_digests: vec![], compose: None, mounts: vec![], state: "running".into(), health: String::new(), started_at: String::new() };
+    let n = docker::newer_version(&img).await;
+    assert_eq!(n.as_ref().unwrap().tag, "v3.10.0");
+    let e = docker::entry_with(&c, None, n.as_ref());
+    assert_eq!(e.meta["latest"], serde_json::json!({ "tag": "v3.10.0", "major": false, "same_major": null }));
+    assert!(e.candidate.is_none(), "a newer version is information: it is not an update this agent can apply");
+    assert!(docker::entry_with(&c, None, None).meta.get("latest").is_none());
+    // asked once: the answer is kept for hours
+    let before = seen.lock().unwrap().len();
+    assert_eq!(docker::newer_version(&img).await.unwrap().tag, "v3.10.0");
+    assert_eq!(seen.lock().unwrap().len(), before, "served from memory");
+    // a moving tag is never looked up
+    let moving = registry::parse(&format!("{host}/immich/server:release")).unwrap();
+    assert!(docker::newer_version(&moving).await.is_none());
+    assert_eq!(seen.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn an_alphabetical_registry_is_not_read_past_the_tags_it_is_looking_for() {
+    // like Docker Hub: sorted, so once a page is past the `v` tags the rest cannot matter
+    let (host, seen) = fake_registry(vec!["latest", "pr-1", "release", "sha-abc1234", "v3.10.0", "v3.3.0", "v3.3.1", "v3.4.0", "v3.4.0-rc.1", "v3.9.0", "w-1", "x-1", "y-1", "y-2", "z-1", "z-2"]).await;
+    let img = registry::parse(&format!("{host}/immich/server:v3.3.1")).unwrap();
+    let kept = registry::list_tags(&img).await.unwrap();
+    assert_eq!(registry::newer_version(&img.tag, &kept).unwrap().tag, "v3.10.0");
+    assert_eq!(tag_pages(&seen), 4, "denied once, then three pages: the fourth (y, z) is not read: {:?}", seen.lock().unwrap());
+    // a tag that starts with a digit lives at the start of an alphabetical list
+    let (host, seen) = fake_registry(vec!["10", "17-alpine", "18-alpine", "18.1", "alpine", "bookworm", "latest", "stable"]).await;
+    let img = registry::parse(&format!("{host}/immich/server:17-alpine")).unwrap();
+    let kept = registry::list_tags(&img).await.unwrap();
+    assert_eq!(registry::newer_version(&img.tag, &kept).unwrap().tag, "18-alpine");
+    assert_eq!(tag_pages(&seen), 3, "denied once, then two pages: stopped at the first letter: {:?}", seen.lock().unwrap());
+}
+
+#[test]
+fn a_new_major_also_names_the_newest_of_the_running_major() {
+    let n = registry::newer_version("16-vectorchord1.1.1", &tags(&["16-vectorchord1.1.1", "16-vectorchord1.2.0", "18-vectorchord1.1.1"])).unwrap();
+    assert_eq!((n.tag.as_str(), n.major, n.same_major.as_deref()), ("18-vectorchord1.1.1", true, Some("16-vectorchord1.2.0")));
+    let n = registry::newer_version("v2.5.0", &tags(&["v2.5.1", "v2.6.0", "v3.0.0"])).unwrap();
+    assert_eq!((n.tag.as_str(), n.same_major.as_deref()), ("v3.0.0", Some("v2.6.0")));
+    let n = registry::newer_version("v2.5.0", &tags(&["v2.5.1", "v2.6.0"])).unwrap();
+    assert_eq!((n.tag.as_str(), n.major, n.same_major), ("v2.6.0", false, None), "nothing more to say when the newest is in the same major");
+    assert_eq!(registry::tag_prefix("v3.3.1"), "v");
+    assert_eq!(registry::tag_prefix("17-alpine"), "");
+}

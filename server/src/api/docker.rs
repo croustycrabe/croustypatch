@@ -17,6 +17,8 @@ pub struct DockerQuery {
     host: Option<Uuid>,
     /// Only containers with a newer image.
     updates: Option<bool>,
+    /// Only containers whose image has a newer version tag in its registry.
+    newer: Option<bool>,
     q: Option<String>,
 }
 
@@ -47,6 +49,10 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
             // A container update already queued or running on a host.
             let open: Vec<(Uuid, Uuid, String)> = tasks::table.filter(tasks::kind.eq("docker")).filter(tasks::status.eq_any(OPEN)).select((tasks::host_id, tasks::id, tasks::status)).load(c)?;
             let open: HashMap<Uuid, (Uuid, String)> = open.into_iter().map(|(h, id, st)| (h, (id, st))).collect();
+            // `meta.latest`: {tag, major, same_major}, a newer version the registry offers (informational).
+            let has_newer = |r: &Row| r.5.get("latest").is_some_and(|l| l.get("tag").is_some_and(|t| t.is_string()));
+            let with_newer = rows.iter().filter(|r| has_newer(r)).count();
+            let rows: Vec<Row> = if q.newer == Some(true) { rows.into_iter().filter(|r| has_newer(r)).collect() } else { rows };
             let with_updates = rows.iter().filter(|r| r.4.is_some()).count();
             let hosts_n = rows.iter().map(|r| r.0).collect::<std::collections::HashSet<_>>().len();
             let containers: Vec<Value> = rows
@@ -57,13 +63,16 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
                         "host_id": host_id, "hostname": hostname, "name": name.trim_start_matches("docker:"), "package": name,
                         "image": image, "current": version.split(" @").nth(1).unwrap_or(""), "candidate": candidate.as_deref().map(|c| c.split(" @").nth(1).unwrap_or("")),
                         "update": candidate.is_some(),
+                        "latest": meta.get("latest").filter(|l| l.get("tag").is_some_and(|t| t.is_string())).map(|l| json!({
+                            "tag": l.get("tag"), "major": l.get("major").and_then(|m| m.as_bool()).unwrap_or(false), "same_major": l.get("same_major").filter(|x| x.is_string()),
+                        })),
                         "project": meta.get("project").cloned().unwrap_or(Value::Null), "service": meta.get("service").cloned().unwrap_or(Value::Null),
                         "state": meta.get("state").cloned().unwrap_or(Value::Null), "health": meta.get("health").cloned().unwrap_or(Value::Null), "started_at": meta.get("started_at").cloned().unwrap_or(Value::Null),
                         "open_task": open.get(&host_id).map(|(id, st)| json!({ "id": id, "status": st })),
                     })
                 })
                 .collect();
-            Ok(json!({ "summary": { "containers": containers.len(), "with_updates": with_updates, "hosts": hosts_n }, "containers": containers }))
+            Ok(json!({ "summary": { "containers": containers.len(), "with_updates": with_updates, "with_newer_version": with_newer, "hosts": hosts_n }, "containers": containers }))
         })
         .await?;
     Ok(HttpResponse::Ok().json(out))

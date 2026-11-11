@@ -84,6 +84,23 @@ with the same list. A row shows the container, its image, the state and health t
 and service, and whether a newer image exists (`current` and `candidate` digests). Search matches the container name
 or the image; *Updates only* keeps the containers with a newer image. `GET /api/v1/docker?host=&updates=&q=`.
 
+**Newer versions (0.7.1).** A running `v3.3.1` has its own digest checked (an image rebuilt under the same tag), but a
+newer *tag* such as `v3.4.0` is a different image. For a container whose tag is a version, the agent also lists the
+tags of the repository in its registry and reports the highest one of the **same shape**: `v3.3.1` is compared only with
+other `v#.#.#` tags, `17-alpine` only with `#-alpine`, `16-vectorchord1.1.1` with `#-vectorchord#.#.#`. Release
+candidates, other flavours, build tags (`…-sha-3699278`) and moving tags (`latest`, `release`) are never offered. A
+new first number is marked **major** (and the newest of the running major is named next to it, for a database that
+needs a migration). The Docker page and tab show it as *Version v3.4.0 available*, count it in *New versions* and can
+filter on it.
+
+It is **information, not an update**: moving to another tag means changing the `image:` line (or the `.env` variable)
+of the compose file, which CroustyPatch does not edit; the *Update* buttons keep pulling the running tag. How it is
+checked: Docker Hub lists tags alphabetically, GHCR in no order (immich-server has more than 33 000, 34 pages, about
+7 s), so the agent reads the pages (at most 100 and 60 s per repository), keeps only tags of the right shape as they
+arrive, and stops early only when a page proves the list is alphabetical and past the tag's prefix. The answer is
+kept in memory for 6 hours per image (a failed lookup 20 minutes), so a registry is asked a few times a day at most.
+Agents from 0.7.1; anonymous access only (public images), like the digest check. `GET /api/v1/docker?newer=true`.
+
 CroustyPatch only ever **updates images**. It never starts, stops or removes a container: the *Update* buttons queue
 a task for the chosen containers (or all of those with an update), and the host's policy decides what happens
 around it (see `policies.md`, *Docker*).
@@ -262,7 +279,11 @@ anything runs, a progress bar and a notification log. French or English and ligh
   enrolled before 0.7 gets the login entry from *Update agent* (the agent adds it right after replacing the window
   binary, never over an existing file) but not `libnotify`: without `notify-send` the notifier falls back to D-Bus
   (`gdbus`), and the installer can be re-run to add the package.
-- **App icons (0.7).** An app's icon is a generic glyph, a **logo** from the bundled collection (121 icons from
+- **App icons (0.7).** Applications added before 0.7 kept a generic icon (only the suggestions showed the logos): 0.7.1 gives
+  those that carry the name of a suggested application (`git`, `Firefox`, `Python 3`…) its logo, once, and a new
+  application left with the default icon takes the logo of the application it is named after. An icon chosen on
+  purpose, a logo or an uploaded image is never replaced, and the catalog table now shows each icon.
+  The rest as in 0.7: An app's icon is a generic glyph, a **logo** from the bundled collection (121 icons from
   [Simple Icons](https://simpleicons.org), CC0, in `server/assets/brand-icons.json`, rebuilt by
   `server/assets/brand-icons/generate.py`; the suggested apps use them where one exists), or an **uploaded image**
   (PNG, JPEG, WebP or SVG; rasters are scaled to 128 px in the browser, SVG up to 64 KB; at most about 72 KB stored).

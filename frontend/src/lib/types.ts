@@ -159,10 +159,12 @@ export interface Occurrence { start: string; end: string }
 
 /** GET /docker: every container of every host whose Docker module is on. */
 export interface DockerData {
-  summary: { containers: number; with_updates: number; hosts: number };
+  summary: { containers: number; with_updates: number; with_newer_version: number; hosts: number };
   containers: {
     host_id: string; hostname: string; name: string; package: string; image: string; current: string; candidate: string | null; update: boolean;
     project: string | null; service: string | null; state: string | null; health: string | null; started_at: string | null; open_task: { id: string; status: string } | null;
+    /** A newer version tag in the registry (informative: moving to it means changing the compose file). */
+    latest: { tag: string; major: boolean; same_major: string | null } | null;
   }[];
 }
 
@@ -364,3 +366,6 @@ export interface CompProfile { id: string; name: string; description: string; ba
 export interface CompProfiles { custom: CompProfile[]; available: { id: string; title: string; hosts: number }[]; hosts_with_openscap: number; default: string }
 export interface FailingRule { rule_id: string; severity: string; hosts: number }
 export interface CompFleet { score: number | null; threshold: number; hosts: (CompReport & { host_id: string; hostname: string | null })[] }
+
+/** A page of rows with the total behind it (`page` is 1-based, as in the API). */
+export interface Paged<T> { items: T[]; total: number; page: number; per_page: number }

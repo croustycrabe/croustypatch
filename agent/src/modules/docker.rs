@@ -112,13 +112,51 @@ pub fn is_current(c: &Container, remote: &str) -> bool {
 }
 
 pub fn entry(c: &Container, remote: Option<&str>) -> PackageEntry {
+    entry_with(c, remote, None)
+}
+
+/// The inventory entry of a container. `newer` is a newer version tag the registry offers for the image (the running
+/// tag's own digest is what `candidate` tracks): it is informative, because moving to another tag means changing the
+/// compose file, which CroustyPatch does not do.
+pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::Newer>) -> PackageEntry {
     let local = c.repo_digests.first().map(|d| short(d.split('@').nth(1).unwrap_or(d))).unwrap_or_else(|| short(&c.image_id));
     let candidate = remote.filter(|r| !is_current(c, r)).map(|r| format!("{} @{}", c.image_ref, short(r)));
-    let meta = serde_json::json!({
+    let mut meta = serde_json::json!({
         "image": c.image_ref, "project": c.compose.as_ref().map(|x| x.project.as_str()), "service": c.compose.as_ref().map(|x| x.service.as_str()),
         "state": c.state, "health": c.health, "started_at": c.started_at,
     });
+    if let Some(n) = newer {
+        meta["latest"] = serde_json::json!({ "tag": n.tag, "major": n.major, "same_major": n.same_major });
+    }
     PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into(), meta }
+}
+
+type NewerCache = std::sync::Mutex<std::collections::HashMap<(String, String, String), (std::time::Instant, Option<registry::Newer>, bool)>>;
+
+/// The newer version of `img`'s tag, from the registry's tag list. Asked at most every 6 hours per image (a failed
+/// lookup again after 20 minutes): versions do not appear by the minute, and a registry should not be queried for
+/// every inventory. No request at all when the tag is not a version (`latest`, `release`).
+pub async fn newer_version(img: &registry::ImageRef) -> Option<registry::Newer> {
+    static CACHE: std::sync::OnceLock<NewerCache> = std::sync::OnceLock::new();
+    registry::tag_shape(&img.tag)?;
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (img.registry.clone(), img.repository.clone(), img.tag.clone());
+    if let Some((at, found, ok)) = cache.lock().ok()?.get(&key) {
+        if at.elapsed() < Duration::from_secs(if *ok { 6 * 3600 } else { 20 * 60 }) {
+            return found.clone();
+        }
+    }
+    let (found, ok) = match registry::list_tags(img).await {
+        Ok(tags) => (registry::newer_version(&img.tag, &tags), true),
+        Err(e) => {
+            tracing::debug!(image = %format!("{}:{}", img.repository, img.tag), "tag list: {e:#}");
+            (None, false)
+        }
+    };
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, (std::time::Instant::now(), found.clone(), ok));
+    }
+    found
 }
 
 pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
@@ -141,18 +179,33 @@ pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
     Ok(out)
 }
 
-/// Inventory entries for every running container, with the registry's current digest when it can be checked.
+/// Inventory entries for every running container, with the registry's current digest and the newest version tag
+/// when they can be checked (four registry lookups at a time).
 pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
     let Ok(list) = containers(r).await.inspect_err(|e| tracing::warn!("docker inventory: {e:#}")) else { return vec![] };
-    let mut out = vec![];
-    for c in &list {
-        let remote = match registry::parse(&c.image_ref) {
-            Ok(img) if img.digest.is_none() => registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %c.name, "registry check: {e:#}")).ok(),
-            _ => None,
-        };
-        out.push(entry(c, remote.as_deref()));
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut jobs = tokio::task::JoinSet::new();
+    for (i, c) in list.iter().enumerate() {
+        let image = c.image_ref.clone();
+        let name = c.name.clone();
+        let gate = gate.clone();
+        jobs.spawn(async move {
+            let _slot = gate.acquire().await;
+            match registry::parse(&image) {
+                // pinned by digest: never updated, nothing to look for
+                Ok(img) if img.digest.is_none() => {
+                    let remote = registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %name, "registry check: {e:#}")).ok();
+                    (i, remote, newer_version(&img).await)
+                }
+                _ => (i, None, None),
+            }
+        });
     }
-    out
+    let mut found: Vec<(Option<String>, Option<registry::Newer>)> = vec![(None, None); list.len()];
+    while let Some(Ok((i, remote, newer))) = jobs.join_next().await {
+        found[i] = (remote, newer);
+    }
+    list.iter().zip(found).map(|(c, (remote, newer))| entry_with(c, remote.as_deref(), newer.as_ref())).collect()
 }
 
 fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {

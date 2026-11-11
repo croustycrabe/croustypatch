@@ -54,19 +54,28 @@ async fn the_docker_menu_lists_containers_and_updates_only_images() {
         let mut c = db.conn();
         let a = add_host(&mut c, "docker-a", json!({"docker": true}), json!({}));
         let b = add_host(&mut c, "docker-b", json!({"docker": true}), json!({}));
-        add_pkg(&mut c, a, "docker:web", "docker", "nginx:1.27 @aaaa", Some("nginx:1.27 @bbbb"), json!({"image": "nginx:1.27", "project": "site", "service": "web", "state": "running", "health": "healthy", "started_at": "2026-11-01T10:00:00Z"}));
+        add_pkg(&mut c, a, "docker:web", "docker", "nginx:1.27 @aaaa", Some("nginx:1.27 @bbbb"), json!({"image": "nginx:1.27", "project": "site", "service": "web", "state": "running", "health": "healthy", "started_at": "2026-11-01T10:00:00Z", "latest": {"tag": "1.29.0", "major": false, "same_major": null}}));
         add_pkg(&mut c, a, "docker:db", "docker", "postgres:17 @cccc", None, json!({"image": "postgres:17", "state": "running"}));
-        add_pkg(&mut c, b, "docker:cache", "docker", "redis:7 @dddd", Some("redis:7 @eeee"), json!({"image": "redis:7", "state": "exited"}));
+        add_pkg(&mut c, b, "docker:cache", "docker", "redis:7 @dddd", Some("redis:7 @eeee"), json!({"image": "redis:7", "state": "exited", "latest": {"tag": "8", "major": true, "same_major": "7.4"}}));
         add_pkg(&mut c, b, "openssl", "system", "3.0", Some("3.1"), json!({}));
         (a, b)
     };
     let get = |q: &str| TestRequest::get().uri(&format!("/api/v1/docker{q}")).cookie(ck.clone());
     let (st, all) = call(&app, get("")).await;
     assert_eq!(st, 200, "{all}");
-    assert_eq!(all["summary"], json!({"containers": 3, "with_updates": 2, "hosts": 2}), "system packages are not containers");
+    assert_eq!(all["summary"], json!({"containers": 3, "with_updates": 2, "with_newer_version": 2, "hosts": 2}), "system packages are not containers");
     let web = all["containers"].as_array().unwrap().iter().find(|c| c["name"] == "web").unwrap();
     assert_eq!((web["image"].clone(), web["current"].clone(), web["candidate"].clone(), web["update"].clone()), (json!("nginx:1.27"), json!("aaaa"), json!("bbbb"), json!(true)));
     assert_eq!((web["project"].clone(), web["service"].clone(), web["state"].clone(), web["health"].clone()), (json!("site"), json!("web"), json!("running"), json!("healthy")));
+    // a newer version tag is information next to the image update the running tag tracks
+    assert_eq!(web["latest"], json!({"tag": "1.29.0", "major": false, "same_major": null}));
+    let db_row = all["containers"].as_array().unwrap().iter().find(|c| c["name"] == "db").unwrap();
+    assert_eq!(db_row["latest"], Value::Null, "no newer version known");
+    let cache = all["containers"].as_array().unwrap().iter().find(|c| c["name"] == "cache").unwrap();
+    assert_eq!((cache["latest"]["tag"].clone(), cache["latest"]["major"].clone(), cache["latest"]["same_major"].clone()), (json!("8"), json!(true), json!("7.4")));
+    let (_, newer) = call(&app, get("?newer=true")).await;
+    let names: Vec<&str> = newer["containers"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["web", "cache"], "only the containers with a newer version");
     let (_, only) = call(&app, get("?updates=true")).await;
     assert_eq!(only["summary"]["containers"], json!(2));
     let (_, one) = call(&app, get(&format!("?host={b}"))).await;
@@ -381,4 +390,56 @@ async fn a_compliance_setting_saved_before_0_7_reads_with_the_new_defaults() {
     // and saving it back without the key is accepted
     let (st, b) = call(&app, TestRequest::put().uri("/api/v1/settings/compliance").cookie(ck.clone()).set_json(json!({"threshold": 90, "profile": ""}))).await;
     assert!(st.is_success(), "{b}");
+}
+
+/// Applications added before 0.7 kept a generic icon; the migration gives them the logo of the suggestion they match.
+#[actix_web::test]
+async fn the_catalog_logos_migration_upgrades_generic_icons_only() {
+    let db = support::TestDb::new();
+    {
+        let mut c = db.conn();
+        // the state of a 0.6 catalog, then the migration's statements run again on it
+        for (name, icon) in [("Firefox", "browser"), ("git", "app-window"), ("GIMP", "image"), ("Python 3", "code"), ("ufw", "app-window"), ("Interne", "code"), ("Docker", "brand:podman"), ("Krita", "data:image/png;base64,AAAA")] {
+            diesel::sql_query(format!("INSERT INTO portal_apps (name, icon, recipes) VALUES ('{name}', '{icon}', '{{\"*\": {{\"packages\": [\"x\"]}}}}')")).execute(&mut c).unwrap();
+        }
+        let up = include_str!("../migrations/2026-11-11-000014_catalog_logos/up.sql");
+        for stmt in up.lines().filter(|l| l.starts_with("UPDATE")) {
+            diesel::sql_query(stmt).execute(&mut c).unwrap();
+        }
+    }
+    let icons: std::collections::HashMap<String, String> = croustypatch_server::schema::portal_apps::table
+        .select((croustypatch_server::schema::portal_apps::name, croustypatch_server::schema::portal_apps::icon))
+        .load::<(String, String)>(&mut db.conn())
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(icons["Firefox"], "brand:firefox");
+    assert_eq!(icons["git"], "brand:git", "the name matches whatever the case");
+    assert_eq!(icons["GIMP"], "brand:gimp");
+    assert_eq!(icons["Python 3"], "brand:python");
+    assert_eq!(icons["ufw"], "app-window", "no logo for it: unchanged");
+    assert_eq!(icons["Interne"], "code", "not a suggested application");
+    assert_eq!(icons["Docker"], "brand:podman", "a logo chosen by hand is kept");
+    assert!(icons["Krita"].starts_with("data:image/png"), "so is an uploaded image");
+}
+
+#[actix_web::test]
+async fn a_new_app_with_the_default_icon_takes_the_logo_of_its_name() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let post = |b: Value| TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(b);
+    let (_, a) = call(&app, post(json!({"name": "Firefox ESR", "packages": ["firefox-esr"]}))).await;
+    assert_eq!(a["icon"], json!(""), "no logo is guessed for a name that is not one: the generic default stays");
+    let (_, a) = call(&app, post(json!({"name": "vlcmediaplayer", "packages": ["vlc"], "icon": "app-window"}))).await;
+    assert_eq!(a["icon"], json!("brand:vlcmediaplayer"));
+    assert!(a["icon_url"].is_string());
+    let (_, a) = call(&app, post(json!({"name": "Git", "packages": ["git"]}))).await;
+    assert_eq!(a["icon"], json!("brand:git"), "a hand-written entry looks like a suggested one");
+    let (_, a) = call(&app, post(json!({"name": "Docker", "packages": ["docker.io"], "icon": "cube"}))).await;
+    assert_eq!(a["icon"], json!("cube"), "an icon chosen on purpose is respected");
+    // editing keeps the choice, even back to the generic icon
+    let (st, a2) = call(&app, TestRequest::put().uri(&format!("/api/v1/portal/apps/{}", a["id"].as_str().unwrap())).cookie(ck.clone()).set_json(json!({"name": "Docker", "packages": ["docker.io"], "icon": "app-window"}))).await;
+    assert_eq!(st, 200);
+    assert_eq!(a2["icon"], json!("app-window"));
 }

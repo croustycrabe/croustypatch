@@ -27,7 +27,9 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
   package hosts, Add agent). Confirmations are small centred dialogs. Feedback is a toast; errors tied to a form stay inline.
 - **Hosts** (as in PatchMon): searchable, filterable by status and group, sortable, with bulk patch and scan; a host
   opens into tabs (Overview, Packages, History, Settings). **Packages** shows every package across the fleet and lets
-  you update one package on all the hosts that need it.
+  you update one package on all the hosts that need it. Long lists (the fleet's packages, a host's packages) are **paged**:
+  25 or 50 rows a page (the choice is kept in the browser), with the range and the total; the fleet list is paged by the
+  server (`GET /api/v1/packages?page=&per_page=` returns `{items, total, page, per_page}`), so every package is reachable.
 - **Dashboard:** fleet stat cards, an actionable "needs attention" strip, then draggable widgets (reorder, resize, hide;
   saved per user on the server).
 
