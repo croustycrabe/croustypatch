@@ -188,6 +188,8 @@ pub struct Verdict {
     /// Pending updates that pass this policy's filters (security only, waivers).
     pub batch: Vec<Candidate>,
     pub filtered_by_security: usize,
+    /// Updates left out because of the policy's Docker setting (containers, or system packages).
+    pub filtered_by_docker: usize,
     pub waived: usize,
     /// The deterministic decision for this batch (None when the batch is empty).
     pub action: Option<PolicyAction>,
@@ -204,8 +206,12 @@ pub fn select(c: &mut PgConnection, host: &Host, pending: &[HostPackage], groups
     let (waived_pkgs, waived_cves) = waived(c, host.id, groups, now)?;
     let mut verdicts = vec![];
     for (policy, in_scope) in linked_policies(c, host, groups)? {
-        let (mut batch, mut by_security, mut waived_n) = (vec![], 0, 0);
+        let (mut batch, mut by_security, mut waived_n, mut by_docker) = (vec![], 0, 0, 0);
         for p in pending {
+            if !policy.def.docker.takes(&p.source) {
+                by_docker += 1;
+                continue;
+            }
             if policy.def.security_only && !p.is_security {
                 by_security += 1;
                 continue;
@@ -229,7 +235,7 @@ pub fn select(c: &mut PgConnection, host: &Host, pending: &[HostPackage], groups
         };
         // With the AI deciding, the decision is not known beforehand: wait for the patch day before asking it.
         let waiting = action.is_some() && !window_open && (policy.def.ai_mode_enabled || action == Some(PolicyAction::AutoDeploy));
-        verdicts.push(Verdict { policy, in_scope, batch, filtered_by_security: by_security, waived: waived_n, action, window_open, waiting });
+        verdicts.push(Verdict { policy, in_scope, batch, filtered_by_security: by_security, filtered_by_docker: by_docker, waived: waived_n, action, window_open, waiting });
     }
     // A policy with nothing to do — for example a security-only policy while only ordinary updates are pending —
     // never hides the ones after it either.
@@ -323,7 +329,7 @@ pub fn plan_for_host_with(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc
 pub fn simulate(c: &mut PgConnection, host_id: Uuid, def: &PolicyDef) -> ApiResult<Value> {
     let host: Host = hosts::table.find(host_id).select(Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?;
     let pending: Vec<HostPackage> = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::candidate.is_not_null()).select(HostPackage::as_select()).load(c)?;
-    let batch: Vec<Candidate> = pending.into_iter().filter(|p| !def.security_only || p.is_security).filter_map(|p| p.candidate.clone().map(|candidate| Candidate { pkg: p, candidate })).collect();
+    let batch: Vec<Candidate> = pending.into_iter().filter(|p| def.docker.takes(&p.source)).filter(|p| !def.security_only || p.is_security).filter_map(|p| p.candidate.clone().map(|candidate| Candidate { pkg: p, candidate })).collect();
     let info = load_cve_info(c, &batch)?;
     let (input, notes) = assess_input(&host, &batch, &info);
     let mut a = risk::assess_deterministic(def, &input);
@@ -395,7 +401,7 @@ pub fn explain(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc>) -> ApiRe
         "groups": groups,
         "policies": verdicts.iter().map(|v| json!({
             "id": v.policy.id, "name": v.policy.name, "in_scope": v.in_scope, "security_only": v.policy.def.security_only,
-            "matching": v.batch.len(), "not_security": v.filtered_by_security, "waived": v.waived,
+            "matching": v.batch.len(), "not_security": v.filtered_by_security, "not_docker": v.filtered_by_docker, "docker": v.policy.def.docker, "waived": v.waived,
             "ai": v.policy.def.ai_mode_enabled, "window": v.policy.def.maintenance_window,
         })).collect::<Vec<_>>(),
         "chosen": chosen.or(earliest_waiting).map(|i| verdicts[i].policy.id),

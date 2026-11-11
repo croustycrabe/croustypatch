@@ -157,14 +157,18 @@ export interface PatchingExplain {
   state: 'host_inactive' | 'task_open' | 'no_group' | 'no_policy' | 'out_of_scope' | 'nothing_pending' | 'nothing_matches' | 'already_handled' | 'waiting_for_window' | 'will_plan' | 'needs_approval' | 'blocked';
   pending: { total: number; security: number };
   groups: string[];
-  policies: { id: string; name: string; in_scope: boolean; security_only: boolean; matching: number; not_security: number; waived: number; ai: boolean; window: MaintenanceWindow | null }[];
+  policies: { id: string; name: string; in_scope: boolean; security_only: boolean; matching: number; not_security: number; not_docker?: number; docker?: DockerMode; waived: number; ai: boolean; window: MaintenanceWindow | null }[];
   chosen: string | null;
   action: PolicyAction | null;
   window: { open: boolean; current: Occurrence | null; next: Occurrence[]; config: MaintenanceWindow } | null;
   open_task: { id: string; kind: string; status: string; scheduled_for: string } | null;
 }
 
+export type DockerMode = 'include' | 'exclude' | 'only';
+
 export interface PolicyDef {
+  /** Container image updates: with the system updates, left out, or the only thing this policy updates. */
+  docker?: DockerMode;
   ai_mode_enabled: boolean;
   target_scope: string;
   security_only: boolean;

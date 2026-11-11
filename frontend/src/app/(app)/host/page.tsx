@@ -48,6 +48,7 @@ function PatchingCard({ hostId }: { hostId: string }) {
                 <li key={p.id} style={p.id === x.chosen ? { fontWeight: 500 } : undefined}>
                   {p.name} — {!p.in_scope ? t('host.patching.out_scope') : t('host.patching.matches', { n: p.matching })}
                   {p.security_only && p.not_security > 0 ? ` (${t('host.patching.sec_only', { n: p.not_security })})` : ''}
+                  {p.docker && p.docker !== 'include' ? ` · ${t(`pol.docker.${p.docker}.short` as MessageKey)}${p.not_docker ? ` (${t('host.patching.docker_left', { n: p.not_docker })})` : ''}` : ''}
                   {p.window ? ` · ${text(p.window)} ${p.window.start}–${p.window.end}` : ''}
                 </li>
               ))}

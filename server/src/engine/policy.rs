@@ -4,8 +4,36 @@ use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime
 use croustypatch_common::model::{HealthProbe, PolicyAction, RiskLevel};
 use serde::{Deserialize, Serialize};
 
+/// What a policy does with container image updates (`docker:<name>` entries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerMode {
+    /// Together with the system updates (the behaviour of policies saved before 0.6).
+    #[default]
+    Include,
+    /// Leave containers alone: another policy (or nobody) updates them.
+    Exclude,
+    /// Only containers: a dedicated Docker policy, with its own schedule.
+    Only,
+}
+
+impl DockerMode {
+    /// Does an update from this source belong to a policy in this mode?
+    pub fn takes(&self, source: &str) -> bool {
+        match self {
+            DockerMode::Include => true,
+            DockerMode::Exclude => source != "docker",
+            DockerMode::Only => source == "docker",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDef {
+    /// Container image updates: with the system updates (default for existing policies), left out, or the only
+    /// thing this policy updates.
+    #[serde(default)]
+    pub docker: DockerMode,
     /// When true the contextual risk comes from the AI provider (falls back to the rules on error).
     #[serde(default)]
     pub ai_mode_enabled: bool,

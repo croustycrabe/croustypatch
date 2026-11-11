@@ -876,6 +876,14 @@ export const fr = {
   'rep.send_me': 'M’envoyer à {e}',
   'rep.confirm_delete': 'Supprimer ce rapport et son journal d’envois ?',
   'notif.rule.digest_hint': 'Ce résumé ne contient que les événements qui se sont produits depuis le dernier : s’il n’y en a pas, rien n’est envoyé. Pour un état complet du parc à heure fixe, créez un rapport (onglet Rapports).',
+  'pol.docker': 'Conteneurs Docker',
+  'pol.docker.hint': 'Mises à jour d’images de conteneurs (une image plus récente pour le même tag). Une politique « seulement Docker » permet d’avoir son propre jour de patch pour les conteneurs.',
+  'pol.docker.include': 'Avec les mises à jour système',
+  'pol.docker.exclude': 'Ne pas toucher aux conteneurs',
+  'pol.docker.only': 'Seulement les conteneurs (politique dédiée Docker)',
+  'pol.docker.exclude.short': 'conteneurs exclus',
+  'pol.docker.only.short': 'seulement les conteneurs',
+  'host.patching.docker_left': '{n} mise(s) à jour hors périmètre Docker',
 } as const;
 
 export type MessageKey = keyof typeof fr;
@@ -1740,4 +1748,12 @@ export const en: Record<MessageKey, string> = {
   'rep.send_me': 'Send to me at {e}',
   'rep.confirm_delete': 'Delete this report and its delivery log?',
   'notif.rule.digest_hint': 'This digest only holds the events that occurred since the last one: when there are none, nothing is sent. For a complete state of the fleet at a fixed time, create a report (Reports tab).',
+  'pol.docker': 'Docker containers',
+  'pol.docker.hint': 'Container image updates (a newer image for the same tag). A “Docker only” policy lets containers have their own patch day.',
+  'pol.docker.include': 'Together with the system updates',
+  'pol.docker.exclude': 'Leave containers alone',
+  'pol.docker.only': 'Containers only (a dedicated Docker policy)',
+  'pol.docker.exclude.short': 'containers excluded',
+  'pol.docker.only.short': 'containers only',
+  'host.patching.docker_left': '{n} update(s) outside its Docker setting',
 };

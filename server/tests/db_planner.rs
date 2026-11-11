@@ -271,3 +271,33 @@ fn a_policy_waiting_for_its_patch_day_does_not_hold_back_another_policys_patch_d
     assert_eq!(by, "policy:Test update");
     assert_eq!(deadline, Some(at("2026-11-10T16:45:00Z")));
 }
+
+#[test]
+fn a_policy_decides_whether_container_updates_belong_to_it() {
+    let db = support::TestDb::new();
+    let mut c = db.conn();
+    let (host, _) = production_like(&mut c);
+    diesel::insert_into(host_packages::table)
+        .values((host_packages::host_id.eq(host), host_packages::name.eq("docker:hoppscotch-db"), host_packages::source.eq("docker"), host_packages::version.eq("postgres:17 @3540"), host_packages::candidate.eq(Some("postgres:17 @e5d2"))))
+        .execute(&mut c)
+        .unwrap();
+    let sat = at("2026-11-14T03:00:00Z");
+    let take = |c: &mut PgConnection, mode: &str| -> Vec<String> {
+        diesel::sql_query(format!("UPDATE policies SET definition = jsonb_set(definition, '{{docker}}', '\"{mode}\"') WHERE name = 'Monthly update docker host'")).execute(c).unwrap();
+        let e = planner::explain(c, host, sat).unwrap();
+        let p = e["policies"].as_array().unwrap().iter().find(|p| p["name"] == "Monthly update docker host").unwrap().clone();
+        let _ = e;
+        (0..p["matching"].as_u64().unwrap()).map(|_| String::new()).collect()
+    };
+    assert_eq!(take(&mut c, "include").len(), 3, "policies saved before the option keep taking containers with the system updates");
+    assert_eq!(take(&mut c, "exclude").len(), 2, "containers left alone");
+    assert_eq!(take(&mut c, "only").len(), 1, "a dedicated Docker policy takes nothing else");
+    // and what it plans: exclude -> no container in the task
+    take(&mut c, "exclude");
+    let id = planner::plan_for_host(&mut c, host, sat).unwrap().unwrap();
+    let pk: serde_json::Value = tasks::table.find(id).select(tasks::packages).first(&mut c).unwrap();
+    assert!(pk.as_array().unwrap().iter().all(|p| !p["name"].as_str().unwrap().starts_with("docker:")), "{pk}");
+    // a policy that is not told anything about Docker (stored by an older version) includes it
+    let d: croustypatch_server::engine::policy::PolicyDef = serde_json::from_str("{}").unwrap();
+    assert!(d.docker.takes("docker") && d.docker.takes("system"));
+}

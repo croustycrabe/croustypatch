@@ -12,7 +12,7 @@ const RISKS: Risk[] = ['Low', 'Medium', 'High', 'Critical'];
 const ACTIONS: PolicyAction[] = ['AUTO_DEPLOY', 'REQUIRE_APPROVAL', 'BLOCK'];
 
 const blankDef = (): PolicyDef => ({
-  ai_mode_enabled: false, target_scope: '', security_only: true, rules: [], decisions: [], default_action: 'REQUIRE_APPROVAL', maintenance_window: null,
+  docker: 'exclude', ai_mode_enabled: false, target_scope: '', security_only: true, rules: [], decisions: [], default_action: 'REQUIRE_APPROVAL', maintenance_window: null,
   rollback: { soak_minutes: 30, probes: [], auto_rollback: true, snapshot_required: true }, reboot: { mode: '' }, rings: { delay_minutes: 0 },
 });
 
@@ -48,6 +48,12 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
           <Check checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })}>{t('pol.enabled')}</Check>
           <Check checked={d.security_only} onChange={(v) => edit((n) => { n.security_only = v; })}>{t('pol.security_only')}</Check>
         </div>
+        <div className="span-all"><Field label={t('pol.docker')} hint={t('pol.docker.hint')}>{(i) => (
+          <Select id={i} value={d.docker ?? 'include'} onChange={(e) => edit((n) => { n.docker = e.target.value as 'include' | 'exclude' | 'only'; })}>
+            <option value="include">{t('pol.docker.include')}</option>
+            <option value="exclude">{t('pol.docker.exclude')}</option>
+            <option value="only">{t('pol.docker.only')}</option>
+          </Select>)}</Field></div>
         <fieldset className="fieldset span-all">
           <legend>{t('pol.groups')}</legend>
           <div className="chips">{groups.map((g) => <GroupTag key={g.id} group={g} active={form.group_ids.includes(g.id)} onClick={() => setForm({ ...form, group_ids: form.group_ids.includes(g.id) ? form.group_ids.filter((x) => x !== g.id) : [...form.group_ids, g.id] })} />)}</div>
