@@ -62,7 +62,7 @@ pub fn silence_limit(status: &str, heartbeat_secs: i32) -> i64 {
     if status == "eco" { base.max(ECO_HEARTBEAT_SECS * 3) } else { base.max(180) }
 }
 
-fn housekeeping(c: &mut PgConnection) -> ApiResult<()> {
+pub fn housekeeping(c: &mut PgConnection) -> ApiResult<()> {
     let now = Utc::now();
     mark_silent_hosts(c, now)?;
     expire_tasks(c, now)?;
@@ -113,8 +113,21 @@ fn expire_tasks(c: &mut PgConnection, now: DateTime<Utc>) -> ApiResult<()> {
     for (id, host) in soak {
         fail(c, id, host, "soak window ended without a verdict from the agent")?;
     }
+    // A task planned for a patch day that ended before its host could run it: say so (it is re-planned for the next
+    // patch day by the planner) instead of letting it run at an arbitrary hour.
+    let missed: Vec<(Uuid, Uuid)> = tasks::table.filter(tasks::status.eq("queued")).filter(tasks::deadline_at.lt(now)).select((tasks::id, tasks::host_id)).load(c)?;
+    for (id, host) in missed {
+        let msg = "the patch day ended before the host could run it (offline?): it will be planned again for the next one";
+        diesel::update(tasks::table.find(id)).set((tasks::status.eq("expired"), tasks::message.eq(msg), tasks::finished_at.eq(now), tasks::updated_at.eq(now))).execute(c)?;
+        diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("expired"), task_events::message.eq(msg))).execute(c)?;
+        audit::record(c, Event::new("system", "task.missed_window").target("task", &id.to_string()).host(host).details(json!({"message": msg})))?;
+    }
+    // Queued work counts from when it was due (a task approved for next month's patch day is not stale), approvals
+    // from when they were requested.
     for (status, age) in [("queued", Duration::days(7)), ("pending_approval", Duration::days(14))] {
-        let ids: Vec<Uuid> = tasks::table.filter(tasks::status.eq(status)).filter(tasks::created_at.lt(now - age)).select(tasks::id).load(c)?;
+        let q = tasks::table.filter(tasks::status.eq(status)).into_boxed();
+        let q = if status == "queued" { q.filter(tasks::scheduled_for.lt(now - age)) } else { q.filter(tasks::created_at.lt(now - age)) };
+        let ids: Vec<Uuid> = q.select(tasks::id).load(c)?;
         for id in ids {
             diesel::update(tasks::table.find(id)).set((tasks::status.eq("expired"), tasks::finished_at.eq(now), tasks::updated_at.eq(now))).execute(c)?;
             diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("expired"), task_events::message.eq("not executed in time"))).execute(c)?;

@@ -15,6 +15,7 @@ pub mod modules;
 pub mod notify;
 pub mod planner;
 pub mod reboot;
+pub mod reports;
 pub mod scheduler;
 pub mod schema;
 pub mod state;

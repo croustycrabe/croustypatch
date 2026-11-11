@@ -182,6 +182,7 @@ diesel::table! {
         batch_key -> Nullable<Text>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        deadline_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -348,3 +349,45 @@ diesel::allow_tables_to_appear_in_same_query!(
     enrollment_tokens, host_packages, vulnerabilities, policies, policy_groups, tasks,
     task_events, waivers, audit_log, notification_channels, notification_rules, notifications, api_tokens, compliance_reports, portal_apps,
 );
+
+diesel::table! {
+    reports (id) {
+        id -> Uuid,
+        name -> Text,
+        enabled -> Bool,
+        frequency -> Text,
+        weekday -> Int4,
+        day_of_month -> Int4,
+        send_at -> Text,
+        timezone -> Text,
+        language -> Text,
+        sections -> Jsonb,
+        group_ids -> Jsonb,
+        emails -> Jsonb,
+        channel_ids -> Jsonb,
+        skip_if_empty -> Bool,
+        last_run_at -> Nullable<Timestamptz>,
+        last_slot_at -> Nullable<Timestamptz>,
+        attempts -> Int4,
+        last_status -> Text,
+        last_error -> Text,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    report_runs (id) {
+        id -> Uuid,
+        report_id -> Uuid,
+        at -> Timestamptz,
+        trigger -> Text,
+        status -> Text,
+        error -> Text,
+        recipients -> Jsonb,
+        title -> Text,
+    }
+}
+
+diesel::joinable!(report_runs -> reports (report_id));
+diesel::allow_tables_to_appear_in_same_query!(reports, report_runs);

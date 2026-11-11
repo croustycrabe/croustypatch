@@ -124,6 +124,8 @@ fn queued_tasks_are_dispatched_once_as_signed_commands_bound_to_the_agent() {
         .execute(&mut c)
         .unwrap();
 
+    // `scheduled_for` defaults to the database's now(): a test database on another machine may run slightly ahead.
+    std::thread::sleep(std::time::Duration::from_secs(2));
     let cmds = gateway::claim_due_commands(&mut c, &state, host).unwrap();
     assert_eq!(cmds.len(), 1);
     let payload = verify_command(&state.server_public_pem, &cmds[0], host, chrono::Utc::now()).expect("the agent can verify it");

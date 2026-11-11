@@ -10,7 +10,8 @@ import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { MessageKey } from '@/lib/messages';
-import type { Host, HostGroup, HostModules, HostPackage, Task } from '@/lib/types';
+import { Occurrences, safeZone, useWindowText } from '@/components/PatchSchedule';
+import type { Host, HostGroup, HostModules, HostPackage, PatchingExplain, Task } from '@/lib/types';
 
 const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
 /** Module name -> what the agent reports in its facts when the host has it. */
@@ -21,6 +22,48 @@ type Draft = { display_name: string; environment: string; criticality: string; a
 type TabId = 'overview' | 'packages' | 'history' | 'compliance' | 'settings';
 
 const draftOf = (d: Detail): Draft => ({ display_name: d.host.display_name ?? '', environment: d.host.environment, criticality: d.host.criticality, asset_type: d.host.asset_type, internet_exposed: d.host.internet_exposed, has_staging: d.host.has_staging, ring: d.host.ring, tags: d.host.tags.join(', '), group_ids: d.group_ids });
+
+/** Automatic patching of one host: which policy applies, what is waiting, and the next patch day. */
+function PatchingCard({ hostId }: { hostId: string }) {
+  const { t, tr, date } = useI18n();
+  const text = useWindowText();
+  const e = useApi<PatchingExplain>(`/hosts/${hostId}/patching`, { poll: 20000 });
+  if (!e.data) return null;
+  const x = e.data;
+  const chosen = x.policies.find((p) => p.id === x.chosen);
+  const next = x.window?.next[0];
+  const tz = safeZone(x.window?.config.timezone);
+  const when = next ? date(next.start, { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : '';
+  const tone = x.state === 'waiting_for_window' || x.state === 'will_plan' ? 'info' : x.state === 'nothing_pending' || x.state === 'task_open' ? 'ok' : 'warn';
+  return (
+    <Card title={t('host.patching')}>
+      <div className="stack">
+        <Notice kind={tone === 'info' ? 'info' : tone === 'ok' ? 'ok' : 'error'}>{t(`host.patching.${x.state}` as MessageKey, { n: x.pending.total, date: when, policy: chosen?.name ?? '' })}</Notice>
+        {x.open_task && <p className="muted"><Link href={`/tasks?task=${x.open_task.id}`}>{tr('kind', x.open_task.kind)}</Link> · {tr('task', x.open_task.status)} · {date(x.open_task.scheduled_for)}</p>}
+        {x.policies.length > 0 && (
+          <div>
+            <p className="label" style={{ marginBottom: 6 }}>{t('host.patching.policies')}</p>
+            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
+              {x.policies.map((p) => (
+                <li key={p.id} style={p.id === x.chosen ? { fontWeight: 500 } : undefined}>
+                  {p.name} — {!p.in_scope ? t('host.patching.out_scope') : t('host.patching.matches', { n: p.matching })}
+                  {p.security_only && p.not_security > 0 ? ` (${t('host.patching.sec_only', { n: p.not_security })})` : ''}
+                  {p.window ? ` · ${text(p.window)} ${p.window.start}–${p.window.end}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {x.window && x.window.next.length > 0 && (
+          <div>
+            <p className="label" style={{ marginBottom: 6 }}>{t('pol.patchday.next')}{x.window.open ? ` · ${t('pol.in_window')}` : ''}</p>
+            <Occurrences list={x.window.next} zone={x.window.config.timezone} />
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
 
 function HostDetail() {
   const { t, tr, ago, date } = useI18n();
@@ -189,6 +232,7 @@ function HostDetail() {
               </dl>
             </Card>
           </div>
+          <PatchingCard hostId={id} />
           <Card title={t('host.pending_security')} actions={pending.length > 0 && <Button small variant="ghost" onClick={() => changeTab('packages')}>{t('host.tab.packages')} →</Button>} flush>
             {security.length === 0 ? <Empty>{t('host.no_pending')}</Empty> : <PkgTable rows={security.slice(0, 8)} selectable={false} />}
           </Card>

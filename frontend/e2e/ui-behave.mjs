@@ -76,6 +76,19 @@ await p.keyboard.press('Escape');
 await p.goto(`${BASE}/policies/`); await p.waitForSelector('.tbl'); await p.click('button:has-text("Modifier") >> nth=0'); await p.waitForSelector('dialog[open] .section');
 await p.fill('dialog[open] input >> nth=0', 'default (edited)'); await p.click('dialog[open] .sticky-actions button[type=submit]'); await p.waitForSelector('.toast, tr:has-text("default (edited)")', { timeout: 6000 }).catch(() => {});
 await p.waitForTimeout(500); check('policy saved from the slide-over', (await p.locator('tr:has-text("default (edited)")').count()) === 1);
+// patch days: a clear "when" card, presets, a time zone and a live preview from the server
+await p.click('button:has-text("Nouvelle politique")'); await p.waitForSelector('dialog[open] :text("Quand les mises à jour sont-elles appliquées")');
+await p.click('dialog[open] button:has-text("Elle est appliquée automatiquement")');
+await p.click('dialog[open] button:has-text("Seulement les jours de patch")');
+await p.click('dialog[open] button:has-text("Premier lundi du mois")');
+await p.waitForFunction(() => document.querySelectorAll('dialog[open] fieldset li').length >= 5, null, { timeout: 8000 }).catch(() => {});
+{
+  const lis = await p.locator('dialog[open] fieldset li').allTextContents();
+  check('the patch-day preview lists the next five patch days, all on a Monday', lis.length === 5 && lis.every((x) => /lun/i.test(x)), JSON.stringify(lis.slice(0, 2)));
+  check('the summary says it in words', (await p.locator('dialog[open] .alert').last().textContent()).toLowerCase().includes('premier lundi'));
+  await p.fill('dialog[open] input[list=cp-zones]', 'Mars/Olympus'); await p.waitForSelector('dialog[open] .alert--error', { timeout: 8000 }).then(() => check('an unknown time zone is refused with a reason', true), () => check('an unknown time zone is refused with a reason', false));
+}
+await p.keyboard.press('Escape');
 
 // ---- ADD AGENT: generate, enrol a real agent with the command, watch the wizard notice
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.sidebar button:has-text("Ajouter un agent")'); await p.waitForSelector('dialog[open]');
@@ -198,6 +211,25 @@ for (const vp of [{ width: 1280, height: 520 }, { width: 1024, height: 420 }, { 
   await p.fill('dialog[open] input >> nth=0', 'alertes critiques'); await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("alertes critiques")');
   check('a rule is saved with the default critical events', (await p.locator('tr:has-text("alertes critiques")').textContent()).includes('quarantaine'));
   await p.click('[role=tab]:has-text("Historique")'); await p.waitForSelector('.tbl, .empty');
+  // reports: built from the database and sent even when nothing happened; every attempt is logged
+  got.length = 0;
+  await p.click('[role=tab]:has-text("Rapports")'); await p.waitForSelector('button:has-text("Nouveau rapport")');
+  await p.click('button:has-text("Nouveau rapport")'); await p.waitForSelector('dialog[open] input');
+  await p.fill('dialog[open] input >> nth=0', 'Rapport hebdo');
+  await p.click('dialog[open] .chip:has-text("siem")');
+  await p.click('dialog[open] button:has-text("Prévisualiser")'); await p.waitForSelector('dialog[open] iframe');
+  check('the report preview shows the formatted mail', ((await p.locator('dialog[open] iframe').getAttribute('sandbox')) ?? 'x') === '' && (await p.locator('dialog[open] iframe').getAttribute('srcdoc')).includes('Rapport hebdo'));
+  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Rapport hebdo")');
+  check('a report is saved with its next send time', (await p.locator('tr:has-text("Rapport hebdo")').textContent()).match(/chaque lundi/i) !== null);
+  await p.click('tr:has-text("Rapport hebdo") button:has-text("Envoyer maintenant")'); await p.waitForSelector('dialog[open] form');
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.alert--ok', { timeout: 15000 });
+  await p.waitForTimeout(300);
+  const rep = got.map((g) => { try { return JSON.parse(g.b); } catch { return null; } }).find((x) => x?.event === 'report');
+  check('"Send now" delivers the report to the channel', !!rep && rep.title.includes('Rapport hebdo') && rep.text.includes('Résumé'), JSON.stringify(rep)?.slice(0, 120));
+  await p.click('tr:has-text("Rapport hebdo") button:has-text("Journal")'); await p.waitForSelector('dialog[open] .tbl tr:has-text("envoyé")');
+  check('the delivery is logged', true);
+  await p.keyboard.press('Escape');
   sink.close();
 }
 
@@ -230,6 +262,7 @@ await p.waitForSelector('code.cs-inline-code'); const tok = (await p.locator('co
 
 // ---- compliance tab: an audit can be requested
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.tbl tr:has(.status.tone-ok) .cell-host a >> nth=0'); await p.waitForSelector('.tabs');
+await p.waitForSelector('.panel:has-text("Correctifs automatiques")', { timeout: 8000 }).then(() => check('the host page says why a host is, or is not, patched automatically', true), () => check('the host page says why a host is, or is not, patched automatically', false));
 check('the agent card shows the agent is up to date', await p.locator('.kv .tag:has-text("à jour")').count() === 1);
 await p.click('[role=tab]:has-text("Réglages")'); await p.waitForSelector('[role=switch]');
 check('the host settings list the five modules', await p.locator('[role=switch]').count() === 5);

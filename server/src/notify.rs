@@ -41,6 +41,8 @@ pub const CATALOG: &[EventKind] = &[
     EventKind { key: "compliance.score_low", severity: "high", title_en: "Compliance score below threshold", title_fr: "Score de conformité sous le seuil" },
     EventKind { key: "task.failed", severity: "high", title_en: "Task failed", title_fr: "Tâche en échec" },
     EventKind { key: "task.rolled_back", severity: "high", title_en: "Patch rolled back", title_fr: "Correctif annulé (rollback)" },
+    EventKind { key: "task.missed_window", severity: "high", title_en: "Patch day missed", title_fr: "Jour de patch manqué" },
+    EventKind { key: "report.failed", severity: "high", title_en: "Report could not be sent", title_fr: "Rapport non envoyé" },
     EventKind { key: "host.offline", severity: "medium", title_en: "Host offline", title_fr: "Hôte hors ligne" },
     EventKind { key: "approval.required", severity: "medium", title_en: "Patch awaiting approval", title_fr: "Correctif en attente d’approbation" },
     EventKind { key: "compliance.reported", severity: "info", title_en: "Compliance scan finished", title_fr: "Analyse de conformité terminée" },
@@ -200,6 +202,8 @@ pub struct Message {
     pub body: String,
     pub payload: Value,
     pub recipients: Vec<String>,
+    /// A formatted version for channels that can show one (e-mail); the others get `body`.
+    pub html: Option<String>,
 }
 
 pub struct Channel {
@@ -285,11 +289,17 @@ async fn send_mail(ch: &Channel, m: &Message) -> anyhow::Result<()> {
     }
     anyhow::ensure!(!to.is_empty(), "no recipient: add addresses to the channel or the rule");
     let from: Mailbox = cfg_str(cfg, "from").parse().map_err(|e| anyhow::anyhow!("bad sender address: {e}"))?;
-    let mut b = lettre::Message::builder().from(from).subject(&m.title).header(ContentType::TEXT_PLAIN);
+    let mut b = lettre::Message::builder().from(from).subject(&m.title);
+    if m.html.is_none() {
+        b = b.header(ContentType::TEXT_PLAIN);
+    }
     for r in &to {
         b = b.to(r.parse().map_err(|e| anyhow::anyhow!("bad recipient {r}: {e}"))?);
     }
-    let email = b.body(m.body.clone())?;
+    let email = match &m.html {
+        Some(html) => b.multipart(lettre::message::MultiPart::alternative_plain_html(m.body.clone(), html.clone()))?,
+        None => b.body(m.body.clone())?,
+    };
     let mut t = match cfg_str(cfg, "tls") {
         "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)?,
         "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
@@ -318,6 +328,9 @@ pub fn worker(state: web::Data<AppState>) {
             if let Err(e) = run_once(&state).await {
                 tracing::warn!(error = %e, "notification worker");
             }
+            if let Err(e) = crate::reports::run_due(&state).await {
+                tracing::warn!(error = %e, "report worker");
+            }
         }
     });
 }
@@ -339,7 +352,7 @@ pub async fn run_once(state: &web::Data<AppState>) -> anyhow::Result<usize> {
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let mut sent = 0;
     for (id, ch, event, severity, title, body, payload, recipients, attempts) in due {
-        let m = Message { id, event, severity, title, body, payload, recipients: strs(&recipients) };
+        let m = Message { id, event, severity, title, body, payload, recipients: strs(&recipients), html: None };
         let res = deliver(state, ch, &m).await;
         let ok = res.is_ok();
         sent += ok as usize;
@@ -413,6 +426,7 @@ pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) ->
             body: lines.join("\n"),
             payload: json!({ "rule": rule, "events": items.len() }),
             recipients: strs(&items[0].4),
+            html: None,
         };
         let res = deliver(state, ch, &m).await;
         let ids: Vec<Uuid> = items.iter().map(|r| r.0).collect();

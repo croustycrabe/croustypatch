@@ -181,6 +181,8 @@ async fn the_agent_updates_itself_only_when_it_can() {
     assert!(b.to_string().contains("installer"), "tells how to update an old agent: {b}");
     let (st, b) = call(&app, upd(new)).await;
     assert_eq!(st, 202, "{b}");
+    // `scheduled_for` defaults to the database's now(): a test database on another machine may run slightly ahead.
+    std::thread::sleep(std::time::Duration::from_secs(2));
     let (st, _) = call(&app, upd(new)).await;
     assert_eq!(st, 409, "one update at a time");
     let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, new).unwrap();
@@ -196,6 +198,7 @@ async fn the_agent_updates_itself_only_when_it_can() {
     diesel::update(hosts::table.find(laptop)).set(hosts::facts.eq(json!({"os_family": "linux", "arch": "x86_64", "capabilities": capability::ALL, "portal_gui": true}))).execute(&mut db.conn()).unwrap();
     let (st, _) = call(&app, upd(laptop)).await;
     assert_eq!(st, 202);
+    std::thread::sleep(std::time::Duration::from_secs(2));
     let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, laptop).unwrap();
     let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
     assert_eq!(payload["action"]["gui_sha256"], json!(croustypatch_common::crypto::sha256_hex(b"new desktop build")));

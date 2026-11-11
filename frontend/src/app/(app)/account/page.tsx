@@ -3,6 +3,7 @@ import { Copy, Key, Plus } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { Button, Card, ConfirmDialog, Dialog, Empty, Field, Notice, PageHeader, Spinner, Table, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
@@ -14,6 +15,14 @@ export default function Page() {
   const toast = useToast();
   const tokens = useApi<Token[]>('/auth/tokens');
   const act = useAction();
+  const { me, refresh } = useAuth();
+  const [email, setEmail] = useState<string | null>(null);
+  const saveEmail = () => act.run(async () => {
+    await api('PATCH', '/auth/profile', { email: (email ?? me?.email ?? '').trim() });
+    await refresh();
+    setEmail(null);
+    toast.success(t('common.saved'));
+  });
   const [form, setForm] = useState<{ name: string; days: number } | null>(null);
   const [created, setCreated] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<Token | null>(null);
@@ -32,6 +41,17 @@ export default function Page() {
     <>
       <PageHeader title={t('account.title')} subtitle={t('account.subtitle')} />
       <div className="stack stack--lg">
+        <Card title={t('account.profile')}>
+          <form className="stack" onSubmit={(e) => { e.preventDefault(); void saveEmail(); }}>
+            <p className="muted">{t('account.profile.hint')}</p>
+            <div className="form-grid">
+              <Field label={t('account.profile.user')}>{(i) => <TextInput id={i} value={me?.username ?? ''} disabled />}</Field>
+              <Field label={t('account.profile.email')}>{(i) => <TextInput id={i} type="email" autoComplete="email" value={email ?? me?.email ?? ''} placeholder="me@example.org" onChange={(e) => setEmail(e.target.value)} />}</Field>
+            </div>
+            {act.error && !form && <Notice kind="error">{act.error}</Notice>}
+            <div><Button variant="primary" type="submit" disabled={act.pending || email === null}>{t('common.save')}</Button></div>
+          </form>
+        </Card>
         <Card title={t('account.tokens')} actions={<Button variant="primary" icon={<Plus size={16} weight="bold" />} onClick={() => { act.clearError(); setForm({ name: '', days: 90 }); }}>{t('account.token.new')}</Button>}>
           {created && (
             <div className="stack" style={{ marginBottom: 14 }}>

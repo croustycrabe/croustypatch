@@ -25,6 +25,12 @@ struct PolicyOut {
     #[serde(flatten)]
     policy: Policy,
     group_ids: Vec<Uuid>,
+    /// Hosts in the policy's groups.
+    hosts: i64,
+    /// Is the patch window open right now (always true without a window)?
+    in_window: bool,
+    /// The next three patch days.
+    next_runs: Vec<crate::engine::policy::Occurrence>,
 }
 
 pub async fn list_policies(state: web::Data<AppState>, user: AuthUser) -> ApiResult<HttpResponse> {
@@ -37,7 +43,21 @@ pub async fn list_policies(state: web::Data<AppState>, user: AuthUser) -> ApiRes
             for (p, g) in links {
                 m.entry(p).or_default().push(g);
             }
-            Ok(ps.into_iter().map(|p| PolicyOut { group_ids: m.remove(&p.id).unwrap_or_default(), policy: p }).collect::<Vec<_>>())
+            let members: Vec<(Uuid, Uuid)> = crate::schema::host_group_members::table.select((crate::schema::host_group_members::group_id, crate::schema::host_group_members::host_id)).load(c)?;
+            let now = Utc::now();
+            Ok(ps
+                .into_iter()
+                .map(|p| {
+                    let group_ids = m.remove(&p.id).unwrap_or_default();
+                    let hosts = members.iter().filter(|(g, _)| group_ids.contains(g)).map(|(_, h)| *h).collect::<std::collections::HashSet<_>>().len() as i64;
+                    let window = serde_json::from_value::<PolicyDef>(p.definition.clone()).ok().and_then(|d| d.maintenance_window);
+                    let (in_window, next_runs) = match &window {
+                        Some(w) => (w.contains(now), w.upcoming(now, 3)),
+                        None => (true, vec![]),
+                    };
+                    PolicyOut { group_ids, hosts, in_window, next_runs, policy: p }
+                })
+                .collect::<Vec<_>>())
         })
         .await?;
     Ok(HttpResponse::Ok().json(out))
@@ -86,7 +106,7 @@ pub async fn create_policy(state: web::Data<AppState>, user: AuthUser, body: web
                     diesel::insert_into(policy_groups::table).values((policy_groups::policy_id.eq(p.id), policy_groups::group_id.eq(g))).on_conflict_do_nothing().execute(c)?;
                 }
                 audit::record(c, Event::new(&user.username, "policy.created").target("policy", &p.id.to_string()).details(json!({"name": p.name, "groups": b.group_ids, "definition": canonical})).ip(&user.ip))?;
-                Ok(PolicyOut { policy: p, group_ids: b.group_ids })
+                Ok(PolicyOut { policy: p, group_ids: b.group_ids, hosts: 0, in_window: true, next_runs: vec![] })
             })
         })
         .await?;
@@ -116,7 +136,7 @@ pub async fn update_policy(state: web::Data<AppState>, user: AuthUser, path: web
                     diesel::insert_into(policy_groups::table).values((policy_groups::policy_id.eq(id), policy_groups::group_id.eq(g))).on_conflict_do_nothing().execute(c)?;
                 }
                 audit::record(c, Event::new(&user.username, "policy.updated").target("policy", &id.to_string()).details(json!({"name": p.name, "groups": b.group_ids, "definition": canonical, "enabled": p.enabled})).ip(&user.ip))?;
-                Ok(PolicyOut { policy: p, group_ids: b.group_ids })
+                Ok(PolicyOut { policy: p, group_ids: b.group_ids, hosts: 0, in_window: true, next_runs: vec![] })
             })
         })
         .await?;
@@ -149,6 +169,33 @@ pub async fn simulate(state: web::Data<AppState>, user: AuthUser, body: web::Jso
     let b = body.into_inner();
     let def = parse_def(&b.definition)?;
     let out = state.db(move |c| planner::simulate(c, b.host_id, &def)).await?;
+    Ok(HttpResponse::Ok().json(out))
+}
+
+#[derive(Deserialize)]
+pub struct SchedulePreviewBody {
+    window: crate::engine::policy::MaintenanceWindow,
+}
+
+/// POST /policies/preview-schedule — the next patch days of a window being edited, computed by the same code the
+/// planner uses (time zone and daylight saving time included).
+pub async fn preview_schedule(user: AuthUser, body: web::Json<SchedulePreviewBody>) -> ApiResult<HttpResponse> {
+    user.require("policies:read")?;
+    let w = body.into_inner().window;
+    let mut def = PolicyDef::default();
+    def.maintenance_window = Some(w.clone());
+    if let Err(e) = def.validate() {
+        return Ok(HttpResponse::Ok().json(json!({ "valid": false, "error": e, "next": [] })));
+    }
+    let now = Utc::now();
+    Ok(HttpResponse::Ok().json(json!({ "valid": true, "error": null, "open": w.contains(now), "next": w.upcoming(now, 5) })))
+}
+
+/// GET /hosts/{id}/patching — why this host is, or is not, being patched automatically.
+pub async fn host_patching(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
+    user.require("hosts:read")?;
+    let id = path.into_inner();
+    let out = state.db(move |c| planner::explain(c, id, Utc::now())).await?;
     Ok(HttpResponse::Ok().json(out))
 }
 
@@ -324,8 +371,8 @@ pub async fn approve_task(state: web::Data<AppState>, user: AuthUser, path: web:
                     None => None,
                 };
                 let ring: i32 = hosts::table.find(t.host_id).select(hosts::ring).first(c)?;
-                let when = planner::compute_schedule(def.as_ref(), ring, Utc::now());
-                diesel::update(tasks::table.find(t.id)).set((tasks::approved_by.eq(Some(&name)), tasks::scheduled_for.eq(when))).execute(c)?;
+                let sch = planner::schedule_for(def.as_ref(), ring, Utc::now());
+                diesel::update(tasks::table.find(t.id)).set((tasks::approved_by.eq(Some(&name)), tasks::scheduled_for.eq(sch.start), tasks::deadline_at.eq(sch.deadline))).execute(c)?;
                 Ok(())
             })
         })

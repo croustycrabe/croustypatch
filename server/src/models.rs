@@ -153,6 +153,8 @@ pub struct Task {
     pub soak_until: Option<Ts>,
     pub created_at: Ts,
     pub updated_at: Ts,
+    /// An automatic patch must not start after this moment (the end of its patch day).
+    pub deadline_at: Option<Ts>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]

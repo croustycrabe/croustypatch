@@ -9,7 +9,8 @@ mod ai;
 pub(crate) mod compliance_api;
 mod mcp;
 pub mod agent_dist;
-mod notifications;
+pub(crate) mod notifications;
+mod reports;
 mod packages;
 pub mod portal;
 mod fleet;
@@ -37,6 +38,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/auth/me", web::get().to(auth::me))
             .route("/auth/password", web::post().to(auth::change_password))
             .route("/auth/language", web::put().to(auth::set_language))
+            .route("/auth/profile", web::patch().to(auth::update_profile))
             .route("/dashboard/layout", web::get().to(auth::get_layout))
             .route("/dashboard/layout", web::put().to(auth::put_layout))
             .route("/dashboard", web::get().to(system::dashboard))
@@ -81,6 +83,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/notifications/rules/{id}", web::delete().to(notifications::delete_rule))
             .route("/notifications/rules/{id}/digest", web::post().to(notifications::send_digest_now))
             .route("/notifications/history", web::get().to(notifications::history))
+            .route("/reports", web::get().to(reports::list))
+            .route("/reports", web::post().to(reports::create))
+            .route("/reports/preview", web::post().to(reports::preview))
+            .route("/reports/{id}", web::put().to(reports::update))
+            .route("/reports/{id}", web::delete().to(reports::delete))
+            .route("/reports/{id}/send", web::post().to(reports::send_now))
+            .route("/reports/{id}/runs", web::get().to(reports::runs))
             // --- fleet
             .route("/hosts", web::get().to(fleet::list_hosts))
             .route("/hosts/{id}", web::get().to(fleet::get_host))
@@ -104,6 +113,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/policies", web::get().to(patching::list_policies))
             .route("/policies", web::post().to(patching::create_policy))
             .route("/policies/simulate", web::post().to(patching::simulate))
+            .route("/policies/preview-schedule", web::post().to(patching::preview_schedule))
+            .route("/hosts/{id}/patching", web::get().to(patching::host_patching))
             .route("/policies/{id}", web::put().to(patching::update_policy))
             .route("/policies/{id}", web::delete().to(patching::delete_policy))
             .route("/tasks", web::get().to(patching::list_tasks))
@@ -123,6 +134,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/audit", web::get().to(system::list_audit))
             .route("/audit/verify", web::get().to(system::verify_audit)),
     );
+}
+
+/// A plausible e-mail address: one `@`, no spaces, control characters or angle brackets (used for recipients and
+/// profiles; the SMTP server is the real judge).
+pub(crate) fn email_ok(v: &str) -> bool {
+    let v = v.trim();
+    v.len() <= 254 && v.matches('@').count() == 1 && !v.starts_with('@') && !v.ends_with('@') && !v.chars().any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
 }
 
 /// Shared input validation helpers.

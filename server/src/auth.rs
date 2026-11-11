@@ -375,11 +375,39 @@ pub async fn logout(req: HttpRequest, state: web::Data<AppState>, user: AuthUser
     Ok(HttpResponse::NoContent().cookie(session_cookie(String::new(), is_https(&req, &state), 0)).finish())
 }
 
-pub async fn me(user: AuthUser) -> HttpResponse {
-    HttpResponse::Ok().json(json!({
+pub async fn me(state: web::Data<AppState>, user: AuthUser) -> ApiResult<HttpResponse> {
+    let id = user.id;
+    let email: Option<String> = state.db(move |c| Ok(users::table.find(id).select(users::email).first::<Option<String>>(c).optional()?.flatten())).await?;
+    Ok(HttpResponse::Ok().json(json!({
         "id": user.id, "username": user.username, "role": user.role, "permissions": user.permissions,
-        "language": user.language, "must_change_password": user.must_change_password
-    }))
+        "language": user.language, "must_change_password": user.must_change_password, "email": email
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ProfileBody {
+    /// Empty clears the address.
+    email: String,
+}
+
+/// PATCH /auth/profile — a user sets their own e-mail address (used by role-based notifications and as the default
+/// target of test messages).
+pub async fn update_profile(state: web::Data<AppState>, user: AuthUser, body: web::Json<ProfileBody>) -> ApiResult<HttpResponse> {
+    let email = body.into_inner().email.trim().to_string();
+    if !email.is_empty() && !crate::api::email_ok(&email) {
+        return Err(ApiError::bad("not an e-mail address"));
+    }
+    let value: Option<String> = (!email.is_empty()).then_some(email);
+    let (id, name, ip) = (user.id, user.username.clone(), user.ip.clone());
+    state
+        .db(move |c| {
+            c.transaction(|c| {
+                diesel::update(users::table.find(id)).set(users::email.eq(&value)).execute(c)?;
+                audit::record(c, Event::new(&name, "user.profile_updated").target("user", &id.to_string()).details(json!({ "email_set": value.is_some() })).ip(&ip))
+            })
+        })
+        .await?;
+    Ok(HttpResponse::NoContent().finish())
 }
 
 #[derive(Deserialize)]

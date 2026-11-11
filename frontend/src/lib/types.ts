@@ -8,6 +8,7 @@ export interface Me {
   permissions: string[];
   language: Lang;
   must_change_password: boolean;
+  email?: string | null;
 }
 
 export interface Host {
@@ -137,6 +138,32 @@ export interface Probe {
   unit?: string;
 }
 
+/** A patch day: when updates may run. `timezone` (IANA) replaces the fixed offset when set. */
+export interface MaintenanceWindow {
+  days: number[];
+  start: string;
+  end: string;
+  utc_offset_minutes: number;
+  timezone?: string | null;
+  repeat?: 'weekly' | 'monthly_weekday' | 'monthly_day';
+  nth?: number | null;
+  day_of_month?: number | null;
+}
+
+export interface Occurrence { start: string; end: string }
+
+/** Why a host is (not) being patched automatically (GET /hosts/{id}/patching). */
+export interface PatchingExplain {
+  state: 'host_inactive' | 'task_open' | 'no_group' | 'no_policy' | 'out_of_scope' | 'nothing_pending' | 'nothing_matches' | 'already_handled' | 'waiting_for_window' | 'will_plan' | 'needs_approval' | 'blocked';
+  pending: { total: number; security: number };
+  groups: string[];
+  policies: { id: string; name: string; in_scope: boolean; security_only: boolean; matching: number; not_security: number; waived: number; ai: boolean; window: MaintenanceWindow | null }[];
+  chosen: string | null;
+  action: PolicyAction | null;
+  window: { open: boolean; current: Occurrence | null; next: Occurrence[]; config: MaintenanceWindow } | null;
+  open_task: { id: string; kind: string; status: string; scheduled_for: string } | null;
+}
+
 export interface PolicyDef {
   ai_mode_enabled: boolean;
   target_scope: string;
@@ -147,7 +174,7 @@ export interface PolicyDef {
     action: PolicyAction;
   }[];
   default_action: PolicyAction;
-  maintenance_window: { days: number[]; start: string; end: string; utc_offset_minutes: number } | null;
+  maintenance_window: MaintenanceWindow | null;
   rollback: { soak_minutes: number; probes: Probe[]; auto_rollback: boolean; snapshot_required: boolean };
   reboot: { mode: string };
   rings: { delay_minutes: number };
@@ -161,6 +188,10 @@ export interface Policy {
   priority: number;
   definition: PolicyDef;
   group_ids: string[];
+  /** Hosts in the policy's groups. */
+  hosts?: number;
+  in_window?: boolean;
+  next_runs?: Occurrence[];
 }
 
 export interface Vulnerability {

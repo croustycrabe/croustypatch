@@ -18,7 +18,7 @@ fn schedule_respects_window_and_rings() {
     assert_eq!(compute_schedule(Some(&def), 0, now), now);
     def.rings.delay_minutes = 60;
     assert_eq!(compute_schedule(Some(&def), 2, now), now + Duration::minutes(120));
-    def.maintenance_window = Some(MaintenanceWindow { days: vec![], start: "02:00".into(), end: "04:00".into(), utc_offset_minutes: 0 });
+    def.maintenance_window = Some(MaintenanceWindow { days: vec![], start: "02:00".into(), end: "04:00".into(), ..Default::default() });
     assert_eq!(compute_schedule(Some(&def), 0, now), DateTime::parse_from_rfc3339("2026-11-07T02:00:00Z").unwrap());
 }
 
