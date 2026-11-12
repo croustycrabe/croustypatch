@@ -1,5 +1,6 @@
 //! Optional modules (spec docker-pve §1): each is detected on the host and reported in the facts; the server's
 //! module switches (Settings > Modules) decide whether their data is used.
+pub mod aur;
 pub mod docker;
 pub mod helper_scripts;
 pub mod openscap;

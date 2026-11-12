@@ -153,8 +153,11 @@ pub fn retag_requests(pins: &[Container], retag: &std::collections::BTreeMap<Str
 
 /// For the inventory: can the suggested version be applied to this container, and by changing which file? Planned
 /// on the real files without writing anything.
-pub fn retag_hint(c: &Container, all_mounts: &[(String, String)], new_ref: &str) -> Value {
+pub fn retag_hint(c: &Container, all_mounts: &[(String, String)], new_ref: &str, major: bool) -> Value {
     let manual = |reason: String| serde_json::json!({ "mode": "manual", "reason": reason });
+    if major && croustypatch_common::model::is_database_image(&c.image_ref) {
+        return manual(croustypatch_common::model::DATABASE_MAJOR_REASON.to_string());
+    }
     let Some(cp) = &c.compose else { return manual("the container was not started by Docker Compose".into()) };
     let resolved = match resolve_compose(cp, all_mounts, |p| p.exists()) {
         Ok(r) => r,
@@ -249,7 +252,7 @@ pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
         .zip(found)
         .map(|(c, (remote, newer))| {
             // can the suggested version be applied (and by changing which file)? Planned on the real compose files.
-            let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag)));
+            let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag), n.major));
             entry_with(c, remote.as_deref(), newer.as_ref(), apply)
         })
         .collect()

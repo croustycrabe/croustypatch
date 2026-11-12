@@ -447,7 +447,11 @@ async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewT
                         }
                         let tag = latest["tag"].as_str().unwrap_or_default();
                         let new_ref = retag_ref(&image, tag).ok_or_else(|| ApiError::Conflict(format!("{name}: {tag} is not a tag that can be applied to {image}")))?;
-                        if latest.get("major").and_then(|m| m.as_bool()).unwrap_or(false) && !b.allow_major {
+                        let major = latest.get("major").and_then(|m| m.as_bool()).unwrap_or(false);
+                        if major && croustypatch_common::model::is_database_image(&image) {
+                            return Err(ApiError::Conflict(format!("{name}: {}", croustypatch_common::model::DATABASE_MAJOR_REASON)));
+                        }
+                        if major && !b.allow_major {
                             return Err(ApiError::Conflict(format!("{name}: {tag} is a major version change ({image} → {new_ref}): confirm it explicitly (allow_major)")));
                         }
                         retag.insert(p.name.clone(), json!(new_ref));

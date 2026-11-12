@@ -102,6 +102,13 @@ async fn the_docker_menu_lists_containers_and_updates_only_images() {
     let none_open: i64 = tasks::table.filter(tasks::host_id.eq(a)).count().get_result(&mut db.conn()).unwrap();
     assert_eq!(none_open, 0, "other hosts are untouched");
 
+    // an update in progress is shown on the containers that are in it, not on every container of the host
+    let (st, _) = call(&app, TestRequest::post().uri("/api/v1/tasks").cookie(ck.clone()).set_json(json!({"host_ids": [a], "scope": "docker", "packages": ["docker:web"]}))).await;
+    assert!(st.is_success());
+    let (_, only_a) = call(&app, get(&format!("?host={a}"))).await;
+    let busy = |n: &str| only_a["containers"].as_array().unwrap().iter().find(|c| c["name"] == n).unwrap()["open_task"].clone();
+    assert_eq!(busy("web")["status"], json!("queued"), "the container being updated");
+    assert_eq!(busy("db"), Value::Null, "the other container of the same host is not");
     // read access is enough to look, not to update
     let auditor = user_with_role(&app, &ck, "audit1", "auditor").await;
     let (st, _) = call(&app, TestRequest::get().uri("/api/v1/docker").cookie(auditor.clone())).await;
@@ -609,7 +616,8 @@ async fn a_suggested_docker_version_is_applied_to_named_containers_from_what_the
             add_pkg(c, h, name, "docker", &format!("{image} @aaaa"), candidate, meta);
         };
         mk(&mut c, host, "docker:web", "nginx:1.27", "1.29.0", false, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), Some("nginx:1.27 @bbbb"));
-        mk(&mut c, host, "docker:db", "postgres:17-alpine", "18-alpine", true, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), None);
+        mk(&mut c, host, "docker:db", "grafana/grafana:10.4", "11.0", true, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), None);
+        mk(&mut c, host, "docker:pg", "postgres:17-alpine", "18-alpine", true, json!({"mode": "file", "file": "/opt/stacks/site/compose.yaml"}), None);
         mk(&mut c, host, "docker:cache", "redis:7", "7.4", false, json!({"mode": "manual", "reason": "the tag comes from a variable"}), None);
         add_pkg(&mut c, host, "docker:plain", "docker", "busybox:1 @cc", None, json!({"image": "busybox:1"}));
         add_pkg(&mut c, host, "openssl", "system", "3.0", Some("3.1"), json!({}));
@@ -673,10 +681,16 @@ async fn a_suggested_docker_version_is_applied_to_named_containers_from_what_the
     assert!(b["message"].as_str().unwrap().contains("open container task"), "{b}");
     diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
 
+    // a database's major version is never applied this way, confirmed or not: the new image cannot open the old data
+    for allow in [false, true] {
+        let (st, b) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:pg"], "to_latest": true, "allow_major": allow}))).await;
+        assert_eq!(st, 409, "{b}");
+        assert!(b["message"].as_str().unwrap().contains("data migration"), "{b}");
+    }
     // a major version needs the explicit confirmation, then it goes
     let (st, r) = call(&app, post(json!({"host_ids": [host], "scope": "docker", "packages": ["docker:db"], "to_latest": true, "allow_major": true}))).await;
     assert_eq!(st, 202, "{r}");
-    assert_eq!(task_of(host).1["retag"], json!({"docker:db": "postgres:18-alpine"}));
+    assert_eq!(task_of(host).1["retag"], json!({"docker:db": "grafana/grafana:11.0"}));
     diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
 
     // an ordinary container update of the same container pulls the running tag and carries no new image
@@ -691,7 +705,7 @@ async fn a_suggested_docker_version_is_applied_to_named_containers_from_what_the
     // audited with what was asked
     let details: Vec<Value> = audit_log::table.filter(audit_log::action.eq("task.patch_requested")).select(audit_log::details).load(&mut db.conn()).unwrap();
     assert!(details.iter().any(|d| d["retag"] == json!({"docker:web": "nginx:1.29.0"}) && d["allow_major"] == json!(false)), "{details:?}");
-    assert!(details.iter().any(|d| d["retag"] == json!({"docker:db": "postgres:18-alpine"}) && d["allow_major"] == json!(true)));
+    assert!(details.iter().any(|d| d["retag"] == json!({"docker:db": "grafana/grafana:11.0"}) && d["allow_major"] == json!(true)));
     // read-only users cannot
     let auditor = user_with_role(&app, &ck, "audit2", "auditor").await;
     diesel::update(tasks::table).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();

@@ -88,6 +88,11 @@ pub fn check_recipes(r: &Value) -> ApiResult<bool> {
                 let cmd: AppCommand = serde_json::from_value(c.clone()).map_err(|_| ApiError::bad(format!("{k}: a command needs install, uninstall and check")))?;
                 check_script("install", &cmd.install)?;
                 check_script("uninstall", &cmd.uninstall)?;
+                if let Some(croustypatch_common::protocol::LatestVersion::Aur(p)) = &cmd.latest {
+                    if !croustypatch_common::protocol::valid_aur_name(p) {
+                        return Err(ApiError::bad(format!("{k}: latest.aur must be an AUR package name")));
+                    }
+                }
                 if !is_valid_check_path(&cmd.check) {
                     return Err(ApiError::bad(format!("{k}: check must be an absolute path (no ..), e.g. /opt/app/bin/app")));
                 }

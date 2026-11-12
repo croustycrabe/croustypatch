@@ -166,12 +166,10 @@ fn what_to_install_depends_on_the_system() {
     use croustypatch_common::model::PackageManager::*;
     assert_eq!(packages_for(Apt, "Debian GNU/Linux").unwrap().0, vec!["openscap-scanner", "ssg-debian"]);
     assert_eq!(packages_for(Apt, "Ubuntu").unwrap().0, vec!["openscap-scanner", "ssg-debderived"]);
-    let (arch, note) = packages_for(Pacman, "Arch Linux").unwrap();
-    assert_eq!(arch, vec!["openscap"]);
-    assert!(note.unwrap().contains("AUR"), "Arch has no SCAP content in its repositories and says so");
+    assert!(packages_for(Pacman, "Arch Linux").is_none(), "Arch has no SCAP content to install, not even from the AUR: installing the scanner alone would be pointless");
     assert!(packages_for(Pkg, "FreeBSD").is_none() && packages_for(Dnf, "Fedora").is_none());
     assert!(install_hint(Apt, "Debian GNU/Linux").contains("ssg-debian") && !install_hint(Apt, "Debian").contains("dnf"), "the hint follows the host's package manager");
-    assert!(install_hint(Pacman, "Arch").contains("pacman"));
+    assert!(install_hint(Pacman, "Arch").contains("no content for Arch Linux"), "the hint says why, not where to look");
 }
 
 #[test]
@@ -184,14 +182,8 @@ fn openscap_is_installed_before_an_audit_only_when_it_is_missing_and_allowed() {
     assert_eq!(debian(false, false, true), InstallPlan::Install { packages: vec!["openscap-scanner", "ssg-debian"], note: None });
     assert_eq!(debian(true, false, true), InstallPlan::Install { packages: vec!["openscap-scanner", "ssg-debian"], note: None }, "scanner without content: the content is installed too");
     assert!(matches!(install_plan(false, false, true, Apt, "Ubuntu"), InstallPlan::Install { packages, .. } if packages == vec!["openscap-scanner", "ssg-debderived"]));
-    // Arch: only the scanner is in the repositories, and the run says where the rest comes from
-    match install_plan(false, false, true, Pacman, "Arch Linux") {
-        InstallPlan::Install { packages, note } => {
-            assert_eq!(packages, vec!["openscap"]);
-            assert!(note.unwrap().contains("AUR"));
-        }
-        other => panic!("{other:?}"),
-    }
+    // Arch: nothing is installed (the SCAP Security Guide has no Arch benchmark); the audit then says so
+    assert_eq!(install_plan(false, false, true, Pacman, "Arch Linux"), InstallPlan::Nothing);
     // nothing to install on a system without packages for it (FreeBSD, the mock backend of the tests)
     assert_eq!(install_plan(false, false, true, Pkg, "FreeBSD"), InstallPlan::Nothing);
     assert_eq!(install_plan(false, false, true, Unknown, ""), InstallPlan::Nothing);
@@ -347,4 +339,45 @@ fn a_new_major_also_names_the_newest_of_the_running_major() {
     assert_eq!((n.tag.as_str(), n.major, n.same_major), ("v2.6.0", false, None), "nothing more to say when the newest is in the same major");
     assert_eq!(registry::tag_prefix("v3.3.1"), "v");
     assert_eq!(registry::tag_prefix("17-alpine"), "");
+}
+
+#[test]
+fn an_audit_uses_a_profile_the_content_really_has() {
+    use croustypatch_agent::modules::openscap::pick_profile;
+    let p = |s: &str| format!("xccdf_org.ssgproject.content_profile_{s}");
+    // Debian's content has `standard`; Ubuntu's does not (CIS, STIG...), which used to fail with "no such profile"
+    let debian = vec![p("anssi_np_nt28_average"), p("standard")];
+    let ubuntu = vec![p("cis_level2_workstation"), p("cis_level1_server"), p("cis_level1_workstation"), p("stig")];
+    assert_eq!(pick_profile("", &debian).unwrap(), p("standard"));
+    assert_eq!(pick_profile("", &ubuntu).unwrap(), p("cis_level1_server"), "the closest common one when standard is missing");
+    assert_eq!(pick_profile("", &[p("x_only")]).unwrap(), p("x_only"), "else the first it has");
+    assert_eq!(pick_profile(&p("stig"), &ubuntu).unwrap(), p("stig"));
+    let e = pick_profile(&p("standard"), &ubuntu).unwrap_err();
+    assert!(e.contains("does not exist") && e.contains("cis_level1_server") && e.contains("stig"), "an explicit choice that does not exist names the ones that do: {e}");
+    // when the content could not be listed the request is trusted
+    assert_eq!(pick_profile("", &[]).unwrap(), p("standard"));
+    assert_eq!(pick_profile("custom_thing", &[]).unwrap(), "custom_thing");
+}
+
+#[test]
+fn an_aur_update_is_read_from_the_rpc_answer_and_names_are_checked() {
+    use croustypatch_agent::modules::aur::{parse_version, valid_name};
+    let rpc = serde_json::json!({ "resultcount": 1, "results": [{ "Name": "visual-studio-code-bin", "Version": "1.146.0-1" }], "type": "multiinfo", "version": 5 });
+    assert_eq!(parse_version(&rpc).as_deref(), Some("1.146.0-1"));
+    assert_eq!(parse_version(&serde_json::json!({ "resultcount": 0, "results": [] })), None, "a package that is not in the AUR");
+    assert_eq!(parse_version(&serde_json::json!({ "results": [{ "Version": "" }] })), None);
+    assert!(valid_name("visual-studio-code-bin") && valid_name("libc++-git") && !valid_name("") && !valid_name("-x") && !valid_name("a b") && !valid_name("a;b") && !valid_name("A") && !valid_name("../x"));
+}
+
+#[tokio::test]
+async fn the_app_list_says_when_a_command_app_has_a_newer_version() {
+    // an app with no version source, or that is not installed, is left exactly as it was
+    let mut v = serde_json::json!({ "apps": [
+        { "name": "Plain", "command": { "install": "x", "uninstall": "y", "check": "/usr/bin/x" }, "local": { "present": 1, "total": 1, "missing": [] } },
+        { "name": "Absent", "command": { "install": "x", "uninstall": "y", "check": "/usr/bin/y", "latest": { "aur": "visual-studio-code-bin" } }, "local": { "present": 0, "total": 1, "missing": ["/usr/bin/y"] } },
+        { "name": "Packages", "packages": ["git"], "local": { "present": 1, "total": 1, "missing": [] } },
+    ] });
+    let before = v.clone();
+    croustypatch_agent::portal::annotate_updates(&mut v).await;
+    assert_eq!(v, before, "no lookup, no change");
 }

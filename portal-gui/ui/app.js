@@ -5,7 +5,7 @@ import { ICONS } from './icons.js';
 const FR = {
   title: 'Portail applicatif', host: 'Machine {h} · demandes au nom de votre compte', all: 'Toutes', search: 'Rechercher une application',
   refresh: 'Actualiser', present: 'Présent', partial: 'Partiel {p}/{t}', available: 'Disponible', working: 'En cours…',
-  install: 'Installer', uninstall: 'Désinstaller', complete: 'Compléter', cancel: 'Annuler',
+  install: 'Installer', uninstall: 'Désinstaller', complete: 'Compléter', cancel: 'Annuler', update: 'Mettre à jour', update_avail: 'Mise à jour {v}', confirm_update: 'Mettre à jour {n} ?',
   confirm_install: 'Installer {n} ?', confirm_uninstall: 'Désinstaller {n} ?', confirm_complete: 'Compléter {n} ?',
   packages: 'Paquets installés par le gestionnaire du système :', command: 'L’administrateur a prévu cette commande, exécutée par l’agent :',
   check: 'Vérifié ensuite : {p} doit être utilisable par votre compte.', missing: 'Manquants : {m}',
@@ -28,7 +28,7 @@ const FR = {
 const EN = {
   title: 'App center', host: 'Machine {h} · requests made as your account', all: 'All', search: 'Search an application',
   refresh: 'Refresh', present: 'Present', partial: 'Partial {p}/{t}', available: 'Available', working: 'Working…',
-  install: 'Install', uninstall: 'Uninstall', complete: 'Complete', cancel: 'Cancel',
+  install: 'Install', uninstall: 'Uninstall', complete: 'Complete', cancel: 'Cancel', update: 'Update', update_avail: 'Update {v}', confirm_update: 'Update {n}?',
   confirm_install: 'Install {n}?', confirm_uninstall: 'Uninstall {n}?', confirm_complete: 'Complete {n}?',
   packages: 'Packages installed by the system’s package manager:', command: 'Your administrator set up this command, run by the agent:',
   check: 'Checked afterwards: {p} must be usable by your account.', missing: 'Missing: {m}',
@@ -198,7 +198,7 @@ function ask(a, action) {
     if (action === 'complete' && a.local?.missing?.length) body.append(el('p', { class: 'muted' }, t('missing', { m: a.local.missing.join(', ') })));
   }
   const yes = $('confirm-yes');
-  yes.textContent = t(removing ? 'uninstall' : action === 'complete' ? 'complete' : 'install');
+  yes.textContent = t(removing ? 'uninstall' : action === 'complete' ? 'complete' : action === 'update' ? 'update' : 'install');
   yes.className = `btn ${removing ? 'btn--danger' : 'btn--primary'}`;
   $('confirm-no').textContent = t('cancel');
   d.onclose = () => { if (d.returnValue === 'ok') void send(a, removing ? 'uninstall' : 'install'); };
@@ -233,6 +233,8 @@ function card(a, locked) {
   if (!pending) {
     const dis = locked || S.busy;
     if (p !== 'present') actions.append(el('button', { class: 'btn btn--primary btn--sm', type: 'button', disabled: dis, onclick: () => ask(a, p === 'partial' ? 'complete' : 'install') }, icon('download'), t(p === 'partial' ? 'complete' : 'install')));
+    // software installed by a command is not in the package manager's update list: the agent says when its source has a newer version
+    if (p === 'present' && a.local?.update) actions.append(el('button', { class: 'btn btn--primary btn--sm', type: 'button', disabled: dis, onclick: () => ask(a, 'update') }, icon('refresh'), t('update')));
     if (p !== 'absent') actions.append(el('button', { class: 'btn btn--outline btn--sm', type: 'button', disabled: dis, onclick: () => ask(a, 'uninstall') }, icon('trash'), t('uninstall')));
   }
   const what = a.kind === 'command'
@@ -241,10 +243,10 @@ function card(a, locked) {
   return el('article', { class: `card${pending ? ' card--busy' : ''}`, 'data-app': a.name },
     el('div', { class: 'card__head' },
       appIcon(a),
-      el('div', {}, el('div', { class: 'card__name' }, a.name), el('div', { class: 'card__sub' }, [a.category, a.version].filter(Boolean).join(' · ')))),
+      el('div', {}, el('div', { class: 'card__name' }, a.name), el('div', { class: 'card__sub' }, [a.category, a.version || a.local?.installed_version].filter(Boolean).join(' · ')))),
     a.description ? el('p', { class: 'card__desc' }, a.description) : el('p', { class: 'card__desc' }),
     what,
-    el('div', { class: 'card__foot' }, badge, actions));
+    el('div', { class: 'card__foot' }, badge, !pending && p === 'present' && a.local?.update ? el('span', { class: 'badge badge--warn' }, icon('warn'), t('update_avail', { v: a.local.latest_version })) : null, actions));
 }
 
 function render() {

@@ -249,3 +249,14 @@ services:
     let (_, out) = one(stack, "studio", "supabase/studio:2026.10.12-sha-3699278", "supabase/studio:2026.11.1").unwrap();
     assert!(out.contains("supabase/studio:2026.11.1") && out.contains("image: not-an-image-line-either"));
 }
+
+#[test]
+fn databases_are_recognised_by_their_repository_not_their_tag() {
+    use croustypatch_common::model::is_database_image;
+    for db in ["postgres:17-alpine", "docker.io/library/postgres:17", "ghcr.io/immich-app/postgres:16-vectorchord1.1.1", "supabase/postgres:17.6.1.136", "mariadb:11", "mysql:8.4", "mongo:7", "clickhouse/clickhouse-server:24.8", "localhost:5000/team/postgresql:15", "timescale/timescaledb:2.17.0-pg16", "influxdb:2.7", "opensearchproject/opensearch:2"] {
+        assert!(is_database_image(db), "{db}");
+    }
+    for other in ["nginx:1.27", "ghcr.io/immich-app/immich-server:v3.3.1", "grafana/grafana:10.4", "redis:7", "dpage/pgadmin4:9.18", "postgrest/postgrest:v14.18", "valkey/valkey:8-bookworm", "traefik:v3.1"] {
+        assert!(!is_database_image(other), "{other}");
+    }
+}

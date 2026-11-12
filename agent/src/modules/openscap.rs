@@ -122,8 +122,9 @@ pub fn packages_for(kind: PackageManager, distro: &str) -> Option<(Vec<&'static 
     match kind {
         // Debian ships its own content (ssg-debian); Ubuntu and the other derivatives use ssg-debderived.
         PackageManager::Apt => Some((vec!["openscap-scanner", if d.starts_with("debian") { "ssg-debian" } else { "ssg-debderived" }], None)),
-        // The SCAP Security Guide is not in Arch's repositories (it is in the AUR, which an agent running as root must not build).
-        PackageManager::Pacman => Some((vec!["openscap"], Some("the SCAP Security Guide content is not in the Arch repositories: install the AUR package scap-security-guide as a normal user, or put a datastream in /usr/share/xml/scap/ssg/content"))),
+        // Arch has openscap but no SCAP content: the SCAP Security Guide has no benchmark for Arch Linux at all (not in
+        // the repositories, and not in the AUR package either), so there is nothing useful to install.
+        PackageManager::Pacman => None,
         _ => None,
     }
 }
@@ -149,10 +150,41 @@ pub fn install_plan(have_oscap: bool, have_content: bool, auto_install: bool, ki
 }
 
 /// How an administrator installs what is missing on this system (for the error messages).
+/// The profile used when none is chosen: the first of these that the content has.
+pub const DEFAULT_PROFILE: &str = "xccdf_org.ssgproject.content_profile_standard";
+const PREFERRED: &[&str] = &["standard", "cis_level1_server", "cis", "cis_level2_server", "anssi_bp28_enhanced", "stig"];
+
+fn list_some(ids: &[String]) -> String {
+    let short = |i: &String| i.replace("xccdf_org.ssgproject.content_profile_", "");
+    let mut v: Vec<String> = ids.iter().take(12).map(short).collect();
+    if ids.len() > 12 {
+        v.push(format!("… ({} in all)", ids.len()));
+    }
+    v.join(", ")
+}
+
+/// The profile to audit with: the one asked for if the content has it (an error naming the ones it has otherwise), or,
+/// when none was asked for, the most common one it has. `available` empty means it could not be listed: trust the request.
+pub fn pick_profile(requested: &str, available: &[String]) -> Result<String, String> {
+    let requested = requested.trim();
+    if available.is_empty() {
+        return Ok(if requested.is_empty() { DEFAULT_PROFILE.to_string() } else { requested.to_string() });
+    }
+    if !requested.is_empty() {
+        return if available.iter().any(|a| a == requested) { Ok(requested.to_string()) } else { Err(format!("profile {requested} does not exist in this SCAP content; it has: {}", list_some(available))) };
+    }
+    let has = |short: &str| available.iter().find(|a| a.as_str() == format!("xccdf_org.ssgproject.content_profile_{short}"));
+    Ok(PREFERRED.iter().find_map(|p| has(p)).unwrap_or(&available[0]).clone())
+}
+
+/// Said on Arch, where an audit has nothing to run: the SCAP Security Guide has no benchmark for Arch Linux.
+pub const ARCH_NO_CONTENT: &str = "the SCAP Security Guide has no content for Arch Linux (its benchmarks cover Debian, Ubuntu, Red Hat and similar systems), so audits are not available on this system unless you put a datastream of your own in /usr/share/xml/scap/ssg/content";
+
 pub fn install_hint(kind: PackageManager, distro: &str) -> String {
-    match packages_for(kind, distro) {
-        Some((p, _)) => format!("install {} with the system's package manager ({})", p.join(" and "), kind.as_str()),
-        None => "OpenSCAP is not available for this system".to_string(),
+    match (packages_for(kind, distro), kind) {
+        (Some((p, _)), _) => format!("install {} with the system's package manager ({})", p.join(" and "), kind.as_str()),
+        (None, PackageManager::Pacman) => ARCH_NO_CONTENT.to_string(),
+        (None, _) => "OpenSCAP is not available for this system".to_string(),
     }
 }
 
@@ -181,20 +213,33 @@ pub async fn info(distro_hint: &str) -> Option<OpenScapInfo> {
 }
 
 pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, tailoring: Option<&Tailoring>, distro_hint: &str, kind: PackageManager, distro: &str, log: &TaskLog) -> Result<ComplianceReport> {
+    let content = find_datastream(Path::new(CONTENT_DIR), distro_hint);
+    if kind == PackageManager::Pacman && content.is_none() {
+        bail!("{ARCH_NO_CONTENT}");
+    }
     if !available() {
         bail!("oscap is not installed: {}", install_hint(kind, distro));
     }
-    let ds = find_datastream(Path::new(CONTENT_DIR), distro_hint).ok_or_else(|| {
-        let note = packages_for(kind, distro).and_then(|(_, n)| n).map(|n| format!(": {n}")).unwrap_or_else(|| format!(" in {CONTENT_DIR} ({})", install_hint(kind, distro)));
-        anyhow::anyhow!("no SCAP Security Guide content{note}")
-    })?;
+    let ds = content.ok_or_else(|| anyhow::anyhow!("no SCAP Security Guide content in {CONTENT_DIR} ({})", install_hint(kind, distro)))?;
     let dss = ds.to_string_lossy().to_string();
     if !distro_hint.is_empty() && !dss.contains(&distro_hint.to_ascii_lowercase()) {
         log.line(format!("note: there is no SCAP content for {distro_hint} in {CONTENT_DIR}; using {} (the closest release). Rules written for another release often report \"not applicable\".", ds.file_name().and_then(|n| n.to_str()).unwrap_or("")));
     }
-    let mut profile = if profile.trim().is_empty() { "xccdf_org.ssgproject.content_profile_standard".to_string() } else { profile.trim().to_string() };
+    // The profiles this content really has: `standard` exists in Debian's, not in Ubuntu's (CIS, STIG…).
+    let available: Vec<String> = info(distro_hint).await.map(|i| i.profiles.into_iter().map(|p| p.id).collect()).unwrap_or_default();
+    let wanted = profile.trim();
+    let mut profile = if wanted.is_empty() { DEFAULT_PROFILE.to_string() } else { wanted.to_string() };
     if !valid_id(&profile) {
         bail!("invalid profile id");
+    }
+    if tailoring.is_none() {
+        let chosen = pick_profile(wanted, &available).map_err(|e| anyhow::anyhow!(e))?;
+        if chosen != profile {
+            log.line(format!("this content has no {profile}: auditing with {chosen}"));
+        }
+        profile = chosen;
+    } else if let Some(t) = tailoring.filter(|t| !available.is_empty() && !available.contains(&t.base)) {
+        bail!("the base profile {} of the custom profile does not exist in this content; available: {}", t.base, list_some(&available));
     }
     let mut label = profile.clone();
     let mut tailoring_file: Option<String> = None;

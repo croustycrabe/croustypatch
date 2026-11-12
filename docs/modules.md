@@ -121,6 +121,7 @@ narrow, and the agent decides it on the real file, not the server:
   Containers of one file are edited together, and a file that already says the new tag only has its container recreated.
 - the original text is kept in the task's restore point; it is put back only if the file still is what the update
   wrote, never over a change somebody made since (the rollback then says so and the old tag is restored by hand).
+- a **database**'s major version is **never** applied this way, confirmed or not (`postgres`, `mariadb`, `mysql`, `mongo`, immich's and supabase's Postgres images, ...): the new image cannot open the old data directory, so it needs a dump and restore or `pg_upgrade`. A real attempt on `hoppscotch-db` (17 to 18) did roll back cleanly (file and image put back), which is why it is now refused upfront. Minor and patch versions of a database are fine. The agent says `manual` with that reason and the server refuses a request for it.
 - a **major** version (the first number goes up: a database's next major, `v3` to `v4`) is refused unless the request
   says `allow_major`; the page shows a warning about migrations and keeps the button off until it is acknowledged.
 - an agent without the `docker_retag` capability is never sent a version change (it would pull the tag it already has
@@ -170,7 +171,7 @@ automatically* (on by default) switches that off: the audit then fails with the 
 | --- | --- | --- |
 | Debian | `openscap-scanner`, `ssg-debian` | content for several Debian releases; the one matching the host is used, else the newest |
 | Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04 only; see *No applicable rule* below for 26.04 |
-| Arch | `openscap` | the SSG content is **not** in the repositories (AUR `scap-security-guide`): the audit says so; put a datastream in `/usr/share/xml/scap/ssg/content` |
+| Arch | nothing | the SCAP Security Guide has no benchmark for Arch Linux (it is neither in the repositories nor in the AUR package), so installing the scanner alone would be pointless: the audit says so; put a datastream of your own in `/usr/share/xml/scap/ssg/content` to audit anyway |
 | other | nothing | the audit explains what to install |
 
 The agent reports what it found (`openscap` in the host's facts: oscap version, the datastream it will use and that
@@ -185,6 +186,8 @@ host tab and the Compliance page say *no rule applies to this machine* instead o
 content was chosen (the exact release if present, else the newest of the same distribution). Until content for the
 release exists, put a datastream for it in `/usr/share/xml/scap/ssg/content` (the agent prefers the file named for the
 host's release).
+
+**Default profile (0.7.5).** When none is chosen the agent uses `standard` if the content has it (Debian's does), otherwise the closest common one that it has (Ubuntu's content has CIS and STIG profiles, not `standard`: `cis_level1_server`), and logs the choice. A profile that is chosen but does not exist in the content is refused with the list of those that do; before 0.7.5 that failed with oscap's own "no such profile" error.
 
 **Profiles.** Each host has its own audit profile (*Compliance* tab, `PATCH /api/v1/hosts/{id}` with
 `{"compliance_profile": …}`): empty (the fleet default of *Compliance > Audit settings*, else the SSG `standard`
@@ -333,7 +336,7 @@ anything runs, a progress bar and a notification log. French or English and ligh
   root-run install script and the launcher pinned by SHA-256 (read on 2026-11-11), sources only from
   `update.code.visualstudio.com` and a few suspicious words refused; if the package changes, the install stops with the
   reason and the recipe has to be reviewed. It refuses to run when Code - OSS is installed (the two conflict) and
-  there is no automatic update (install again to rebuild the latest). The open-source build is its own suggestion,
+  there is no automatic update, but the desktop app center **says when one is available** (0.7.5): a command recipe can name where its latest version is published (`"latest": {"aur": "visual-studio-code-bin"}`), the agent compares pacman's installed version with the AUR's (`vercmp`, asked at most hourly) and the card shows *Update 1.146.0* with an **Update** button, which runs the install again (it rebuilds the latest). Software installed by a command is otherwise invisible to the package manager's update list. Apps already in the catalog keep the recipe they were added with: remove and add VS Code again to get the new one. The open-source build is its own suggestion,
   **Code - OSS** (Arch only: the repository package `code`; Debian and Ubuntu have none). **Zed** on Debian and Ubuntu uses
   Zed's official release archive (the one its own installer downloads), read completely before anything is replaced,
   unpacked as `root:root` into `/opt/zed.app` with `/usr/local/bin/zed`, a menu entry and an icon; it has no

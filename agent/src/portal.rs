@@ -69,6 +69,25 @@ pub fn annotate_local(view: &mut Value, installed: &std::collections::HashSet<St
     }
 }
 
+/// For command apps that say where their latest version is published: what is installed, what is the latest, and
+/// whether an update is available (`local.installed_version`, `local.latest_version`, `local.update`). Quiet when the
+/// lookup fails: the app is then shown as before.
+pub async fn annotate_updates(view: &mut Value) {
+    use croustypatch_common::protocol::LatestVersion;
+    let Some(apps) = view.get_mut("apps").and_then(|a| a.as_array_mut()) else { return };
+    for app in apps {
+        let Some(LatestVersion::Aur(pkg)) = app.get("command").and_then(|c| c.get("latest")).and_then(|l| serde_json::from_value::<LatestVersion>(l.clone()).ok()) else { continue };
+        if app.pointer("/local/present").and_then(|p| p.as_u64()) != Some(1) {
+            continue;
+        }
+        let (Some(have), Ok(latest)) = (crate::modules::aur::installed(&pkg).await, crate::modules::aur::latest(&pkg).await) else { continue };
+        let newer = crate::modules::aur::is_newer(&latest, &have).await;
+        app["local"]["installed_version"] = json!(have);
+        app["local"]["latest_version"] = json!(latest);
+        app["local"]["update"] = json!(newer);
+    }
+}
+
 /// Group id of a group name, from /etc/group.
 pub fn group_id(group: &str, groups: &str) -> Option<u32> {
     groups.lines().find_map(|l| {
@@ -133,6 +152,7 @@ impl Relay {
                             // Command apps: usable by the person at the keyboard, not just present for root.
                             let target = crate::app_command::lookup(user).await.unwrap_or(crate::app_command::Target { name: user.to_string(), uid, gid: u32::MAX - 1, groups: vec![], home: String::new() });
                             annotate_local(&mut v, &names, |p| crate::app_command::usable_by(Path::new(p), &target).is_ok());
+                            annotate_updates(&mut v).await;
                         }
                     }
                     Ok(v)

@@ -403,6 +403,23 @@ pub struct AppCommand {
     /// Absolute path that exists once the app is installed. It must be usable by the user who asked
     /// (or by every user when the request came from the web UI).
     pub check: String,
+    /// Where to find out that a newer version exists. Software installed by a command is not in the package manager's
+    /// update list, so without this the app center cannot say that an update is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<LatestVersion>,
+}
+
+/// An AUR package name as the AUR spells it (what may end up in a request URL and a pacman command).
+pub fn valid_aur_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 100 && !n.starts_with(['-', '.']) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '@' | '.' | '_' | '+' | '-'))
+}
+
+/// Where the latest version of a command-installed application is published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LatestVersion {
+    /// An AUR package (Arch): the installed version is what pacman says, the latest is what the AUR says.
+    Aur(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

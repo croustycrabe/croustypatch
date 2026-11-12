@@ -38,13 +38,13 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
     label: 'nav.group.governance',
     items: [
       { href: '/compliance', key: 'nav.compliance', perm: 'hosts:read', icon: SealCheck },
-      { href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText },
     ],
   },
   {
     label: 'nav.group.admin',
     items: [
       { href: '/enrollment', key: 'nav.enrollment', perm: 'enrollment:read', icon: Key },
+      { href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText },
       { href: '/users', key: 'nav.users', perm: 'users:read', icon: UserGear },
       { href: '/notifications', key: 'nav.notifications', perm: 'settings:read', icon: Bell },
       { href: '/settings', key: 'nav.settings', perm: 'settings:read', icon: Gear },

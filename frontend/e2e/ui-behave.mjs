@@ -551,7 +551,7 @@ check('a compliance task is created and answered by the agent', await p.locator(
   const meta = (image, latest) => JSON.stringify({ image, state: 'running', latest }).replace(/'/g, "''");
   sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values
     ('${h}','docker:zz-apply','docker','nginx:1.27 @aaaa',null,'${meta('nginx:1.27', { tag: '1.29.0', major: false, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
-    ('${h}','docker:zz-major','docker','postgres:17-alpine @bbbb',null,'${meta('postgres:17-alpine', { tag: '18-alpine', major: true, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
+    ('${h}','docker:zz-major','docker','grafana/grafana:10.4 @bbbb',null,'${meta('grafana/grafana:10.4', { tag: '11.0', major: true, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
     ('${h}','docker:zz-manual','docker','redis:7 @cccc',null,'${meta('redis:7', { tag: '7.4', major: false, same_major: null, apply: { mode: 'manual', reason: 'l’étiquette vient d’une variable' } })}')`);
   const openTasks = () => sql(`update tasks set status='failed' where host_id='${h}' and kind='docker' and status in ('queued','pending_approval','running')`);
   const retagOf = () => sql(`select exec->'retag' from tasks where host_id='${h}' and kind='docker' and exec ? 'retag' order by created_at desc limit 1`);
@@ -574,11 +574,11 @@ check('a compliance task is created and answered by the agent', await p.locator(
   // a major version stays locked until it is acknowledged
   await p.goto(`${BASE}/docker/`); await p.fill('input[type=search]', 'zz-'); await p.waitForSelector('.tbl tbody tr:has-text("zz-major")');
   await row('zz-major').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
-  check('a major version change warns about migrations and keeps the button off until it is acknowledged', (await p.locator('dialog[open]').textContent()).includes('Changement de version majeure') && await p.locator('dialog[open] button:has-text("Appliquer 18-alpine")').isDisabled());
+  check('a major version change warns about migrations and keeps the button off until it is acknowledged', (await p.locator('dialog[open]').textContent()).includes('Changement de version majeure') && await p.locator('dialog[open] button:has-text("Appliquer 11.0")').isDisabled());
   await p.check('dialog[open] input[type=checkbox]');
-  check('acknowledging enables it', await p.locator('dialog[open] button:has-text("Appliquer 18-alpine")').isEnabled());
-  await p.click('dialog[open] button:has-text("Appliquer 18-alpine")'); await p.waitForSelector('.toast');
-  check('and the major change goes through, with the confirmation recorded', retagOf() === '{"docker:zz-major": "postgres:18-alpine"}' && sql(`select details->>'allow_major' from audit_log where action='task.patch_requested' order by seq desc limit 1`) === 'true');
+  check('acknowledging enables it', await p.locator('dialog[open] button:has-text("Appliquer 11.0")').isEnabled());
+  await p.click('dialog[open] button:has-text("Appliquer 11.0")'); await p.waitForSelector('.toast');
+  check('and the major change goes through, with the confirmation recorded', retagOf() === '{"docker:zz-major": "grafana/grafana:11.0"}' && sql(`select details->>'allow_major' from audit_log where action='task.patch_requested' order by seq desc limit 1`) === 'true');
   openTasks();
   sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
 }

@@ -68,7 +68,7 @@ async fn install_is_checked_against_the_asking_user() {
     let path = dir.path().join("bin");
     let real = Runner { dry_run: false };
     let log = TaskLog::default();
-    let cmd = |install: &str| AppCommand { install: install.into(), uninstall: format!("rm -f {}", path.display()), check: path.display().to_string() };
+    let cmd = |install: &str| AppCommand { install: install.into(), uninstall: format!("rm -f {}", path.display()), check: path.display().to_string(), latest: None };
 
     // umask 022: what the command creates is usable by everyone
     let ok = cmd(&format!("printf '#!/bin/sh\\n' > {p}; chmod +x {p}", p = path.display()));
@@ -87,7 +87,7 @@ async fn install_is_checked_against_the_asking_user() {
     let msg = app_command::run(&real, &ok, false, &Target::everyone(), &log).await.unwrap();
     assert_eq!(msg, "uninstalled");
     assert!(!path.exists());
-    let leaves = AppCommand { install: "true".into(), uninstall: "true".into(), check: dir.path().display().to_string() };
+    let leaves = AppCommand { install: "true".into(), uninstall: "true".into(), check: dir.path().display().to_string(), latest: None };
     assert!(app_command::run(&real, &leaves, false, &Target::everyone(), &log).await.unwrap_err().to_string().contains("still there"));
 
     let dry = Runner { dry_run: true };

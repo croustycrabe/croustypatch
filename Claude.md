@@ -22,7 +22,8 @@
 ├── frontend/             # React / Next.js management interface
 ├── docs/                 # Technical specifications (.md files)
 └── docker/               # Containerization & deployment assets
-'''
+```
+
 ## ⚙️ Development Commands
 Backend (Rust)
 
@@ -68,6 +69,13 @@ All specification about the project can be found undert the /sepcs directory. al
 - specs/eco.md: all about the eco mode features for laptop usages
 - specs/auth.md : all about the autheications features
 
+specs can be updated with my validation
+
 ## Testing
 
 Add all unit and integration test in a /test folder for every crate. Follow the rust convention regarding tests.
+
+## documentation
+
+in the /docs update every features you add form a technical aspect
+maintain a changlog.md to trace every changes

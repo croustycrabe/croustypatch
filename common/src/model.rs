@@ -132,3 +132,25 @@ pub fn pick_recipe<'a>(recipes: &'a serde_json::Value, package_manager: &str) ->
 pub fn is_valid_check_path(s: &str) -> bool {
     s.starts_with('/') && s.len() <= 255 && !s.split('/').any(|c| c == "..") && s.chars().all(|c| !c.is_control()) && !s.contains('\0')
 }
+
+/// Is this image a database or a data store whose major version changes the on-disk format? Moving such an image to
+/// another major (`postgres:17` to `postgres:18`) needs a data migration (dump and restore, `pg_upgrade`): the new
+/// image cannot open the old data directory, so a tag change is never enough and is not offered. Minor and patch
+/// versions of the same major are fine. Matched on the repository name, ignoring the registry and the tag.
+pub fn is_database_image(image: &str) -> bool {
+    // whole words of the repository name: `postgres` is a database, `postgrest` (an API server) and `pgadmin4` are not
+    const WORDS: &[&str] = &[
+        "postgres", "postgresql", "postgis", "pgvector", "pgvecto", "vectorchord", "timescale", "timescaledb", "mariadb", "mysql", "percona", "mongo", "mongodb", "cockroach", "cockroachdb",
+        "clickhouse", "influxdb", "couchdb", "cassandra", "scylla", "scylladb", "neo4j", "elasticsearch", "opensearch", "mssql",
+    ];
+    let repo = image.split('@').next().unwrap_or(image);
+    let repo = match repo.rfind(':') {
+        Some(i) if repo.rfind('/').is_none_or(|s| i > s) => &repo[..i],
+        _ => repo,
+    };
+    let repo = repo.to_ascii_lowercase();
+    repo.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| WORDS.contains(&w))
+}
+
+/// The reason given when a database's major version is not applied automatically.
+pub const DATABASE_MAJOR_REASON: &str = "a database's major version needs a data migration (dump and restore, or pg_upgrade): the new image cannot open the old data, so it is not applied automatically";

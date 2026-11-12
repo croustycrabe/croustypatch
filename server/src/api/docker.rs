@@ -46,10 +46,15 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
                 .select((hosts::id, hosts::hostname, host_packages::name, host_packages::version, host_packages::candidate, host_packages::meta))
                 .limit(2000)
                 .load(c)?;
-            // A container update already queued or running on a host.
-            let open: Vec<(Uuid, Uuid, String)> = tasks::table.filter(tasks::kind.eq("docker")).filter(tasks::status.eq_any(OPEN)).select((tasks::host_id, tasks::id, tasks::status)).load(c)?;
-            let open: HashMap<Uuid, (Uuid, String)> = open.into_iter().map(|(h, id, st)| (h, (id, st))).collect();
-            // `meta.latest`: {tag, major, same_major}, a newer version the registry offers (informational).
+            // The containers a queued or running container task is about: its own packages, not every container of the host
+            // (one task at a time runs per host, but only the containers in it are being updated).
+            let open: Vec<(Uuid, Uuid, String, Value)> = tasks::table.filter(tasks::kind.eq("docker")).filter(tasks::status.eq_any(OPEN)).select((tasks::host_id, tasks::id, tasks::status, tasks::packages)).load(c)?;
+            let mut busy: HashMap<(Uuid, String), (Uuid, String)> = HashMap::new();
+            for (h, id, st, pk) in open {
+                for name in pk.as_array().into_iter().flatten().filter_map(|p| p.get("name").and_then(|n| n.as_str())) {
+                    busy.insert((h, name.to_string()), (id, st.clone()));
+                }
+            }
             let has_newer = |r: &Row| r.5.get("latest").is_some_and(|l| l.get("tag").is_some_and(|t| t.is_string()));
             let with_newer = rows.iter().filter(|r| has_newer(r)).count();
             let rows: Vec<Row> = if q.newer == Some(true) { rows.into_iter().filter(|r| has_newer(r)).collect() } else { rows };
@@ -70,7 +75,7 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
                         })),
                         "project": meta.get("project").cloned().unwrap_or(Value::Null), "service": meta.get("service").cloned().unwrap_or(Value::Null),
                         "state": meta.get("state").cloned().unwrap_or(Value::Null), "health": meta.get("health").cloned().unwrap_or(Value::Null), "started_at": meta.get("started_at").cloned().unwrap_or(Value::Null),
-                        "open_task": open.get(&host_id).map(|(id, st)| json!({ "id": id, "status": st })),
+                        "open_task": busy.get(&(host_id, name.clone())).map(|(id, st)| json!({ "id": id, "status": st })),
                     })
                 })
                 .collect();
