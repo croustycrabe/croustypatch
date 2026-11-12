@@ -98,7 +98,13 @@ fn run_admin(cfg: &Config, action: AdminAction) -> Result<()> {
 
 #[actix_web::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,actix_server=warn".into())).init();
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,actix_server=warn".into());
+        // standard output as before, plus a copy of the lines that matter for Administration > Logs
+        tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).with(croustypatch_server::logs::CaptureLayer).init();
+    }
     // rustls needs a process-wide provider for the (TLS 1.3-only) server config.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 

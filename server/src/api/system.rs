@@ -61,6 +61,20 @@ pub async fn list_audit(state: web::Data<AppState>, user: AuthUser, q: web::Quer
     Ok(HttpResponse::Ok().json(rows))
 }
 
+/// Administration > Logs: tasks, notifications, reports and the server's own lines, newest first.
+pub async fn list_logs(state: web::Data<AppState>, user: AuthUser, q: web::Query<crate::logs::LogQuery>) -> ApiResult<HttpResponse> {
+    user.require("audit:read")?;
+    let q = q.into_inner();
+    if !q.source.is_empty() && !crate::logs::SOURCES.contains(&q.source.as_str()) {
+        return Err(crate::error::ApiError::bad("source must be tasks, notifications, reports or server"));
+    }
+    if !matches!(q.level.as_str(), "" | "warn" | "error") {
+        return Err(crate::error::ApiError::bad("level must be warn or error"));
+    }
+    let rows = state.db(move |c| crate::logs::query(c, &q)).await?;
+    Ok(HttpResponse::Ok().json(rows))
+}
+
 pub async fn verify_audit(state: web::Data<AppState>, user: AuthUser) -> ApiResult<HttpResponse> {
     user.require("audit:read")?;
     let v = state.db(audit::verify).await?;

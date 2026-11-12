@@ -11,11 +11,11 @@ import { useToast } from '@/lib/toast';
 import type { HostGroup, HostSummary } from '@/lib/types';
 
 type SystemKey = 'apt' | 'pacman' | 'pkg' | 'dnf' | '*';
-interface Command { install: string; uninstall: string; check: string }
+interface Command { install: string; uninstall: string; check: string; latest?: { aur: string } }
 type Recipe = { packages: string[] } | { command: Command };
 type Recipes = Partial<Record<SystemKey, Recipe>>;
 interface App { id: string; name: string; version: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; group_ids: string[]; enabled: boolean; has_command?: boolean }
-interface HostApp extends App { kind: 'packages' | 'command'; packages: string[]; command: Command | null; installed: boolean; pending: { task_id: string; status: string; install: boolean } | null }
+interface HostApp extends App { kind: 'packages' | 'command'; packages: string[]; command: Command | null; installed: boolean; pending: { task_id: string; status: string; install: boolean } | null; update?: { package: string; installed: string; latest: string } | null }
 interface Suggestion { name: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; in_catalog: boolean }
 
 const SYSTEMS: SystemKey[] = ['apt', 'pacman', 'pkg', 'dnf', '*'];
@@ -61,7 +61,8 @@ function Store() {
                 <p className="appcard__desc">{a.description}</p>
                 {a.kind === 'command' && <p className="field__hint mono" title={a.command?.install}>{t('portal.command_badge')} · {a.command?.check}</p>}
                 <div className="row row--tight" style={{ marginTop: 'auto' }}>
-                  {busy ? <Tag tone="info">{t('portal.working')}</Tag> : a.installed ? <Tag tone="ok">{t('portal.installed')}</Tag> : null}
+                  {busy ? <Tag tone="info">{t('portal.working')}</Tag> : a.update ? <Tag tone="warn">{t('portal.update_avail', { v: a.update.latest })}</Tag> : a.installed ? <Tag tone="ok">{t('portal.installed')}</Tag> : null}
+                  {can('tasks:create') && !busy && a.update && <Button small variant="primary" disabled={act.pending} title={t('portal.update_hint', { from: a.update.installed, to: a.update.latest })} onClick={() => void go(a, 'INSTALL')}>{t('portal.update')}</Button>}
                   {can('tasks:create') && !busy && (a.installed
                     ? <Button small disabled={act.pending} onClick={() => void go(a, 'UNINSTALL')}>{t('portal.uninstall')}</Button>
                     : <Button small variant="primary" disabled={act.pending} onClick={() => void go(a, 'INSTALL')}>{t('portal.install')}</Button>)}
@@ -75,7 +76,7 @@ function Store() {
   );
 }
 
-interface Row { key: SystemKey; mode: 'packages' | 'command'; packages: string; install: string; uninstall: string; check: string }
+interface Row { key: SystemKey; mode: 'packages' | 'command'; packages: string; install: string; uninstall: string; check: string; latest?: { aur: string } }
 type Form = Omit<App, 'id' | 'recipes' | 'has_command'> & { id?: string; rows: Row[] };
 
 const rowsOf = (r: Recipes): Row[] => SYSTEMS.filter((k) => r[k]).map((k) => {
@@ -85,7 +86,7 @@ const rowsOf = (r: Recipes): Row[] => SYSTEMS.filter((k) => r[k]).map((k) => {
     : { key: k, mode: 'packages', packages: x.packages.join(', '), install: '', uninstall: '', check: '' };
 });
 const recipesOf = (rows: Row[]): Recipes => Object.fromEntries(rows.map((r) => [r.key, r.mode === 'command'
-  ? { command: { install: r.install, uninstall: r.uninstall, check: r.check.trim() } }
+  ? { command: { install: r.install, uninstall: r.uninstall, check: r.check.trim(), ...(r.latest ? { latest: r.latest } : {}) } }
   : { packages: r.packages.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) }]));
 const newRow = (key: SystemKey): Row => ({ key, mode: 'packages', packages: '', install: '', uninstall: '', check: '' });
 const blank = (): Form => ({ name: '', version: '', category: '', description: '', icon: 'app-window', rows: [newRow('*')], group_ids: [], enabled: true });

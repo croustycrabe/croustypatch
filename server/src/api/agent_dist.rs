@@ -111,3 +111,31 @@ pub async fn install_script(req: HttpRequest, state: web::Data<AppState>) -> Api
     let body = INSTALL_SCRIPT.replace("__SERVER__", &format!("{scheme}://{host}"));
     Ok(HttpResponse::Ok().content_type("text/x-shellscript; charset=utf-8").insert_header((header::CACHE_CONTROL, "no-store")).body(body))
 }
+
+// ------------------------------------------------------------------------------------- SCAP content
+
+/// The SCAP content the server hands out: `{"version": "0.1.82", "files": [{"name", "sha256", "size"}]}`, or 404.
+fn scap_index_of(state: &AppState) -> Option<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(state.cfg.scap_dir.join("index.json")).ok()?).ok()?;
+    v.get("files")?.as_array()?;
+    Some(v)
+}
+
+/// GET /agent/scap-content (agents): which datastreams the server has.
+pub async fn scap_index(state: web::Data<AppState>, _agent: crate::gateway::AgentAuth) -> ApiResult<HttpResponse> {
+    let v = scap_index_of(&state).ok_or(ApiError::NotFound("SCAP content"))?;
+    Ok(HttpResponse::Ok().json(v))
+}
+
+/// GET /agent/scap-content/{name} (agents): one datastream named in the index.
+pub async fn scap_file(req: HttpRequest, state: web::Data<AppState>, _agent: crate::gateway::AgentAuth, path: web::Path<String>) -> ApiResult<HttpResponse> {
+    let name = path.into_inner();
+    let listed = scap_index_of(&state)
+        .and_then(|v| v.get("files").and_then(|f| f.as_array()).map(|a| a.iter().any(|f| f.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))))
+        .unwrap_or(false);
+    if !listed || name.contains('/') || name.contains("..") {
+        return Err(ApiError::NotFound("SCAP content"));
+    }
+    let named = NamedFile::open(state.cfg.scap_dir.join(&name)).map_err(|_| ApiError::NotFound("SCAP content"))?;
+    Ok(named.into_response(&req))
+}

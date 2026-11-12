@@ -534,6 +534,10 @@ check('a compliance task is created and answered by the agent', await p.locator(
   const h = sql("select id from hosts order by enrolled_at limit 1");
   const count = (kind) => Number(sql(`select count(*) from tasks where host_id='${h}' and kind='${kind}'`));
   sql(`update hosts set status='online' where id='${h}'`);
+  // a container update of its own: since 0.9 a catalog change pushes the settings, and the agent's fresh inventory
+  // replaces the container rows the 0.7 section wrote by hand
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-upd'`);
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:zz-upd','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27"}')`);
   await p.goto(`${BASE}/host/?id=${h}`); await p.waitForSelector('.tabs');
   const nSystem = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source <> 'docker'`));
   const nDocker = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source = 'docker'`));
@@ -599,6 +603,15 @@ check('a compliance task is created and answered by the agent', await p.locator(
   openTasks();
   sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
 }
+
+// ---- 0.9: Administration > Logs
+await p.goto(`${BASE}/`); await p.waitForSelector('.sidebar');
+await p.click('.sidebar a.navitem:has-text("Journaux")'); await p.waitForSelector('.tbl tbody tr');
+check('the Logs page lists what the server did, tasks included', (await p.locator('.tbl tbody tr:has-text("Tâches")').count()) >= 1);
+await p.click('button.chip:has-text("Serveur")'); await p.waitForTimeout(800);
+check('the server\'s own messages can be shown alone', (await p.locator('.tbl tbody tr').count()) >= 1 && (await p.locator('.tbl tbody tr:has-text("Tâches")').count()) === 0);
+await p.click('button.chip:has-text("Tâches")'); await p.selectOption('select', 'error'); await p.waitForTimeout(800);
+check('and filtered to errors', (await p.locator('.tbl tbody tr').count()) === 0 || (await p.locator('.tbl tbody tr:not(:has-text("erreur"))').count()) === 0);
 
 // ---- language + logout
 await p.goto(`${BASE}/`); await p.waitForSelector('.stat'); await p.click('.topbar .lang button:has-text("en")'); await p.waitForTimeout(300);

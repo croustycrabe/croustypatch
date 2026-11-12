@@ -1,5 +1,5 @@
 'use client';
-import { Bell, Cube, ClipboardText, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, SealCheck, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
+import { Bell, Cube, ClipboardText, Scroll, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, SealCheck, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -45,6 +45,7 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
     items: [
       { href: '/enrollment', key: 'nav.enrollment', perm: 'enrollment:read', icon: Key },
       { href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText },
+      { href: '/logs', key: 'nav.logs', perm: 'audit:read', icon: Scroll },
       { href: '/users', key: 'nav.users', perm: 'users:read', icon: UserGear },
       { href: '/notifications', key: 'nav.notifications', perm: 'settings:read', icon: Bell },
       { href: '/settings', key: 'nav.settings', perm: 'settings:read', icon: Gear },

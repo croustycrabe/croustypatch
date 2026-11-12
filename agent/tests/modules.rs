@@ -367,23 +367,61 @@ fn an_audit_uses_a_profile_the_content_really_has() {
 
 #[test]
 fn content_for_the_previous_ubuntu_is_pointed_at_this_release() {
-    use croustypatch_agent::modules::openscap::{adapt_codename, content_codenames, parse_codename};
-    // what the 24.04 benchmark carries twice (its OVAL and its CPE OVAL): every rule is "not applicable" on 26.04 otherwise
+    use croustypatch_agent::modules::openscap::{adapt_codename, content_codenames, content_release, parse_codename};
+    use std::path::Path;
+    // what the 24.04 benchmark of ssg 0.1.79 carries twice (its OVAL and its CPE OVAL): every rule is "not applicable" on 26.04 otherwise
     let ds = "<x><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern></x><y><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern><z>DISTRIB_CODENAME=other words</z></y>";
     assert_eq!(content_codenames(ds), vec!["noble".to_string()]);
-    let adapted = adapt_codename(ds, "resolute").expect("adapted");
+    let p2404 = Path::new("/c/ssg-ubuntu2404-ds.xml");
+    assert_eq!(content_release(p2404, ds).as_deref(), Some("noble"));
+    let adapted = adapt_codename(ds, "noble", "resolute").expect("adapted");
     assert_eq!(adapted.matches("^DISTRIB_CODENAME=resolute$").count(), 2);
     assert!(!adapted.contains("noble"));
     assert_eq!(adapted.len(), ds.len() + 2 * ("resolute".len() - "noble".len()), "nothing else changes");
-    assert!(adapt_codename(ds, "noble").is_none(), "already the right release");
-    assert!(adapt_codename(ds, "").is_none(), "unknown release: used as is");
-    assert!(adapt_codename("<debian content/>", "trixie").is_none(), "content without that check is used as is");
+    assert!(adapt_codename(ds, "noble", "noble").is_none(), "already the right release");
+    assert!(adapt_codename(ds, "noble", "").is_none(), "unknown release: used as is");
+    assert!(adapt_codename("<debian content/>", "bookworm", "trixie").is_none(), "content without that check is used as is");
+    // ssg 0.1.82: the shared platform checks name jammy, noble and resolute; only the benchmark's own release (noble,
+    // from the file name) is pointed at the host's
+    let recent = "^DISTRIB_CODENAME=jammy$ ^DISTRIB_CODENAME=noble$ ^DISTRIB_CODENAME=resolute$";
+    assert_eq!(content_codenames(recent).len(), 3);
+    assert_eq!(content_release(p2404, recent).as_deref(), Some("noble"), "the file name says which release it is for");
+    assert_eq!(adapt_codename(recent, "noble", "resolute").unwrap(), "^DISTRIB_CODENAME=jammy$ ^DISTRIB_CODENAME=resolute$ ^DISTRIB_CODENAME=resolute$");
+    assert_eq!(content_release(Path::new("/c/ssg-custom-ds.xml"), recent), None, "several releases and no name: no guess");
     // the release comes from lsb-release, else os-release, and must be a plain word
     let lsb = "DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=26.04\nDISTRIB_CODENAME=resolute\nDISTRIB_DESCRIPTION=\"Ubuntu 26.04.1 LTS\"\n";
     assert_eq!(parse_codename(lsb, ""), "resolute");
     assert_eq!(parse_codename("", "NAME=\"Ubuntu\"\nVERSION_CODENAME=questing\n"), "questing");
     assert_eq!(parse_codename("DISTRIB_CODENAME=no$pe\n", "VERSION_CODENAME=\"trixie\""), "trixie");
     assert_eq!(parse_codename("", ""), "");
+}
+
+#[test]
+fn the_servers_content_comes_first_and_placeholders_are_skipped() {
+    use croustypatch_agent::modules::openscap::{best_server_file, candidates, has_profiles, install_plan, InstallPlan};
+    use croustypatch_common::model::PackageManager::Apt;
+    let server = tempfile::tempdir().unwrap();
+    let pkg = tempfile::tempdir().unwrap();
+    let real = "<ds><Profile id=\"xccdf_org.ssgproject.content_profile_cis_level1_server\"/></ds>";
+    std::fs::write(server.path().join("ssg-ubuntu2404-ds.xml"), real).unwrap();
+    std::fs::write(server.path().join("ssg-ubuntu2604-ds.xml"), "<ds>2 rules, no profile</ds>").unwrap();
+    std::fs::write(pkg.path().join("ssg-ubuntu2404-ds.xml"), real).unwrap();
+    std::fs::write(pkg.path().join("ssg-ubuntu2204-ds.xml"), real).unwrap();
+    let dirs = vec![server.path().to_path_buf(), pkg.path().to_path_buf()];
+    let c = candidates(&dirs, "ubuntu26");
+    assert!(c[0].ends_with("ssg-ubuntu2604-ds.xml"), "the exact release is tried first…");
+    assert!(!has_profiles(&c[0]), "…but a datastream without a profile is a placeholder");
+    let chosen = c.iter().find(|p| has_profiles(p)).unwrap();
+    assert!(chosen.starts_with(server.path()) && chosen.ends_with("ssg-ubuntu2404-ds.xml"), "the server's 24.04 before the package's: {chosen:?}");
+    // what to download from the server's index
+    let names: Vec<String> = ["ssg-debian12-ds.xml", "ssg-debian13-ds.xml", "ssg-ubuntu2204-ds.xml", "ssg-ubuntu2404-ds.xml"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(best_server_file(&names, "ubuntu26").as_deref(), Some("ssg-ubuntu2404-ds.xml"));
+    assert_eq!(best_server_file(&names, "ubuntu22").as_deref(), Some("ssg-ubuntu2204-ds.xml"));
+    assert_eq!(best_server_file(&names, "debian13").as_deref(), Some("ssg-debian13-ds.xml"));
+    assert_eq!(best_server_file(&names, "arch"), None, "nothing for another distribution");
+    assert_eq!(best_server_file(&names, ""), None);
+    // with the server's content there, only the scanner is installed
+    assert_eq!(install_plan(false, true, true, Apt, "Ubuntu"), InstallPlan::Install { packages: vec!["openscap-scanner"], note: None });
 }
 
 #[test]

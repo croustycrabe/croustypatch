@@ -276,6 +276,12 @@ fn store_metrics(c: &mut PgConnection, host_id: Uuid, h: &Heartbeat, now: DateTi
 fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: DateTime<Utc>) -> ApiResult<()> {
     c.transaction::<_, ApiError, _>(|c| {
         apply_facts(c, host_id, &inv.facts)?;
+        // AUR-built apps with a newer version (agents 0.9+), kept with the facts for the app center pages
+        if !inv.app_updates.is_empty() {
+            let mut f = serde_json::to_value(&inv.facts).unwrap_or_default();
+            f["app_updates"] = serde_json::to_value(&inv.app_updates).unwrap_or_default();
+            diesel::update(hosts::table.find(host_id)).set(hosts::facts.eq(f)).execute(c)?;
+        }
         // The inventory is complete each time: replace every source. Module data (containers, helper scripts) is
         // kept only while its module is switched on for this host.
         // What was pending before this inventory, to tell what is new (one alert per new update, not one per inventory).

@@ -31,6 +31,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/agent/portal/install", web::post().to(portal::agent_request))
             .route("/agent/portal/updates", web::get().to(portal::agent_updates))
             .route("/agent/portal/update", web::post().to(portal::agent_update))
+            .route("/agent/scap-content", web::get().to(agent_dist::scap_index))
+            .route("/agent/scap-content/{name}", web::get().to(agent_dist::scap_file))
             // --- "Add agent": installer script and binaries (public, no secrets)
             .route("/agent/install.sh", web::get().to(agent_dist::install_script))
             .route("/agent/platforms", web::get().to(agent_dist::platforms))
@@ -143,7 +145,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/waivers/{id}/revoke", web::post().to(patching::revoke_waiver))
             // --- audit
             .route("/audit", web::get().to(system::list_audit))
-            .route("/audit/verify", web::get().to(system::verify_audit)),
+            .route("/audit/verify", web::get().to(system::verify_audit))
+            .route("/logs", web::get().to(system::list_logs)),
     );
 }
 

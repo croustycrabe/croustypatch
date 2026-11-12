@@ -25,7 +25,7 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
   center after its title.
 - **Topbar** with the current section, the **⌘K / Ctrl+K command palette** (pages, hosts, actions) and the language toggle.
 - **Pages:** Dashboard · Hosts · Packages · Docker · Groups · App center · Tasks · Policies · Waivers · Vulnerabilities ·
-  Compliance · Audit · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
+  Compliance · Audit · Logs · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
 - **Panels:** forms and details that should not hide the page open as a slide-over (policy editor, task detail,
   package hosts, Add agent). Confirmations are small centred dialogs. Feedback is a toast; errors tied to a form stay inline.
 - **Hosts** (as in PatchMon): searchable, filterable by status and group, sortable, with bulk patch and scan; a host
@@ -35,6 +35,17 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
   server (`GET /api/v1/packages?page=&per_page=` returns `{items, total, page, per_page}`), so every package is reachable.
 - **Dashboard:** fleet stat cards, an actionable "needs attention" strip, then draggable widgets (reorder, resize, hide;
   saved per user on the server).
+
+## Logs (0.9)
+
+*Administration > Logs* (`GET /api/v1/logs`, permission `audit:read`) shows what the server did, newest first, in one
+list: every status change of every task (with its host, and a link to the task), notification deliveries (with the
+error of those that failed and the number of attempts), report sends, and the server's own messages (its warnings and
+errors, and CroustyPatch's own information lines). Filters: source (chips), level (warnings and errors, errors only),
+words searched in the line and the host name; *Show more* pages back in time (`before=`), *Follow live* reloads the
+first page every 10 s. The server's messages are kept in memory since it started (the last 3000 lines); its full log
+stays on the container's standard output. The audit log stays the record of who changed what; Logs is for
+understanding what happened.
 
 ## Add agent
 

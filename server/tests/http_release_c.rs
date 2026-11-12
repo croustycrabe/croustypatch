@@ -759,7 +759,7 @@ async fn new_system_and_container_updates_raise_separate_alerts_once() {
     let p = |name: &str, source: &str, cand: Option<&str>, sec: bool, meta: Value| PackageEntry { name: name.into(), version: "1".into(), candidate: cand.map(str::to_owned), is_security: sec, cves: vec![], source: source.into(), meta };
     let send = |pkgs: Vec<PackageEntry>| {
         let st = state.clone();
-        async move { croustypatch_server::gateway::handle_messages(&st, host, vec![AgentMessage::Inventory(Inventory { facts: HostFacts { hostname: "srv-alerts".into(), ..Default::default() }, packages: pkgs, reboot_required: false, collected_at: chrono::Utc::now() })]).await }
+        async move { croustypatch_server::gateway::handle_messages(&st, host, vec![AgentMessage::Inventory(Inventory { facts: HostFacts { hostname: "srv-alerts".into(), ..Default::default() }, packages: pkgs, reboot_required: false, collected_at: chrono::Utc::now(), app_updates: vec![] })]).await }
     };
     let events = || -> Vec<(String, Value)> { audit_log::table.filter(audit_log::action.like("updates.%")).order(audit_log::seq.asc()).select((audit_log::action, audit_log::details)).load(&mut db.conn()).unwrap() };
     // the first inventory of a host is its starting point, not news

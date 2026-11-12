@@ -271,3 +271,28 @@ fn the_status_area_follows_an_operation_and_notifies_its_outcome() {
     s.on_key(KeyCode::Char('c'), NONE);
     assert!(s.notes.is_empty(), "c clears the log");
 }
+
+#[test]
+fn an_app_with_a_newer_version_says_so_and_can_be_updated() {
+    let mut c = catalog();
+    c["apps"][0]["kind"] = json!("command");
+    c["apps"][0]["command"] = json!({ "install": "makepkg", "uninstall": "pacman -R", "check": "/usr/bin/code" });
+    c["apps"][0]["local"] = json!({ "present": 1, "total": 1, "installed_version": "1.145.2-1", "latest_version": "1.146.0-1", "update": true });
+    let mut s = State::new(&EN);
+    s.load(&c);
+    assert_eq!(s.apps[0].update.as_deref(), Some("1.146.0-1"));
+    assert!(s.notes.iter().any(|n| n.tone == Tone::Warn && n.text.contains("1 update(s) available: htop 1.146.0-1")), "{:?}", s.notes);
+    let text = screen(&s);
+    assert!(text.contains("↑ Update 1.146.0-1"), "{text}");
+    // installing again is the update (the recipe builds the latest version)
+    assert_eq!(s.on_key(KeyCode::Char('i'), NONE), None);
+    assert!(s.confirm.is_some(), "an installed app with an update can be installed again");
+    assert!(screen(&s).contains("Update htop ?"));
+    assert_eq!(s.on_key(KeyCode::Char('y'), NONE), Some(Cmd::Install("a".into())));
+    // without an update, an installed app is left alone
+    c["apps"][0]["local"]["update"] = json!(false);
+    s.load(&c);
+    assert!(s.apps[0].update.is_none());
+    assert_eq!(s.on_key(KeyCode::Char('i'), NONE), None);
+    assert!(s.confirm.is_none());
+}

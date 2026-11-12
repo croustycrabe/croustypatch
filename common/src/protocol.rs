@@ -166,6 +166,19 @@ pub struct AgentSettings {
     /// The agent then reports what is installed, and what its own package manager offers through local mirrors.
     #[serde(default)]
     pub offline: bool,
+    /// AUR packages that app center applications install (`latest.aur` of their recipe): the agent checks them for a
+    /// newer version with each inventory, so the web interface can show app updates too (agents 0.9+).
+    #[serde(default)]
+    pub watch_aur: Vec<String>,
+}
+
+/// An application installed outside the package manager's own update check (built from the AUR) that has a newer
+/// version: what the inventory says next to the packages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppUpdate {
+    pub package: String,
+    pub installed: String,
+    pub latest: String,
 }
 
 /// What stays reachable while a host is isolated (double failure or manual quarantine), besides the server.
@@ -225,6 +238,9 @@ pub struct Inventory {
     pub packages: Vec<PackageEntry>,
     pub reboot_required: bool,
     pub collected_at: DateTime<Utc>,
+    /// Watched AUR packages ([`AgentSettings::watch_aur`]) that have a newer version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_updates: Vec<AppUpdate>,
 }
 
 // ------------------------------------------------------------------ enrolment

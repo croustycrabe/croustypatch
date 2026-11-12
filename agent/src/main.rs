@@ -177,7 +177,7 @@ async fn scan(cli: &Cli) -> Result<()> {
     packages.extend(croustypatch_agent::modules::helper_scripts::detect(std::path::Path::new("/opt")));
     let facts = facts::collect(&cfg.server_url, backend.kind(), croustypatch_agent::modules::detected()).await;
     let reboot_required = backend.reboot_required(&r).await;
-    println!("{}", serde_json::to_string_pretty(&croustypatch_common::protocol::Inventory { facts, packages, reboot_required, collected_at: chrono::Utc::now() })?);
+    println!("{}", serde_json::to_string_pretty(&croustypatch_common::protocol::Inventory { facts, packages, reboot_required, collected_at: chrono::Utc::now(), app_updates: vec![] })?);
     Ok(())
 }
 

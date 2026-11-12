@@ -172,6 +172,19 @@ automatically* (on by default) switches that off: the audit then fails with the 
 | Debian | `openscap-scanner`, `ssg-debian` | content for several Debian releases; the one matching the host is used, else the newest |
 | Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04; newer releases (26.04…) use the 24.04 content adapted to them, see *Newer releases* below |
 | Arch | nothing | the SCAP Security Guide has no benchmark for Arch Linux (it is neither in the repositories nor in the AUR package), so installing the scanner alone would be pointless: the audit says so; put a datastream of your own in `/usr/share/xml/scap/ssg/content` to audit anyway |
+
+**Content from the server (0.9).** The server image bundles the Debian and Ubuntu datastreams of a pinned SCAP Security
+Guide release (0.1.82: Debian 11, 12, 13, Ubuntu 22.04, 24.04; about 57 MB; the build downloads the release from
+GitHub and checks its SHA-256; `CROUSTYPATCH_SCAP_DIR`, `GET /api/v1/agent/scap-content`). Before an audit the agent
+downloads the datastream for its system (the exact release, else the newest of its distribution) once, checks it
+against the SHA-256 of the server's index and keeps it in `oscap-content/server/` of its state directory. It is
+preferred to the distribution's package for the same release, so hosts audit with recent content even when their
+package is old (Ubuntu's `ssg-debderived` is 0.1.79) or the network is air-gapped; with it, only `openscap-scanner` is
+installed. Datastreams without any profile are skipped: 0.1.82 ships an `ssg-ubuntu2604-ds.xml` with 2 rules and no
+profile, a placeholder, so Ubuntu 26.04 still audits with the 24.04 benchmark pointed at its release (only the
+benchmark's own release, `noble`, taken from the file name, is replaced: recent content lists jammy, noble and
+resolute in its shared platform checks). When a release with real content for 26.04 is bundled, it is used directly.
+Not bundled: the Red Hat family (the agent has no dnf support yet) and Arch (no benchmark upstream).
 | other | nothing | the audit explains what to install |
 
 The agent reports what it found (`openscap` in the host's facts: oscap version, the datastream it will use and that
@@ -368,7 +381,7 @@ anything runs, a progress bar and a notification log. French or English and ligh
   root-run install script and the launcher pinned by SHA-256 (read on 2026-11-11), sources only from
   `update.code.visualstudio.com` and a few suspicious words refused; if the package changes, the install stops with the
   reason and the recipe has to be reviewed. It refuses to run when Code - OSS is installed (the two conflict) and
-  there is no automatic update, but the desktop app center **says when one is available** (0.7.5): a command recipe can name where its latest version is published (`"latest": {"aur": "visual-studio-code-bin"}`), the agent compares pacman's installed version with the AUR's (`vercmp`, asked at most hourly) and the card shows *Update 1.146.0* with an **Update** button, which runs the install again (it rebuilds the latest). Software installed by a command is otherwise invisible to the package manager's update list. Apps already in the catalog keep the recipe they were added with: remove and add VS Code again to get the new one. The open-source build is its own suggestion,
+  there is no automatic update, but the app center **says when one is available** (desktop window 0.7.5; terminal app center and web app center 0.9: the server sends Arch agents the AUR packages named by the catalog, `watch_aur`, the agent checks them with each inventory and reports `app_updates`; the TUI shows *↑ Update 1.146.0* and `i` updates, the web App center shows the update with an **Update** button): a command recipe can name where its latest version is published (`"latest": {"aur": "visual-studio-code-bin"}`), the agent compares pacman's installed version with the AUR's (`vercmp`, asked at most hourly) and the card shows *Update 1.146.0* with an **Update** button, which runs the install again (it rebuilds the latest). Software installed by a command is otherwise invisible to the package manager's update list. Apps already in the catalog keep the recipe they were added with: remove and add VS Code again to get the new one. The open-source build is its own suggestion,
   **Code - OSS** (Arch only: the repository package `code`; Debian and Ubuntu have none). **Zed** on Debian and Ubuntu uses
   Zed's official release archive (the one its own installer downloads), read completely before anything is replaced,
   unpacked as `root:root` into `/opt/zed.app` with `/usr/local/bin/zed`, a menu entry and an icon; it has no

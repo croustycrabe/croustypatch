@@ -181,6 +181,7 @@ pub async fn save(state: web::Data<AppState>, user: AuthUser, id: Option<Uuid>, 
             })
         })
         .await?;
+    push_watch(&state).await;
     Ok(if id.is_some() { HttpResponse::Ok() } else { HttpResponse::Created() }.json(app_json(&row)))
 }
 
@@ -208,7 +209,15 @@ pub async fn delete(state: web::Data<AppState>, user: AuthUser, path: web::Path<
             })
         })
         .await?;
+    push_watch(&state).await;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// The catalog changed: connected agents get the AUR packages to watch again.
+async fn push_watch(state: &web::Data<AppState>) {
+    for h in state.hub.connected_hosts() {
+        crate::modules::push_settings(state, h).await;
+    }
 }
 
 fn portal_on(c: &mut PgConnection, host_id: Uuid) -> ApiResult<()> {
@@ -244,8 +253,14 @@ fn resolve(recipes: &Value, pm: &str) -> (Vec<String>, Option<AppCommand>) {
 
 pub fn view_for(c: &mut PgConnection, id: Uuid) -> ApiResult<Value> {
     portal_on(c, id)?;
-    let (name, pm): (String, String) = hosts::table.find(id).select((hosts::hostname, hosts::package_manager)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+    let (name, pm, facts): (String, String, Value) = hosts::table.find(id).select((hosts::hostname, hosts::package_manager, hosts::facts)).first(c).map_err(|_| ApiError::NotFound("host"))?;
     let apps = visible(c, id)?;
+    // what the agent found newer in the AUR for the packages these apps build (agents 0.9+)
+    let app_updates: Vec<Value> = facts.get("app_updates").and_then(|u| u.as_array()).cloned().unwrap_or_default();
+    let update_of = |recipes: &Value| -> Value {
+        let watched = crate::modules::aur_watched(recipes);
+        app_updates.iter().find(|u| u.get("package").and_then(|p| p.as_str()).is_some_and(|p| watched.iter().any(|w| w == p))).cloned().unwrap_or(Value::Null)
+    };
     let installed: Vec<String> = host_packages::table.filter(host_packages::host_id.eq(id)).filter(host_packages::source.eq("system")).select(host_packages::name).load(c)?;
     let open: Vec<(Uuid, String, Option<Value>, String)> = tasks::table.filter(tasks::host_id.eq(id)).filter(tasks::kind.eq("app")).filter(tasks::status.eq_any(OPEN)).select((tasks::id, tasks::status, tasks::exec, tasks::message)).load(c)?;
     // Outcome of the host's recent app-center operations, so clients can tell how a request ended.
@@ -278,6 +293,7 @@ pub fn view_for(c: &mut PgConnection, id: Uuid) -> ApiResult<Value> {
             v["packages"] = json!(pkgs);
             v["command"] = json!(cmd);
             v["installed"] = json!(if cmd.is_some() { last_command_state(r.0) } else { pkgs.iter().all(|p| installed.contains(p)) });
+            v["update"] = if v["installed"] == json!(true) { update_of(&r.6) } else { Value::Null };
             v["pending"] = pending.map(|t| json!({ "task_id": t.0, "status": t.1, "install": t.2.as_ref().and_then(|e| e.get("install")).cloned(), "message": t.3 })).unwrap_or(Value::Null);
             v
         }).collect::<Vec<_>>(),

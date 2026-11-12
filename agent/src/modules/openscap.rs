@@ -15,22 +15,92 @@ pub fn available() -> bool {
     ["/usr/bin/oscap", "/usr/local/bin/oscap"].iter().any(|p| Path::new(p).exists())
 }
 
-/// The SCAP Security Guide datastream for this system, if installed (scap-security-guide / ssg-* packages).
-pub fn find_datastream(dir: &Path, distro_hint: &str) -> Option<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("ssg-") && n.ends_with("-ds.xml"))).collect();
-    files.sort();
-    let hint = distro_hint.to_ascii_lowercase();
-    if let Some(p) = files.iter().find(|p| !hint.is_empty() && p.to_string_lossy().contains(&hint)) {
-        return Some(p.clone());
+static SERVER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Where the content downloaded from the server is kept: `<state_dir>/oscap-content/server`.
+pub fn server_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join("oscap-content").join("server")
+}
+
+/// Tell the module where the agent keeps its state (for the content downloaded from the server).
+pub fn set_state_dir(state_dir: &Path) {
+    *SERVER_DIR.lock().unwrap() = Some(server_dir(state_dir));
+}
+
+/// Where datastreams are looked for: the server's copies first (a recent SCAP Security Guide release, 0.9+), then the
+/// distribution's package.
+pub fn content_dirs() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = SERVER_DIR.lock().unwrap().iter().cloned().collect();
+    v.push(PathBuf::from(CONTENT_DIR));
+    v
+}
+
+/// Datastreams for this system, best first: the exact release, then the newest of the same distribution, then any;
+/// for the same file name, the first directory wins (the server's copy before the package's).
+pub fn candidates(dirs: &[PathBuf], distro_hint: &str) -> Vec<PathBuf> {
+    let mut files: Vec<(usize, PathBuf)> = vec![];
+    for (i, d) in dirs.iter().enumerate() {
+        if let Ok(rd) = std::fs::read_dir(d) {
+            files.extend(rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("ssg-") && n.ends_with("-ds.xml"))).map(|p| (i, p)));
+        }
     }
-    // No content for this exact release (Ubuntu 26.04 against ssg for 22.04 and 24.04): the newest one of the same distribution.
-    let family = hint.trim_end_matches(|c: char| c.is_ascii_digit());
-    let release = |p: &PathBuf| -> u32 {
-        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        n.trim_start_matches("ssg-").trim_start_matches(family).chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0)
+    let name = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let hint = distro_hint.to_ascii_lowercase();
+    let family = hint.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+    let release = |p: &PathBuf| -> u32 { name(p).trim_start_matches("ssg-").trim_start_matches(family.as_str()).chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0) };
+    // 0 exact release, 1 same distribution, 2 anything else
+    let class = |p: &PathBuf| -> u8 {
+        let n = name(p);
+        if !hint.is_empty() && n.contains(&hint) {
+            0
+        } else if !family.is_empty() && n.starts_with(&format!("ssg-{family}")) {
+            1
+        } else {
+            2
+        }
     };
-    let name = |p: &&PathBuf| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&format!("ssg-{family}")));
-    files.iter().filter(name).max_by_key(|p| release(p)).cloned().or_else(|| files.into_iter().next())
+    files.sort_by(|(da, a), (db, b)| class(a).cmp(&class(b)).then(release(b).cmp(&release(a))).then(name(a).cmp(&name(b))).then(da.cmp(db)));
+    files.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The best SCAP Security Guide datastream in one directory (scap-security-guide / ssg-* packages).
+pub fn find_datastream(dir: &Path, distro_hint: &str) -> Option<PathBuf> {
+    candidates(&[dir.to_path_buf()], distro_hint).into_iter().next()
+}
+
+/// The datastream of the server's index to download for this system: the exact release, else the newest of the same
+/// distribution (None for a distribution the server has nothing for).
+pub fn best_server_file(names: &[String], distro_hint: &str) -> Option<String> {
+    if distro_hint.is_empty() {
+        return None;
+    }
+    let family = distro_hint.to_ascii_lowercase().trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+    let paths: Vec<PathBuf> = names.iter().filter(|n| n.starts_with(&format!("ssg-{family}")) && n.ends_with("-ds.xml") && !n.contains('/')).map(PathBuf::from).collect();
+    let mut sorted = paths.clone();
+    let hint = distro_hint.to_ascii_lowercase();
+    let release = |p: &PathBuf| -> u32 { p.to_string_lossy().trim_start_matches("ssg-").trim_start_matches(family.as_str()).chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0) };
+    sorted.sort_by(|a, b| (!a.to_string_lossy().contains(&hint)).cmp(&!b.to_string_lossy().contains(&hint)).then(release(b).cmp(&release(a))));
+    sorted.first().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Is there usable content (a datastream with profiles) for this system, from the server or a package?
+pub fn has_content(distro_hint: &str) -> bool {
+    candidates(&content_dirs(), distro_hint).iter().any(|p| has_profiles(p))
+}
+
+static PROFILED: Mutex<Option<std::collections::HashMap<(PathBuf, u64), bool>>> = Mutex::new(None);
+
+/// Does the datastream define at least one profile? (SSG 0.1.82 ships an ssg-ubuntu2604-ds.xml with 2 rules and no
+/// profile: a placeholder that must not win over the 24.04 benchmark.)
+pub fn has_profiles(ds: &Path) -> bool {
+    let stamp = std::fs::metadata(ds).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    let key = (ds.to_path_buf(), stamp);
+    if let Some(v) = PROFILED.lock().unwrap().as_ref().and_then(|m| m.get(&key)) {
+        return *v;
+    }
+    let v = std::fs::read(ds).is_ok_and(|b| b.windows(16).any(|w| w == b"content_profile_"));
+    PROFILED.lock().unwrap().get_or_insert_with(Default::default).insert(key, v);
+    v
 }
 
 /// Summarise an XCCDF result file: counts per result and the failed rules with their severity.
@@ -144,6 +214,11 @@ pub fn install_plan(have_oscap: bool, have_content: bool, auto_install: bool, ki
         return InstallPlan::Nothing;
     }
     match packages_for(kind, distro) {
+        // the content is there (the server's copy, or a package): only the scanner is missing
+        Some((mut packages, note)) if have_content => {
+            packages.truncate(1);
+            InstallPlan::Install { packages, note }
+        }
         Some((packages, note)) => InstallPlan::Install { packages, note },
         None => InstallPlan::Nothing,
     }
@@ -197,8 +272,21 @@ pub fn host_codename() -> String {
 
 const CODENAME_CHECK: &str = "^DISTRIB_CODENAME=";
 
-/// The release codenames a datastream's applicability checks expect: Ubuntu content only applies where
-/// `/etc/lsb-release` matches `^DISTRIB_CODENAME=noble$` (24.04), so on any other release every rule is "not applicable".
+/// The codename of an Ubuntu release as SSG names its content (`ssg-ubuntu2404-ds.xml` → noble).
+pub fn ubuntu_codename(release: &str) -> Option<&'static str> {
+    Some(match release {
+        "1604" => "xenial",
+        "1804" => "bionic",
+        "2004" => "focal",
+        "2204" => "jammy",
+        "2404" => "noble",
+        "2604" => "resolute",
+        _ => return None,
+    })
+}
+
+/// The release codenames a datastream's checks mention (`^DISTRIB_CODENAME=noble$`). Older content names only its own
+/// release; recent releases (0.1.82) list several in their shared platform checks.
 pub fn content_codenames(xml: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for (i, _) in xml.match_indices(CODENAME_CHECK) {
@@ -211,29 +299,37 @@ pub fn content_codenames(xml: &str) -> Vec<String> {
     out
 }
 
-/// The datastream with its release checks pointed at `codename` (the rules themselves are unchanged), or None when it
-/// has no such check or already targets that release. This is how content written for the previous LTS audits a newer
-/// one (Ubuntu 26.04 with the 24.04 benchmark) until the SCAP Security Guide ships content for it.
-pub fn adapt_codename(xml: &str, codename: &str) -> Option<String> {
+/// The release a datastream was written for, as a codename: from its file name (ssg-ubuntu2404 → noble), else the only
+/// codename it checks for.
+pub fn content_release(ds: &Path, xml: &str) -> Option<String> {
+    let n = ds.file_name()?.to_str()?;
+    if let Some(r) = n.strip_prefix("ssg-ubuntu").map(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>()) {
+        if let Some(c) = ubuntu_codename(&r) {
+            return Some(c.to_string());
+        }
+    }
     let found = content_codenames(xml);
-    if codename.is_empty() || found.is_empty() || found.iter().any(|c| c == codename) {
+    (found.len() == 1).then(|| found[0].clone())
+}
+
+/// The datastream with the release check of `from` pointed at `to` (the rules themselves are unchanged), or None when
+/// there is nothing to change. This is how content written for the previous LTS audits a newer one (Ubuntu 26.04 with
+/// the 24.04 benchmark) until the SCAP Security Guide ships content for it.
+pub fn adapt_codename(xml: &str, from: &str, to: &str) -> Option<String> {
+    let old = format!("{CODENAME_CHECK}{from}$");
+    if from.is_empty() || to.is_empty() || from == to || !xml.contains(&old) {
         return None;
     }
-    let mut out = xml.to_string();
-    for old in &found {
-        out = out.replace(&format!("{CODENAME_CHECK}{old}$"), &format!("{CODENAME_CHECK}{codename}$"));
-    }
-    Some(out)
+    Some(xml.replace(&old, &format!("{CODENAME_CHECK}{to}$")))
 }
 
 /// What [`adapt_codename`] would do to this datastream on this machine, said as "noble → resolute" (empty: nothing).
 fn adaptation_note(ds: &Path, codename: &str) -> String {
     let Ok(xml) = std::fs::read_to_string(ds) else { return String::new() };
-    let found = content_codenames(&xml);
-    if codename.is_empty() || found.is_empty() || found.iter().any(|c| c == codename) {
-        return String::new();
+    match content_release(ds, &xml) {
+        Some(from) if adapt_codename(&xml, &from, codename).is_some() => format!("{from} → {codename}"),
+        _ => String::new(),
     }
-    format!("{} → {codename}", found.join(", "))
 }
 
 /// The adapted copy of `ds` for this machine's release, kept in the agent's state directory and remade when the content
@@ -247,7 +343,8 @@ async fn adapted_datastream(r: &Runner, ds: &Path, state_dir: &Path, codename: &
         return Some(copy);
     }
     let xml = std::fs::read_to_string(ds).ok()?;
-    let adapted = adapt_codename(&xml, codename)?;
+    let from = content_release(ds, &xml)?;
+    let adapted = adapt_codename(&xml, &from, codename)?;
     std::fs::create_dir_all(&dir).ok()?;
     if let Err(e) = crate::config::write_private(&copy, adapted.as_bytes()) {
         log.line(format!("could not write the adapted SCAP content: {e}"));
@@ -295,7 +392,7 @@ pub struct Target<'a> {
 
 /// The content used on this machine, and whether it is meant for another release of it.
 fn content_for(hint: &str) -> Option<(PathBuf, bool)> {
-    let ds = find_datastream(Path::new(CONTENT_DIR), hint)?;
+    let ds = candidates(&content_dirs(), hint).into_iter().find(|p| has_profiles(p))?;
     let other_release = !hint.is_empty() && !ds.to_string_lossy().contains(&hint.to_ascii_lowercase());
     Some((ds, other_release))
 }

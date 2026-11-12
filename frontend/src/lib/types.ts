@@ -374,3 +374,6 @@ export interface CompFleet { score: number | null; threshold: number; planned_ne
 
 /** A page of rows with the total behind it (`page` is 1-based, as in the API). */
 export interface Paged<T> { items: T[]; total: number; page: number; per_page: number }
+
+/** A line of Administration > Logs. */
+export interface LogEntry { ts: string; source: 'tasks' | 'notifications' | 'reports' | 'server'; level: 'info' | 'warn' | 'error'; title: string; message: string; host_id?: string; hostname?: string; ref_id?: string }

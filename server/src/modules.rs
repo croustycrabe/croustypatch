@@ -58,7 +58,26 @@ pub fn settings_for(c: &mut PgConnection, host_id: Uuid) -> ApiResult<Option<Age
     }
     let isolation = settings::table.find("isolation").select(settings::value).first::<Value>(c).optional()?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     let offline = settings::table.find("connectivity").select(settings::value).first::<Value>(c).optional()?.and_then(|v| v.get("mode").and_then(|m| m.as_str()).map(|m| m == "air_gapped")).unwrap_or(false);
-    Ok(Some(AgentSettings { modules: parse(&modules), isolation, offline }))
+    // Arch only: AUR packages of app center recipes, checked by the agent for a newer version (app updates in the web UI)
+    let pm: String = hosts::table.find(host_id).select(hosts::package_manager).first(c)?;
+    let watch_aur = if pm == "pacman" {
+        let recipes: Vec<Value> = crate::schema::portal_apps::table.filter(crate::schema::portal_apps::enabled.eq(true)).select(crate::schema::portal_apps::recipes).load(c)?;
+        let mut v: Vec<String> = recipes.iter().flat_map(aur_watched).collect();
+        v.sort();
+        v.dedup();
+        v
+    } else {
+        vec![]
+    };
+    Ok(Some(AgentSettings { modules: parse(&modules), isolation, offline, watch_aur }))
+}
+
+/// The AUR packages an app's recipes name as where their latest version is published (`command.latest.aur`).
+pub fn aur_watched(recipes: &Value) -> Vec<String> {
+    recipes
+        .as_object()
+        .map(|o| o.values().filter_map(|r| r.pointer("/command/latest/aur").and_then(|a| a.as_str())).filter(|a| croustypatch_common::protocol::valid_aur_name(a)).map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// Send the host's settings over its tunnel right away (push-mode agents get them with their next telemetry).

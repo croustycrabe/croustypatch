@@ -68,7 +68,7 @@ async fn container_inventory_is_kept_only_while_the_docker_module_is_on() {
     let state = web::Data::new(db.state());
     let host = add_host(&mut db.conn());
     let pkg = |name: &str, source: &str, cand: Option<&str>| PackageEntry { name: name.into(), version: "1".into(), candidate: cand.map(str::to_owned), is_security: false, cves: vec![], source: source.into(), meta: Default::default() };
-    let inv = || AgentMessage::Inventory(Inventory { facts: HostFacts { hostname: "srv-1".into(), ..Default::default() }, packages: vec![pkg("bash", "system", None), pkg("docker:web", "docker", Some("2")), pkg("helper:vaultwarden", "helper-script", None)], reboot_required: false, collected_at: Utc::now() });
+    let inv = || AgentMessage::Inventory(Inventory { facts: HostFacts { hostname: "srv-1".into(), ..Default::default() }, packages: vec![pkg("bash", "system", None), pkg("docker:web", "docker", Some("2")), pkg("helper:vaultwarden", "helper-script", None)], reboot_required: false, collected_at: Utc::now(), app_updates: vec![] });
     let sources = |db: &support::TestDb| -> Vec<String> { let mut v: Vec<String> = host_packages::table.filter(host_packages::host_id.eq(host)).select(host_packages::source).load(&mut db.conn()).unwrap(); v.sort(); v };
 
     gateway::handle_messages(&state, host, vec![inv()]).await;
