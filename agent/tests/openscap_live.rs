@@ -15,6 +15,14 @@ use uuid::Uuid;
 #[ignore = "needs oscap and SCAP content on this machine"]
 async fn an_audit_with_no_profile_uses_the_recommended_one_and_rules_apply() {
     let mut rig = support::rig_with(serde_json::json!({ "installed": [] }), false);
+    // CP_SERVER_SCAP=<dir>: datastreams as the server hands them out (0.9), placed where the agent keeps them
+    if let Ok(src) = std::env::var("CP_SERVER_SCAP") {
+        let dst = croustypatch_agent::modules::openscap::server_dir(&rig.dir.path().join("state"));
+        std::fs::create_dir_all(&dst).unwrap();
+        for e in std::fs::read_dir(src).unwrap().flatten() {
+            std::fs::copy(e.path(), dst.join(e.file_name())).unwrap();
+        }
+    }
     let task = Uuid::new_v4();
     rig.send(task, CommandAction::ComplianceScan { profile: String::new(), tailoring: None, auto_install: false });
     let updates = rig.until_terminal(task, 3000).await;
@@ -33,5 +41,5 @@ async fn an_audit_with_no_profile_uses_the_recommended_one_and_rules_apply() {
         assert!(rig.dir.path().join("state/oscap-content/ssg-ubuntu2404-ds-resolute.xml").is_file());
     }
     let info = croustypatch_agent::modules::openscap::info("ubuntu26", false).await.expect("oscap installed");
-    println!("recommended: {} · adapted: {}", info.recommended, info.adapted);
+    println!("datastream: {} · recommended: {} · adapted: {}", info.datastream, info.recommended, info.adapted);
 }
