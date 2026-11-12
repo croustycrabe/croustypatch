@@ -105,50 +105,61 @@ fn local_to_utc(tz: Tz, d: NaiveDate, t: NaiveTime) -> DateTime<Utc> {
     }
 }
 
-/// The most recent scheduled moment at or before `now`.
-pub fn latest_slot(r: &Report, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let tz = parse_tz(&r.timezone)?;
-    let at = NaiveTime::parse_from_str(&r.send_at, "%H:%M").ok()?;
-    let today = now.with_timezone(&tz).date_naive();
-    for back in 0..70 {
-        let d = today - Duration::days(back);
-        let hit = match r.frequency.as_str() {
-            "daily" => true,
-            "weekly" => d.weekday().num_days_from_monday() as i32 == r.weekday,
-            "monthly" => d.day() as i32 == r.day_of_month,
-            _ => return None,
-        };
-        if hit {
-            let slot = local_to_utc(tz, d, at);
-            if slot <= now {
-                return Some(slot);
+/// A repeating moment: daily, weekly (weekday 0 = Monday) or monthly (day of month), at a local time in a zone.
+/// Shared by the reports and the planned compliance audits.
+pub struct Recurrence<'a> {
+    pub frequency: &'a str,
+    pub weekday: i32,
+    pub day_of_month: i32,
+    /// "HH:MM"
+    pub at: &'a str,
+    pub timezone: &'a str,
+}
+
+impl Recurrence<'_> {
+    fn slots(&self, now: DateTime<Utc>, forward: bool) -> Option<DateTime<Utc>> {
+        let tz = parse_tz(self.timezone)?;
+        let at = NaiveTime::parse_from_str(self.at, "%H:%M").ok()?;
+        let today = now.with_timezone(&tz).date_naive();
+        for step in 0..70 {
+            let d = if forward { today + Duration::days(step) } else { today - Duration::days(step) };
+            let hit = match self.frequency {
+                "daily" => true,
+                "weekly" => d.weekday().num_days_from_monday() as i32 == self.weekday,
+                "monthly" => d.day() as i32 == self.day_of_month,
+                _ => return None,
+            };
+            if hit {
+                let slot = local_to_utc(tz, d, at);
+                if (forward && slot > now) || (!forward && slot <= now) {
+                    return Some(slot);
+                }
             }
         }
+        None
     }
-    None
+    /// The most recent moment at or before `now` (None when the recurrence is off or invalid).
+    pub fn latest(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.slots(now, false)
+    }
+    /// The next moment after `now`.
+    pub fn next(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.slots(now, true)
+    }
+}
+
+fn recurrence(r: &Report) -> Recurrence<'_> {
+    Recurrence { frequency: &r.frequency, weekday: r.weekday, day_of_month: r.day_of_month, at: &r.send_at, timezone: &r.timezone }
+}
+
+/// The most recent scheduled moment at or before `now`.
+pub fn latest_slot(r: &Report, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    recurrence(r).latest(now)
 }
 
 /// The next scheduled moment after `now` (for the UI).
 pub fn next_slot(r: &Report, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let tz = parse_tz(&r.timezone)?;
-    let at = NaiveTime::parse_from_str(&r.send_at, "%H:%M").ok()?;
-    let today = now.with_timezone(&tz).date_naive();
-    for add in 0..70 {
-        let d = today + Duration::days(add);
-        let hit = match r.frequency.as_str() {
-            "daily" => true,
-            "weekly" => d.weekday().num_days_from_monday() as i32 == r.weekday,
-            "monthly" => d.day() as i32 == r.day_of_month,
-            _ => return None,
-        };
-        if hit {
-            let slot = local_to_utc(tz, d, at);
-            if slot > now {
-                return Some(slot);
-            }
-        }
-    }
-    None
+    recurrence(r).next(now)
 }
 
 /// Should this report be sent now? A new scheduled moment, or a failed send that is due for another try.
@@ -215,6 +226,16 @@ impl Tx {
             "reboots_title" => ("Machines à redémarrer", "Machines to reboot"),
             "compliance_title" => ("Conformité", "Compliance"),
             "score" => ("Score moyen du parc", "Fleet average score"),
+            "comp_below" => ("Sous le seuil ({t} %)", "Below the threshold ({t} %)"),
+            "comp_period" => ("Audits sur la période", "Audits in the period"),
+            "comp_stale" => ("Dernier audit de plus de 30 jours", "Last audit over 30 days old"),
+            "comp_never" => ("Jamais auditées", "Never audited"),
+            "comp_profile" => ("Profil", "Profile"),
+            "comp_score" => ("Score", "Score"),
+            "comp_failed" => ("Règles en échec", "Failed rules"),
+            "comp_high" => ("dont graves", "of which high"),
+            "comp_na" => ("aucune règle applicable", "no rule applies"),
+            "comp_next" => ("Prochain audit planifié", "Next planned audit"),
             "patch_days_title" => ("Prochains jours de patch", "Next patch days"),
             "policy" => ("Politique", "Policy"),
             "applies" => ("Application", "Applies"),
@@ -421,10 +442,48 @@ pub fn build(c: &mut PgConnection, r: &Report, now: DateTime<Utc>) -> ApiResult<
     }
     if s.compliance {
         blocks.push(Block::Heading(tx.t("compliance_title")));
-        blocks.push(Block::Para(match compliance_api::fleet_score(c)? {
-            Some(score) => format!("{} : {score:.1} %", tx.t("score")),
-            None => tx.t("none"),
-        }));
+        let limit = crate::compliance::threshold(c);
+        // the latest audit of each machine in scope, worst score first; an audit where no rule applied has no score
+        let mut rows: Vec<compliance_api::Row> = compliance_api::latest(c)?.into_iter().filter(|r| in_scope.contains(&r.1)).collect();
+        let scored = |r: &compliance_api::Row| r.3 + r.4 > 0;
+        rows.sort_by(|a, b| scored(b).cmp(&scored(a)).then(a.6.partial_cmp(&b.6).unwrap_or(std::cmp::Ordering::Equal)));
+        let scores: Vec<f64> = rows.iter().filter(|r| scored(r)).map(|r| r.6).collect();
+        let below = rows.iter().filter(|r| scored(r) && r.6 < limit).count();
+        let in_period = rows.iter().filter(|r| r.9 >= since).count();
+        let stale = rows.iter().filter(|r| r.9 < now - Duration::days(30)).count();
+        // machines that should be audited (OpenSCAP module on) and never were
+        let audited: HashSet<Uuid> = rows.iter().map(|r| r.1).collect();
+        let mut never = 0;
+        for id in ids.iter().filter(|i| !audited.contains(i)) {
+            never += crate::modules::for_host(c, *id).map(|m| m.openscap as usize).unwrap_or(0);
+        }
+        blocks.push(Block::Stats(vec![
+            (tx.t("score"), if scores.is_empty() { tx.t("none") } else { format!("{:.1} %", scores.iter().sum::<f64>() / scores.len() as f64) }),
+            (tx.t("comp_below").replace("{t}", &format!("{limit:.0}")), below.to_string()),
+            (tx.t("comp_period"), in_period.to_string()),
+            (tx.t("comp_stale"), stale.to_string()),
+            (tx.t("comp_never"), never.to_string()),
+        ]));
+        if !rows.is_empty() {
+            let high = |r: &compliance_api::Row| r.7.as_array().map(|a| a.iter().filter(|x| x.get("severity").and_then(|s| s.as_str()) == Some("high")).count()).unwrap_or(0);
+            blocks.push(Block::Table {
+                head: vec![tx.t("machine"), tx.t("comp_profile"), tx.t("comp_score"), tx.t("comp_failed"), tx.t("comp_high"), tx.t("when")],
+                rows: rows
+                    .iter()
+                    .take(40)
+                    .map(|r| {
+                        let score = if !scored(r) { tx.t("comp_na") } else if r.6 < limit { format!("{:.1} % ▼", r.6) } else { format!("{:.1} %", r.6) };
+                        vec![names.get(&r.1).copied().unwrap_or("?").to_string(), cut(&r.2.replace("xccdf_org.ssgproject.content_profile_", ""), 40), score, r.4.to_string(), high(r).to_string(), fmt_time(r.9, tz)]
+                    })
+                    .collect(),
+            });
+            if rows.len() > 40 {
+                blocks.push(Block::Para(tx.t("more").replace("{n}", &(rows.len() - 40).to_string())));
+            }
+        }
+        if let Some(next) = crate::api::admin::load_setting_plain(c, "compliance").and_then(|v| crate::compliance::planned_next(&v, now)) {
+            blocks.push(Block::Para(format!("{} : {}", tx.t("comp_next"), fmt_time(next, tz))));
+        }
     }
     if s.patch_days {
         let pols: Vec<(Uuid, String, Value)> = policies::table.filter(policies::enabled.eq(true)).order((policies::priority.asc(), policies::name.asc())).select((policies::id, policies::name, policies::definition)).load(c)?;

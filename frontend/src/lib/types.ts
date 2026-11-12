@@ -336,7 +336,7 @@ export interface Settings {
   ai: { enabled: boolean; provider: string; base_url: string; model: string; api_key: string; api_key_set?: boolean };
   connectivity: { mode: 'connected' | 'air_gapped' };
   agent: { heartbeat_secs: number };
-  compliance: { threshold: number; profile: string; auto_install: boolean };
+  compliance: { threshold: number; profile: string; auto_install: boolean; schedule?: AuditSchedule };
   /** What stays reachable while a host is isolated, besides the server. */
   isolation: { keep_ssh: boolean; ssh_port: number; ssh_sources: string[] };
 }
@@ -361,13 +361,16 @@ export interface PackageHost {
 
 export interface ScapProfile { id: string; title: string }
 /** What the agent found: oscap version, the SCAP content it uses and that content's profiles. */
-export interface OpenScapInfo { version: string; datastream: string; profiles: ScapProfile[] }
+/** `recommended`: the profile used when none is chosen (agents 0.8+); `adapted`: "noble → resolute" when the content of another release is pointed at this one. */
+export interface OpenScapInfo { version: string; datastream: string; profiles: ScapProfile[]; recommended?: string; adapted?: string }
 export interface CompReport { id: string; profile: string; passed: number; failed: number; not_applicable: number; score: number; results_sha256: string; collected_at: string; failed_rules?: { rule_id: string; severity: string }[] }
-export interface CompHost { reports: CompReport[]; openscap: OpenScapInfo | null; module: boolean; profile: string; effective_profile: string; auto_install: boolean }
+export interface CompHost { reports: CompReport[]; openscap: OpenScapInfo | null; module: boolean; profile: string; effective_profile: string; auto_install: boolean; package_manager?: string | null }
 export interface CompProfile { id: string; name: string; description: string; base_profile: string; disabled_rules: string[]; used_by: number; created_at: string; updated_at: string }
 export interface CompProfiles { custom: CompProfile[]; available: { id: string; title: string; hosts: number }[]; hosts_with_openscap: number; default: string }
 export interface FailingRule { rule_id: string; severity: string; hosts: number }
-export interface CompFleet { score: number | null; threshold: number; hosts: (CompReport & { host_id: string; hostname: string | null })[] }
+/** Planned audits of the fleet (`frequency` off: none); weekday 0 = Monday. */
+export interface AuditSchedule { frequency: 'off' | 'daily' | 'weekly' | 'monthly'; weekday: number; day_of_month: number; at: string; timezone: string }
+export interface CompFleet { score: number | null; threshold: number; planned_next?: string | null; hosts: (CompReport & { host_id: string; hostname: string | null })[] }
 
 /** A page of rows with the total behind it (`page` is 1-based, as in the API). */
 export interface Paged<T> { items: T[]; total: number; page: number; per_page: number }

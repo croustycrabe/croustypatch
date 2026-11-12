@@ -7,7 +7,8 @@ import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
-import type { CompFleet, CompHost, CompProfile, CompProfiles, FailingRule, Settings } from '@/lib/types';
+import type { AuditSchedule, CompFleet, CompHost, CompProfile, CompProfiles, FailingRule, Settings } from '@/lib/types';
+import { browserZone } from './PatchSchedule';
 import { Button, Card, ConfirmDialog, Dialog, Empty, Field, Notice, Select, Spinner, StatCard, Switch, Table, Tag, TextArea, TextInput } from './ui';
 
 const RULE_PREFIX = 'xccdf_org.ssgproject.content_rule_';
@@ -28,7 +29,7 @@ export function useProfileLabel(profiles: CompProfiles | undefined) {
 }
 
 /** Profile chooser: the fleet default, the profiles of the SCAP content, and the custom ones. */
-export function ProfileSelect({ id, value, onChange, profiles, available, emptyLabel, disabled }: { id?: string; value: string; onChange: (v: string) => void; profiles: CompProfiles; available?: { id: string; title: string }[]; emptyLabel: string; disabled?: boolean }) {
+export function ProfileSelect({ id, value, onChange, profiles, available, recommended, emptyLabel, disabled }: { id?: string; value: string; onChange: (v: string) => void; profiles: CompProfiles; available?: { id: string; title: string }[]; recommended?: string; emptyLabel: string; disabled?: boolean }) {
   const { t } = useI18n();
   const std = available?.length ? available : profiles.available;
   const known = value === '' || value.startsWith(CUSTOM) || std.some((p) => p.id === value);
@@ -37,7 +38,7 @@ export function ProfileSelect({ id, value, onChange, profiles, available, emptyL
       <option value="">{emptyLabel}</option>
       {std.length > 0 && (
         <optgroup label={t('comp.profile.group.std')}>
-          {std.map((p) => <option key={p.id} value={p.id}>{p.title || shortRule(p.id)}</option>)}
+          {std.map((p) => <option key={p.id} value={p.id}>{p.title || shortRule(p.id)}{p.id === recommended ? ` · ${t('comp.profile.rec')}` : ''}</option>)}
           {!known && <option value={value}>{value}</option>}
         </optgroup>
       )}
@@ -62,6 +63,8 @@ export function HostCompliance({ hostId, modules, canScan, onScan }: { hostId: s
   const last = r.data?.reports[0];
   const info = r.data?.openscap ?? null;
   const label = useProfileLabel(profiles.data);
+  /** A profile by the title this host's content gives it. */
+  const hostLabel = (ref: string) => info?.profiles.find((p) => p.id === ref)?.title || label(ref);
 
   const setProfile = (v: string) => act.run(async () => {
     await api('PATCH', `/hosts/${hostId}`, { compliance_profile: v });
@@ -81,12 +84,14 @@ export function HostCompliance({ hostId, modules, canScan, onScan }: { hostId: s
         <Card title={t('comp.status')}>
           <div className="stack">
             {!r.data.module ? <Notice kind="info">{t('comp.status.off')}</Notice>
+              : r.data.package_manager === 'pacman' && !info?.datastream ? <Notice kind="info">{t('comp.status.arch')}</Notice>
               : !info ? <Notice kind="info">{t('comp.status.missing')} {r.data.auto_install ? t('comp.status.missing.auto') : t('comp.status.missing.manual')}</Notice>
               : !info.datastream ? <Notice kind="info">{t('comp.status.nocontent', { version: info.version })}</Notice>
               : <p style={{ margin: 0 }}>{t('comp.status.ok', { version: info.version, n: info.profiles.length })} <span className="muted mono" style={{ fontSize: 12 }}>{info.datastream.split('/').pop()}</span></p>}
+            {info?.adapted && <Notice kind="info">{t('comp.status.adapted', { note: info.adapted })}</Notice>}
             {profiles.data && (
-              <Field label={t('comp.profile.host')} hint={r.data.profile === '' ? t('comp.profile.effective', { name: label(r.data.effective_profile) }) : undefined}>
-                {(i) => <ProfileSelect id={i} value={r.data!.profile} profiles={profiles.data!} available={info?.profiles} emptyLabel={t('comp.profile.default')} disabled={!can('hosts:write') || act.pending} onChange={(v) => void setProfile(v)} />}
+              <Field label={t('comp.profile.host')} hint={r.data.profile !== '' ? undefined : !r.data.effective_profile && info?.recommended ? t('comp.profile.recommended', { name: hostLabel(info.recommended) }) : t('comp.profile.effective', { name: hostLabel(r.data.effective_profile) })}>
+                {(i) => <ProfileSelect id={i} value={r.data!.profile} profiles={profiles.data!} available={info?.profiles} recommended={info?.recommended} emptyLabel={t('comp.profile.default')} disabled={!can('hosts:write') || act.pending} onChange={(v) => void setProfile(v)} />}
               </Field>
             )}
           </div>
@@ -236,8 +241,10 @@ function ProfileEditor({ profile, profiles, onClose, onSaved }: { profile: CompP
 }
 
 /** The Compliance page: fleet scores, audit settings and the custom profiles. */
+const noSchedule = (): AuditSchedule => ({ frequency: 'off', weekday: 6, day_of_month: 1, at: '03:00', timezone: browserZone() });
+
 export function CompliancePage() {
-  const { t, date } = useI18n();
+  const { t, tr, date } = useI18n();
   const { can } = useAuth();
   const toast = useToast();
   const act = useAction();
@@ -250,7 +257,7 @@ export function CompliancePage() {
   const writable = can('settings:write');
   const label = useProfileLabel(profiles.data);
 
-  useEffect(() => { if (settings.data) setCfg({ ...settings.data.compliance, auto_install: settings.data.compliance.auto_install ?? true }); }, [settings.data]);
+  useEffect(() => { if (settings.data) setCfg({ ...settings.data.compliance, auto_install: settings.data.compliance.auto_install ?? true, schedule: { ...noSchedule(), ...settings.data.compliance.schedule } }); }, [settings.data]);
 
   if (!fleet.data || !profiles.data) return fleet.error || profiles.error ? <Notice kind="error">{(fleet.error ?? profiles.error)!.message}</Notice> : <Spinner />;
   const f = fleet.data, p = profiles.data;
@@ -261,6 +268,8 @@ export function CompliancePage() {
     toast.success(t('common.saved'));
     settings.reload(); profiles.reload(); fleet.reload();
   });
+  const sch = cfg?.schedule ?? noSchedule();
+  const setSch = (patch: Partial<AuditSchedule>) => cfg && setCfg({ ...cfg, schedule: { ...sch, ...patch } });
   const remove = (x: CompProfile) => act.run(async () => {
     await api('DELETE', `/compliance/profiles/${x.id}`);
     setDel(null);
@@ -309,6 +318,21 @@ export function CompliancePage() {
               <Switch checked={cfg.auto_install} disabled={!writable} onChange={(v) => setCfg({ ...cfg, auto_install: v })}><span className="sr-only">{t('comp.settings.auto')}</span></Switch>
             </div>
           </div>
+          <fieldset className="fieldset" style={{ marginTop: 16 }}>
+            <legend>{t('comp.plan')}</legend>
+            <p className="field__hint" style={{ marginTop: 0 }}>{t('comp.plan.hint')}</p>
+            <div className="form-grid">
+              <Field label={t('rep.frequency')}>{(i) => (
+                <Select id={i} value={sch.frequency} disabled={!writable} onChange={(e) => setSch({ frequency: e.target.value as AuditSchedule['frequency'] })}>
+                  <option value="off">{t('comp.plan.off')}</option><option value="daily">{t('rep.f.daily')}</option><option value="weekly">{t('rep.f.weekly')}</option><option value="monthly">{t('rep.f.monthly')}</option>
+                </Select>)}</Field>
+              {sch.frequency === 'weekly' && <Field label={t('pol.patchday.weekday')}>{(i) => <Select id={i} value={sch.weekday} disabled={!writable} onChange={(e) => setSch({ weekday: Number(e.target.value) })}>{[0, 1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{tr('dayfull', String(n))}</option>)}</Select>}</Field>}
+              {sch.frequency === 'monthly' && <Field label={t('pol.patchday.day_of_month')}>{(i) => <TextInput id={i} type="number" min={1} max={28} value={sch.day_of_month} disabled={!writable} onChange={(e) => setSch({ day_of_month: Number(e.target.value) })} />}</Field>}
+              {sch.frequency !== 'off' && <Field label={t('rep.time')}>{(i) => <TextInput id={i} type="time" value={sch.at} disabled={!writable} onChange={(e) => setSch({ at: e.target.value })} required />}</Field>}
+              {sch.frequency !== 'off' && <Field label={t('pol.patchday.timezone')}>{(i) => <TextInput id={i} value={sch.timezone} disabled={!writable} onChange={(e) => setSch({ timezone: e.target.value })} placeholder="Europe/Paris" required />}</Field>}
+            </div>
+            {f.planned_next && <p className="muted" style={{ marginBottom: 0 }}>{t('comp.plan.next', { when: date(f.planned_next) })}</p>}
+          </fieldset>
         </Card>
       )}
 

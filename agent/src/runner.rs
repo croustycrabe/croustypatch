@@ -272,7 +272,8 @@ async fn compliance(agent: &Agent, id: Uuid, profile: &str, tailoring: Option<&T
         let _ = agent.send_inventory().await;
     }
     agent.update(id, TaskStatus::Running, "compliance scan running (low priority)", log, vec![], false);
-    let report = openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, tailoring, &hint, kind, &facts.distro, log).await?;
+    let target = openscap::Target { hint: &hint, kind, distro: &facts.distro, workstation: facts.is_laptop || facts.is_desktop };
+    let report = openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, tailoring, &target, log).await?;
     let msg = if report.passed + report.failed == 0 {
         format!("compliance: no rule applies to this system ({} not applicable): the SCAP content does not cover this release", report.not_applicable)
     } else {

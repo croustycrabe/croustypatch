@@ -815,3 +815,18 @@ async fn the_air_gapped_mode_is_sent_to_the_agents() {
     call(&app, TestRequest::put().uri("/api/v1/settings/connectivity").cookie(ck.clone()).set_json(json!({"mode": "connected"}))).await;
     assert!(!offline());
 }
+
+#[test]
+fn a_fleet_default_profile_a_host_lacks_gives_way_to_its_recommended_one() {
+    use croustypatch_server::compliance::fleet_default_for;
+    let cis = "xccdf_org.ssgproject.content_profile_cis_level1_server";
+    let ubuntu = json!({"profiles": [{"id": cis, "title": "CIS"}, {"id": "xccdf_org.ssgproject.content_profile_stig", "title": "STIG"}], "recommended": cis});
+    let debian = json!({"profiles": [{"id": "xccdf_org.ssgproject.content_profile_standard", "title": "Standard"}]});
+    assert_eq!(fleet_default_for(cis, Some(&ubuntu)), cis, "the host has it");
+    assert_eq!(fleet_default_for(cis, Some(&debian)), "", "Debian's content has no CIS for Ubuntu: the agent uses its recommended one");
+    assert_eq!(fleet_default_for(cis, None), cis, "content not known yet: the choice is sent as is");
+    assert_eq!(fleet_default_for(cis, Some(&json!({"profiles": []}))), cis);
+    assert_eq!(fleet_default_for("", Some(&ubuntu)), "", "automatic");
+    let custom = "custom:6a0c3f9e-2f6c-4d55-9a3f-0b1f7d0f2a11";
+    assert_eq!(fleet_default_for(custom, Some(&debian)), custom, "a custom profile is kept (the agent says when its base is missing)");
+}

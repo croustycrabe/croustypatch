@@ -52,6 +52,12 @@ pub struct OpenScapInfo {
     /// The SCAP Security Guide datastream used (empty when no content is installed).
     pub datastream: String,
     pub profiles: Vec<ScapProfile>,
+    /// The profile audits use when nobody chose one: the baseline for this system and kind of machine (CIS level 1
+    /// server or workstation, Debian's standard...). Empty on agents before 0.8.
+    pub recommended: String,
+    /// The content was written for another release and its release checks are pointed at this one ("noble → resolute"
+    /// on Ubuntu 26.04 with the 24.04 benchmark); empty when it is used as is.
+    pub adapted: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

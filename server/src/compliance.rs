@@ -84,13 +84,25 @@ pub fn auto_install(c: &mut PgConnection) -> bool {
     settings::table.find("compliance").select(settings::value).first::<Value>(c).optional().ok().flatten().and_then(|v| v.get("auto_install").and_then(|t| t.as_bool())).unwrap_or(true)
 }
 
-/// The profile a host is audited with when nobody names one: its own, else the fleet default, else '' (SSG "standard").
+/// The profile a host is audited with when nobody names one: its own, else the fleet default when its content has it,
+/// else '' (the agent then audits with the profile it recommends for that system and kind of machine).
 pub fn effective_profile(c: &mut PgConnection, host_id: Uuid) -> String {
-    let own: String = hosts::table.find(host_id).select(hosts::compliance_profile).first(c).unwrap_or_default();
+    let (own, facts): (String, Value) = hosts::table.find(host_id).select((hosts::compliance_profile, hosts::facts)).first(c).unwrap_or_default();
     if !own.is_empty() {
         return own;
     }
-    settings::table.find("compliance").select(settings::value).first::<Value>(c).optional().ok().flatten().and_then(|v| v.get("profile").and_then(|p| p.as_str().map(str::to_owned))).unwrap_or_default()
+    let fleet = settings::table.find("compliance").select(settings::value).first::<Value>(c).optional().ok().flatten().and_then(|v| v.get("profile").and_then(|p| p.as_str().map(str::to_owned))).unwrap_or_default();
+    fleet_default_for(&fleet, facts.get("openscap"))
+}
+
+/// One fleet default for Ubuntu, Debian and Red Hat machines cannot name a profile they all have (CIS for Ubuntu 24.04
+/// does not exist in Debian's content): a host whose content is known and lacks it gets its recommended profile instead.
+pub fn fleet_default_for(fleet: &str, openscap: Option<&Value>) -> String {
+    if fleet.is_empty() || fleet.starts_with(CUSTOM_PREFIX) {
+        return fleet.to_string();
+    }
+    let profiles: Vec<&str> = openscap.and_then(|o| o.get("profiles")).and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|p| p.get("id").and_then(|i| i.as_str())).collect()).unwrap_or_default();
+    if profiles.is_empty() || profiles.contains(&fleet) { fleet.to_string() } else { String::new() }
 }
 
 /// The `exec` of a compliance task: the profile to evaluate, the tailoring when it is a custom one, and whether the
@@ -117,4 +129,103 @@ pub fn exec_for(c: &mut PgConnection, host_id: Uuid, requested: &str) -> ApiResu
 /// Is the OpenSCAP module on for this host?
 pub fn for_host_openscap(c: &mut PgConnection, host_id: Uuid) -> ApiResult<bool> {
     Ok(crate::modules::for_host(c, host_id)?.openscap)
+}
+
+// ------------------------------------------------------------------------------------------ planned audits
+
+/// When the fleet is audited without anyone asking: the `schedule` of the `compliance` setting. `frequency` "off" (the
+/// default), "daily", "weekly" (weekday 0 = Monday) or "monthly" (day 1 to 28), at a local time in a time zone.
+pub fn schedule_of(setting: &Value) -> Option<(String, i32, i32, String, String)> {
+    let s = setting.get("schedule")?;
+    let f = s.get("frequency").and_then(|v| v.as_str()).unwrap_or("off");
+    if !matches!(f, "daily" | "weekly" | "monthly") {
+        return None;
+    }
+    let num = |k: &str, d: i64| s.get(k).and_then(|v| v.as_i64()).unwrap_or(d) as i32;
+    let txt = |k: &str, d: &str| s.get(k).and_then(|v| v.as_str()).unwrap_or(d).to_string();
+    Some((f.to_string(), num("weekday", 0), num("day_of_month", 1), txt("at", "03:00"), txt("timezone", "UTC")))
+}
+
+/// What a `schedule` may say (checked when the setting is saved).
+pub fn validate_schedule(v: Option<&Value>) -> Result<(), String> {
+    let Some(s) = v else { return Ok(()) };
+    let f = s.get("frequency").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(f, "off" | "daily" | "weekly" | "monthly") {
+        return Err("schedule.frequency must be off, daily, weekly or monthly".into());
+    }
+    let num = |k: &str| s.get(k).map(|v| v.as_i64());
+    if matches!(num("weekday"), Some(None)) || num("weekday").flatten().is_some_and(|d| !(0..=6).contains(&d)) {
+        return Err("schedule.weekday must be 0 (Monday) to 6".into());
+    }
+    if matches!(num("day_of_month"), Some(None)) || num("day_of_month").flatten().is_some_and(|d| !(1..=28).contains(&d)) {
+        return Err("schedule.day_of_month must be 1 to 28".into());
+    }
+    let at = s.get("at").and_then(|v| v.as_str()).unwrap_or("03:00");
+    if chrono::NaiveTime::parse_from_str(at, "%H:%M").is_err() || at.len() != 5 {
+        return Err("schedule.at must be HH:MM".into());
+    }
+    let tz = s.get("timezone").and_then(|v| v.as_str()).unwrap_or("UTC");
+    if tz.parse::<chrono_tz::Tz>().is_err() {
+        return Err(format!("schedule.timezone: unknown time zone {tz}"));
+    }
+    Ok(())
+}
+
+/// A planned moment is only caught up within this delay: a server that was down for a week does not audit the fleet
+/// for a moment long past, and switching the schedule on in the afternoon does not run this morning's audit.
+const CATCH_UP_HOURS: i64 = 6;
+
+/// The moment of the planned audit due now, if one is: the latest scheduled moment, not done yet, recent enough.
+pub fn planned_due(setting: &Value, last_done: Option<chrono::DateTime<chrono::Utc>>, enabled_at: Option<chrono::DateTime<chrono::Utc>>, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (f, wd, dom, at, tz) = schedule_of(setting)?;
+    let slot = crate::reports::Recurrence { frequency: &f, weekday: wd, day_of_month: dom, at: &at, timezone: &tz }.latest(now)?;
+    let fresh = now - slot <= chrono::Duration::hours(CATCH_UP_HOURS);
+    let new = last_done.is_none_or(|d| slot > d);
+    let after_enabling = enabled_at.is_none_or(|e| slot >= e);
+    (fresh && new && after_enabling).then_some(slot)
+}
+
+/// The next planned audit (for the page), None when the schedule is off.
+pub fn planned_next(setting: &Value, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (f, wd, dom, at, tz) = schedule_of(setting)?;
+    crate::reports::Recurrence { frequency: &f, weekday: wd, day_of_month: dom, at: &at, timezone: &tz }.next(now)
+}
+
+/// The audit-log action that marks a planned audit as started (its details hold the moment and the hosts).
+pub const PLANNED_ACTION: &str = "compliance.planned_run";
+
+/// Start the planned audit when one is due: a compliance task for every host whose OpenSCAP module is on (not the
+/// quarantined or not yet approved ones, nor those with an audit already open). Hosts that are offline get theirs when
+/// they come back. Returns how many audits were queued.
+pub fn run_planned(c: &mut PgConnection, now: chrono::DateTime<chrono::Utc>) -> ApiResult<usize> {
+    use crate::schema::{audit_log, task_events};
+    let row: Option<(Value, chrono::DateTime<chrono::Utc>)> = settings::table.find("compliance").select((settings::value, settings::updated_at)).first(c).optional()?;
+    let Some((setting, updated_at)) = row else { return Ok(0) };
+    let last: Option<Value> = audit_log::table.filter(audit_log::action.eq(PLANNED_ACTION)).order(audit_log::seq.desc()).select(audit_log::details).first(c).optional()?;
+    let last_done = last.as_ref().and_then(|d| d.get("slot")).and_then(|s| s.as_str()).and_then(|s| s.parse().ok());
+    // the schedule as saved: a moment before the setting was last changed belongs to a schedule that may not exist
+    let Some(slot) = planned_due(&setting, last_done, Some(updated_at), now) else { return Ok(0) };
+    c.transaction::<_, ApiError, _>(|c| {
+        let ids: Vec<(Uuid, String)> = hosts::table.filter(hosts::status.ne_all(["quarantined", "pending"])).select((hosts::id, hosts::hostname)).load(c)?;
+        let mut queued = vec![];
+        for (id, name) in ids {
+            if !crate::modules::for_host(c, id)?.openscap {
+                continue;
+            }
+            let open: i64 = tasks::table.filter(tasks::host_id.eq(id)).filter(tasks::kind.eq("compliance")).filter(tasks::status.eq_any(crate::planner::OPEN)).count().get_result(c)?;
+            if open > 0 {
+                continue;
+            }
+            let Ok(exec) = exec_for(c, id, "") else { continue };
+            let msg = "planned compliance audit";
+            let tid: Uuid = diesel::insert_into(tasks::table)
+                .values((tasks::host_id.eq(id), tasks::kind.eq("compliance"), tasks::status.eq("queued"), tasks::requested_by.eq("schedule"), tasks::message.eq(msg), tasks::exec.eq(Some(exec))))
+                .returning(tasks::id)
+                .get_result(c)?;
+            diesel::insert_into(task_events::table).values((task_events::task_id.eq(tid), task_events::status.eq("queued"), task_events::message.eq(msg))).execute(c)?;
+            queued.push(name);
+        }
+        audit::record(c, Event::new("system", PLANNED_ACTION).target("setting", "compliance").details(json!({ "slot": slot.to_rfc3339(), "hosts": queued.len(), "hostnames": queued.iter().take(50).collect::<Vec<_>>() })))?;
+        Ok(queued.len())
+    })
 }

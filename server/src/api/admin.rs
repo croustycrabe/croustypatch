@@ -233,10 +233,15 @@ pub fn default_setting(key: &str) -> Value {
         "ai" => json!({ "enabled": false, "provider": "openai_compatible", "base_url": "", "model": "", "api_key": "" }),
         "connectivity" => json!({ "mode": "connected" }),
         "agent" => json!({ "heartbeat_secs": 60 }),
-        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "", "auto_install": true }),
+        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "", "auto_install": true, "schedule": { "frequency": "off", "weekday": 6, "day_of_month": 1, "at": "03:00", "timezone": "UTC" } }),
         "isolation" => serde_json::to_value(croustypatch_common::protocol::IsolationSettings::default()).unwrap_or_default(),
         _ => json!({}),
     }
+}
+
+/// A setting that is never encrypted, as saved (None when it was never saved).
+pub fn load_setting_plain(c: &mut PgConnection, key: &str) -> Option<Value> {
+    settings::table.find(key).filter(settings::encrypted.eq(false)).select(settings::value).first(c).optional().ok().flatten()
 }
 
 /// Load a setting (decrypting if needed), falling back to its default.
@@ -362,6 +367,7 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
             if v.get("auto_install").is_some_and(|a| !a.is_boolean()) {
                 return Err(ApiError::bad("auto_install must be true or false"));
             }
+            crate::compliance::validate_schedule(v.get("schedule")).map_err(ApiError::bad)?;
         }
         "isolation" => {
             let iso: croustypatch_common::protocol::IsolationSettings = serde_json::from_value(v.clone()).map_err(|_| ApiError::bad("isolation needs keep_ssh (bool), ssh_port (1-65535) and ssh_sources (list)"))?;

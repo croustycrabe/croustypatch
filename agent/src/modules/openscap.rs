@@ -149,10 +149,13 @@ pub fn install_plan(have_oscap: bool, have_content: bool, auto_install: bool, ki
     }
 }
 
-/// How an administrator installs what is missing on this system (for the error messages).
-/// The profile used when none is chosen: the first of these that the content has.
+/// The profile asked for when the content could not be listed and nobody chose one.
 pub const DEFAULT_PROFILE: &str = "xccdf_org.ssgproject.content_profile_standard";
-const PREFERRED: &[&str] = &["standard", "cis_level1_server", "cis", "cis_level2_server", "anssi_bp28_enhanced", "stig"];
+/// The recommended profile when none is chosen, by kind of machine: the first of these that the content has. CIS level 1
+/// is the common baseline (Ubuntu: cis_level1_*, Red Hat family: cis_*_l1); `standard` (Debian) and ANSSI minimal come
+/// next; STIG and level 2 are strict and only used when the content has nothing else.
+const SERVER: &[&str] = &["cis_level1_server", "cis_server_l1", "standard", "anssi_bp28_minimal", "cis", "cis_level2_server", "cis_server_l2", "stig"];
+const WORKSTATION: &[&str] = &["cis_level1_workstation", "cis_workstation_l1", "standard", "anssi_bp28_minimal", "cis_level1_server", "cis_server_l1", "cis", "stig"];
 
 fn list_some(ids: &[String]) -> String {
     let short = |i: &String| i.replace("xccdf_org.ssgproject.content_profile_", "");
@@ -164,8 +167,9 @@ fn list_some(ids: &[String]) -> String {
 }
 
 /// The profile to audit with: the one asked for if the content has it (an error naming the ones it has otherwise), or,
-/// when none was asked for, the most common one it has. `available` empty means it could not be listed: trust the request.
-pub fn pick_profile(requested: &str, available: &[String]) -> Result<String, String> {
+/// when none was asked for, the one recommended for this kind of machine (laptops and desktops are workstations).
+/// `available` empty means it could not be listed: trust the request.
+pub fn pick_profile(requested: &str, available: &[String], workstation: bool) -> Result<String, String> {
     let requested = requested.trim();
     if available.is_empty() {
         return Ok(if requested.is_empty() { DEFAULT_PROFILE.to_string() } else { requested.to_string() });
@@ -174,7 +178,95 @@ pub fn pick_profile(requested: &str, available: &[String]) -> Result<String, Str
         return if available.iter().any(|a| a == requested) { Ok(requested.to_string()) } else { Err(format!("profile {requested} does not exist in this SCAP content; it has: {}", list_some(available))) };
     }
     let has = |short: &str| available.iter().find(|a| a.as_str() == format!("xccdf_org.ssgproject.content_profile_{short}"));
-    Ok(PREFERRED.iter().find_map(|p| has(p)).unwrap_or(&available[0]).clone())
+    let order = if workstation { WORKSTATION } else { SERVER };
+    Ok(order.iter().find_map(|p| has(p)).unwrap_or(&available[0]).clone())
+}
+
+/// The release codename of this machine (`resolute` for Ubuntu 26.04): DISTRIB_CODENAME of /etc/lsb-release, else
+/// VERSION_CODENAME of os-release. Lower-case letters only, or empty.
+pub fn parse_codename(lsb_release: &str, os_release: &str) -> String {
+    let get = |text: &str, key: &str| text.lines().find_map(|l| l.trim().strip_prefix(key).and_then(|v| v.strip_prefix('='))).map(|v| v.trim().trim_matches('"').to_string());
+    let ok = |v: &String| !v.is_empty() && v.len() <= 32 && v.chars().all(|c| c.is_ascii_lowercase());
+    get(lsb_release, "DISTRIB_CODENAME").filter(ok).or_else(|| get(os_release, "VERSION_CODENAME").filter(ok)).unwrap_or_default()
+}
+
+pub fn host_codename() -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+    parse_codename(&read("/etc/lsb-release"), &read("/etc/os-release"))
+}
+
+const CODENAME_CHECK: &str = "^DISTRIB_CODENAME=";
+
+/// The release codenames a datastream's applicability checks expect: Ubuntu content only applies where
+/// `/etc/lsb-release` matches `^DISTRIB_CODENAME=noble$` (24.04), so on any other release every rule is "not applicable".
+pub fn content_codenames(xml: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for (i, _) in xml.match_indices(CODENAME_CHECK) {
+        let rest = &xml[i + CODENAME_CHECK.len()..];
+        let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+        if !name.is_empty() && rest[name.len()..].starts_with('$') && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The datastream with its release checks pointed at `codename` (the rules themselves are unchanged), or None when it
+/// has no such check or already targets that release. This is how content written for the previous LTS audits a newer
+/// one (Ubuntu 26.04 with the 24.04 benchmark) until the SCAP Security Guide ships content for it.
+pub fn adapt_codename(xml: &str, codename: &str) -> Option<String> {
+    let found = content_codenames(xml);
+    if codename.is_empty() || found.is_empty() || found.iter().any(|c| c == codename) {
+        return None;
+    }
+    let mut out = xml.to_string();
+    for old in &found {
+        out = out.replace(&format!("{CODENAME_CHECK}{old}$"), &format!("{CODENAME_CHECK}{codename}$"));
+    }
+    Some(out)
+}
+
+/// What [`adapt_codename`] would do to this datastream on this machine, said as "noble → resolute" (empty: nothing).
+fn adaptation_note(ds: &Path, codename: &str) -> String {
+    let Ok(xml) = std::fs::read_to_string(ds) else { return String::new() };
+    let found = content_codenames(&xml);
+    if codename.is_empty() || found.is_empty() || found.iter().any(|c| c == codename) {
+        return String::new();
+    }
+    format!("{} → {codename}", found.join(", "))
+}
+
+/// The adapted copy of `ds` for this machine's release, kept in the agent's state directory and remade when the content
+/// changes. None when no adaptation is needed or the copy does not validate (the original is then used).
+async fn adapted_datastream(r: &Runner, ds: &Path, state_dir: &Path, codename: &str, log: &TaskLog) -> Option<PathBuf> {
+    let stem = ds.file_stem()?.to_str()?;
+    let dir = state_dir.join("oscap-content");
+    let copy = dir.join(format!("{stem}-{codename}.xml"));
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    if copy.is_file() && modified(&copy) >= modified(ds) {
+        return Some(copy);
+    }
+    let xml = std::fs::read_to_string(ds).ok()?;
+    let adapted = adapt_codename(&xml, codename)?;
+    std::fs::create_dir_all(&dir).ok()?;
+    if let Err(e) = crate::config::write_private(&copy, adapted.as_bytes()) {
+        log.line(format!("could not write the adapted SCAP content: {e}"));
+        return None;
+    }
+    let cp = copy.to_string_lossy().to_string();
+    match r.read(Cmd::new("oscap", &["ds", "sds-validate", &cp]).timeout(300)).await {
+        Ok(o) if o.code == 0 => Some(copy),
+        Ok(o) => {
+            log.line(format!("the adapted SCAP content does not validate ({}), using the original", o.stderr.lines().last().unwrap_or("").trim()));
+            let _ = std::fs::remove_file(&copy);
+            None
+        }
+        Err(e) => {
+            log.line(format!("could not validate the adapted SCAP content ({e}), using the original"));
+            let _ = std::fs::remove_file(&copy);
+            None
+        }
+    }
 }
 
 /// Said on Arch, where an audit has nothing to run: the SCAP Security Guide has no benchmark for Arch Linux.
@@ -191,51 +283,82 @@ pub fn install_hint(kind: PackageManager, distro: &str) -> String {
 type Cache = Mutex<Option<(PathBuf, u64, OpenScapInfo)>>;
 static CACHE: Cache = Mutex::new(None);
 
+/// The machine an audit runs on, as the facts describe it.
+pub struct Target<'a> {
+    /// "ubuntu26", "debian12"...: which content to look for.
+    pub hint: &'a str,
+    pub kind: PackageManager,
+    pub distro: &'a str,
+    /// A laptop or a desktop: the workstation profiles are recommended rather than the server ones.
+    pub workstation: bool,
+}
+
+/// The content used on this machine, and whether it is meant for another release of it.
+fn content_for(hint: &str) -> Option<(PathBuf, bool)> {
+    let ds = find_datastream(Path::new(CONTENT_DIR), hint)?;
+    let other_release = !hint.is_empty() && !ds.to_string_lossy().contains(&hint.to_ascii_lowercase());
+    Some((ds, other_release))
+}
+
 /// What OpenSCAP offers on this machine, or None when it is not installed. The profiles are read once per content file.
-pub async fn info(distro_hint: &str) -> Option<OpenScapInfo> {
+pub async fn info(distro_hint: &str, workstation: bool) -> Option<OpenScapInfo> {
     if !available() {
         return None;
     }
     let version = exec::run(&Cmd::new("oscap", &["--version"]).timeout(20)).await.ok().map(|o| parse_version(&o.stdout)).unwrap_or_default();
-    let Some(ds) = find_datastream(Path::new(CONTENT_DIR), distro_hint) else {
-        return Some(OpenScapInfo { version, datastream: String::new(), profiles: vec![] });
+    let Some((ds, other_release)) = content_for(distro_hint) else {
+        return Some(OpenScapInfo { version, ..Default::default() });
     };
     let stamp = std::fs::metadata(&ds).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-    if let Some((p, s, i)) = CACHE.lock().unwrap().as_ref() {
-        if *p == ds && *s == stamp && i.version == version {
-            return Some(i.clone());
+    let cached = CACHE.lock().unwrap().as_ref().filter(|(p, s, i)| *p == ds && *s == stamp && i.version == version).map(|c| c.2.clone());
+    let mut out = match cached {
+        Some(i) => i,
+        None => {
+            let profiles = exec::run(&Cmd::new("oscap", &["info", "--profiles", &ds.to_string_lossy()]).timeout(60)).await.ok().filter(|o| o.ok()).map(|o| parse_profiles(&o.stdout)).unwrap_or_default();
+            let adapted = if other_release { adaptation_note(&ds, &host_codename()) } else { String::new() };
+            let out = OpenScapInfo { version, datastream: ds.to_string_lossy().into_owned(), profiles, recommended: String::new(), adapted };
+            *CACHE.lock().unwrap() = Some((ds, stamp, out.clone()));
+            out
         }
-    }
-    let profiles = exec::run(&Cmd::new("oscap", &["info", "--profiles", &ds.to_string_lossy()]).timeout(60)).await.ok().filter(|o| o.ok()).map(|o| parse_profiles(&o.stdout)).unwrap_or_default();
-    let out = OpenScapInfo { version, datastream: ds.to_string_lossy().into_owned(), profiles };
-    *CACHE.lock().unwrap() = Some((ds, stamp, out.clone()));
+    };
+    let ids: Vec<String> = out.profiles.iter().map(|p| p.id.clone()).collect();
+    out.recommended = if ids.is_empty() { String::new() } else { pick_profile("", &ids, workstation).unwrap_or_default() };
     Some(out)
 }
 
-pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, tailoring: Option<&Tailoring>, distro_hint: &str, kind: PackageManager, distro: &str, log: &TaskLog) -> Result<ComplianceReport> {
-    let content = find_datastream(Path::new(CONTENT_DIR), distro_hint);
+pub async fn scan(r: &Runner, state_dir: &Path, profile: &str, tailoring: Option<&Tailoring>, host: &Target<'_>, log: &TaskLog) -> Result<ComplianceReport> {
+    let (distro_hint, kind, distro) = (host.hint, host.kind, host.distro);
+    let content = content_for(distro_hint);
     if kind == PackageManager::Pacman && content.is_none() {
         bail!("{ARCH_NO_CONTENT}");
     }
     if !available() {
         bail!("oscap is not installed: {}", install_hint(kind, distro));
     }
-    let ds = content.ok_or_else(|| anyhow::anyhow!("no SCAP Security Guide content in {CONTENT_DIR} ({})", install_hint(kind, distro)))?;
-    let dss = ds.to_string_lossy().to_string();
-    if !distro_hint.is_empty() && !dss.contains(&distro_hint.to_ascii_lowercase()) {
-        log.line(format!("note: there is no SCAP content for {distro_hint} in {CONTENT_DIR}; using {} (the closest release). Rules written for another release often report \"not applicable\".", ds.file_name().and_then(|n| n.to_str()).unwrap_or("")));
+    let (ds, other_release) = content.ok_or_else(|| anyhow::anyhow!("no SCAP Security Guide content in {CONTENT_DIR} ({})", install_hint(kind, distro)))?;
+    let name = ds.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let mut dss = ds.to_string_lossy().to_string();
+    if other_release {
+        let codename = host_codename();
+        match adapted_datastream(r, &ds, state_dir, &codename, log).await {
+            Some(copy) => {
+                log.line(format!("there is no SCAP content for {distro_hint} yet: using {name} (the closest release) with its release checks pointed at {codename}; the rules are those of that release"));
+                dss = copy.to_string_lossy().to_string();
+            }
+            None => log.line(format!("note: there is no SCAP content for {distro_hint} in {CONTENT_DIR}; using {name} (the closest release). Rules written for another release often report \"not applicable\".")),
+        }
     }
     // The profiles this content really has: `standard` exists in Debian's, not in Ubuntu's (CIS, STIG…).
-    let available: Vec<String> = info(distro_hint).await.map(|i| i.profiles.into_iter().map(|p| p.id).collect()).unwrap_or_default();
+    let available: Vec<String> = info(distro_hint, host.workstation).await.map(|i| i.profiles.into_iter().map(|p| p.id).collect()).unwrap_or_default();
     let wanted = profile.trim();
     let mut profile = if wanted.is_empty() { DEFAULT_PROFILE.to_string() } else { wanted.to_string() };
     if !valid_id(&profile) {
         bail!("invalid profile id");
     }
     if tailoring.is_none() {
-        let chosen = pick_profile(wanted, &available).map_err(|e| anyhow::anyhow!(e))?;
-        if chosen != profile {
-            log.line(format!("this content has no {profile}: auditing with {chosen}"));
+        let chosen = pick_profile(wanted, &available, host.workstation).map_err(|e| anyhow::anyhow!(e))?;
+        if wanted.is_empty() {
+            log.line(format!("no profile chosen: auditing with the one recommended for this {} ({})", if host.workstation { "workstation" } else { "server" }, chosen.replace("xccdf_org.ssgproject.content_profile_", "")));
         }
         profile = chosen;
     } else if let Some(t) = tailoring.filter(|t| !available.is_empty() && !available.contains(&t.base)) {

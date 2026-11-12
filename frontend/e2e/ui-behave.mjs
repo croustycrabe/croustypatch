@@ -427,6 +427,23 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.click('.tbl tr:has-text("Postes de travail") button:has-text("Supprimer")'); await p.waitForSelector('dialog[open]'); await p.click('dialog[open] button:has-text("Confirmer")');
   await p.waitForSelector('.tbl tr:has-text("Postes de travail")', { state: 'detached', timeout: 5000 }).then(() => check('once nobody uses it, the profile can be deleted', true), () => check('once nobody uses it, the profile can be deleted', false));
 
+  // 0.8: planned audits of the fleet
+  await p.selectOption('fieldset:has-text("Audits planifiés") select >> nth=0', 'weekly');
+  await p.selectOption('fieldset:has-text("Audits planifiés") select >> nth=1', '6');
+  await p.fill('fieldset:has-text("Audits planifiés") input[type=time]', '04:30');
+  await p.fill('fieldset:has-text("Audits planifiés") input[placeholder="Europe/Paris"]', 'Europe/Paris');
+  await p.click('button:has-text("Enregistrer")'); await p.waitForSelector('text=Prochain audit planifié', { timeout: 5000 }).catch(() => {});
+  const plan = sql(`select value->'schedule'->>'frequency' || '|' || (value->'schedule'->>'weekday') || '|' || (value->'schedule'->>'at') || '|' || (value->'schedule'->>'timezone') from settings where key='compliance'`);
+  check('planned audits are saved with their moment and time zone', plan === 'weekly|6|04:30|Europe/Paris', plan);
+  check('and the page shows the next planned audit', (await p.locator('text=Prochain audit planifié').count()) === 1);
+  sql(`update settings set value = jsonb_set(value, '{schedule,frequency}', '"off"') where key='compliance'`);
+
+  // 0.8: newer Ubuntu with the previous release's content, and the profile recommended for the machine
+  sql(`update hosts set facts = jsonb_set(facts, '{openscap}', '{"version":"1.4.3","datastream":"/usr/share/xml/scap/ssg/content/ssg-ubuntu2404-ds.xml","profiles":[{"id":"xccdf_org.ssgproject.content_profile_cis_level1_server","title":"CIS Ubuntu 24.04 niveau 1 serveur"},{"id":"xccdf_org.ssgproject.content_profile_stig","title":"STIG"}],"recommended":"xccdf_org.ssgproject.content_profile_cis_level1_server","adapted":"noble → resolute"}') where id='${h}'`);
+  await p.goto(`${BASE}/host/?id=${h}&tab=compliance`); await p.waitForSelector('text=OpenSCAP 1.4.3');
+  check('the host tab says the previous release\'s content is pointed at this one', (await p.locator('text=noble → resolute').count()) === 1);
+  check('and which profile is used when none is chosen, marked recommended', (await p.locator('text=CIS Ubuntu 24.04 niveau 1 serveur (recommandé pour cette machine)').count()) === 1 && (await p.locator('option:has-text("· recommandé")').count()) === 1);
+
   // app icons
   await p.goto(`${BASE}/portal/`); await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("Firefox")');
   check('suggested apps show their real logo', (await p.locator('.appcard:has-text("Firefox") .appcard__icon--img img').count()) === 1);

@@ -348,15 +348,42 @@ fn an_audit_uses_a_profile_the_content_really_has() {
     // Debian's content has `standard`; Ubuntu's does not (CIS, STIG...), which used to fail with "no such profile"
     let debian = vec![p("anssi_np_nt28_average"), p("standard")];
     let ubuntu = vec![p("cis_level2_workstation"), p("cis_level1_server"), p("cis_level1_workstation"), p("stig")];
-    assert_eq!(pick_profile("", &debian).unwrap(), p("standard"));
-    assert_eq!(pick_profile("", &ubuntu).unwrap(), p("cis_level1_server"), "the closest common one when standard is missing");
-    assert_eq!(pick_profile("", &[p("x_only")]).unwrap(), p("x_only"), "else the first it has");
-    assert_eq!(pick_profile(&p("stig"), &ubuntu).unwrap(), p("stig"));
-    let e = pick_profile(&p("standard"), &ubuntu).unwrap_err();
+    assert_eq!(pick_profile("", &debian, false).unwrap(), p("standard"));
+    assert_eq!(pick_profile("", &debian, true).unwrap(), p("standard"));
+    // the recommended baseline depends on the kind of machine
+    assert_eq!(pick_profile("", &ubuntu, false).unwrap(), p("cis_level1_server"), "a server gets CIS level 1 server");
+    assert_eq!(pick_profile("", &ubuntu, true).unwrap(), p("cis_level1_workstation"), "a laptop or desktop gets CIS level 1 workstation");
+    let rhel = vec![p("cis"), p("cis_server_l1"), p("cis_workstation_l1"), p("ospp")];
+    assert_eq!(pick_profile("", &rhel, false).unwrap(), p("cis_server_l1"));
+    assert_eq!(pick_profile("", &rhel, true).unwrap(), p("cis_workstation_l1"));
+    assert_eq!(pick_profile("", &[p("x_only")], false).unwrap(), p("x_only"), "else the first it has");
+    assert_eq!(pick_profile(&p("stig"), &ubuntu, true).unwrap(), p("stig"), "an explicit choice wins");
+    let e = pick_profile(&p("standard"), &ubuntu, false).unwrap_err();
     assert!(e.contains("does not exist") && e.contains("cis_level1_server") && e.contains("stig"), "an explicit choice that does not exist names the ones that do: {e}");
     // when the content could not be listed the request is trusted
-    assert_eq!(pick_profile("", &[]).unwrap(), p("standard"));
-    assert_eq!(pick_profile("custom_thing", &[]).unwrap(), "custom_thing");
+    assert_eq!(pick_profile("", &[], false).unwrap(), p("standard"));
+    assert_eq!(pick_profile("custom_thing", &[], false).unwrap(), "custom_thing");
+}
+
+#[test]
+fn content_for_the_previous_ubuntu_is_pointed_at_this_release() {
+    use croustypatch_agent::modules::openscap::{adapt_codename, content_codenames, parse_codename};
+    // what the 24.04 benchmark carries twice (its OVAL and its CPE OVAL): every rule is "not applicable" on 26.04 otherwise
+    let ds = "<x><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern></x><y><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern><z>DISTRIB_CODENAME=other words</z></y>";
+    assert_eq!(content_codenames(ds), vec!["noble".to_string()]);
+    let adapted = adapt_codename(ds, "resolute").expect("adapted");
+    assert_eq!(adapted.matches("^DISTRIB_CODENAME=resolute$").count(), 2);
+    assert!(!adapted.contains("noble"));
+    assert_eq!(adapted.len(), ds.len() + 2 * ("resolute".len() - "noble".len()), "nothing else changes");
+    assert!(adapt_codename(ds, "noble").is_none(), "already the right release");
+    assert!(adapt_codename(ds, "").is_none(), "unknown release: used as is");
+    assert!(adapt_codename("<debian content/>", "trixie").is_none(), "content without that check is used as is");
+    // the release comes from lsb-release, else os-release, and must be a plain word
+    let lsb = "DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=26.04\nDISTRIB_CODENAME=resolute\nDISTRIB_DESCRIPTION=\"Ubuntu 26.04.1 LTS\"\n";
+    assert_eq!(parse_codename(lsb, ""), "resolute");
+    assert_eq!(parse_codename("", "NAME=\"Ubuntu\"\nVERSION_CODENAME=questing\n"), "questing");
+    assert_eq!(parse_codename("DISTRIB_CODENAME=no$pe\n", "VERSION_CODENAME=\"trixie\""), "trixie");
+    assert_eq!(parse_codename("", ""), "");
 }
 
 #[test]

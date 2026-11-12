@@ -170,7 +170,7 @@ automatically* (on by default) switches that off: the audit then fails with the 
 | System | Packages the agent installs | Notes |
 | --- | --- | --- |
 | Debian | `openscap-scanner`, `ssg-debian` | content for several Debian releases; the one matching the host is used, else the newest |
-| Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04 only; see *No applicable rule* below for 26.04 |
+| Ubuntu and derivatives | `openscap-scanner`, `ssg-debderived` | content exists for 22.04 and 24.04; newer releases (26.04…) use the 24.04 content adapted to them, see *Newer releases* below |
 | Arch | nothing | the SCAP Security Guide has no benchmark for Arch Linux (it is neither in the repositories nor in the AUR package), so installing the scanner alone would be pointless: the audit says so; put a datastream of your own in `/usr/share/xml/scap/ssg/content` to audit anyway |
 | other | nothing | the audit explains what to install |
 
@@ -178,19 +178,38 @@ The agent reports what it found (`openscap` in the host's facts: oscap version, 
 datastream's profiles): the host's **Compliance** tab shows *OpenSCAP 1.4.2 · 7 profiles available*, or that it is
 missing and whether the agent will install it.
 
-**No applicable rule.** SSG content carries the release it was written for. With the content of another release the
-audit still runs but every rule comes back *not applicable*: on Ubuntu 26.04 with the 24.04 content, 405 of 405
-(checked in a 26.04 container). That is not a 0 % score, so the server keeps the audit as evidence, records
-`compliance.no_applicable_rules` instead of `compliance.score_low`, leaves the host out of the fleet score, and the
-host tab and the Compliance page say *no rule applies to this machine* instead of a score. The audit's log says which
-content was chosen (the exact release if present, else the newest of the same distribution). Until content for the
-release exists, put a datastream for it in `/usr/share/xml/scap/ssg/content` (the agent prefers the file named for the
-host's release).
+**Newer releases (0.8).** SSG content carries the release it was written for: the Ubuntu 24.04 benchmark only
+applies where `/etc/lsb-release` says `DISTRIB_CODENAME=noble`. Used as is on Ubuntu 26.04 every rule comes back
+*not applicable* (405 of 405). When the content for the host's own release is missing, the agent now uses the closest
+release's content and points its release check at the host's codename (`resolute` for 26.04, read from
+`/etc/lsb-release` or `os-release`): an adapted copy is written in the agent's state directory
+(`oscap-content/ssg-ubuntu2404-ds-resolute.xml`), checked with `oscap ds sds-validate`, and remade when the content
+package changes. Nothing else in the content changes, so the rules are those of 24.04 (in a 26.04 container,
+`cis_level1_server`: 131 pass, 4 fail instead of 405 not applicable). This works for any later release without a code
+change, and stops being needed as soon as the SSG ships content for it (the file named for the host's release is
+preferred). The audit's log and the host's Compliance tab say so (*noble → resolute*). If the copy does not validate,
+the original is used and the log says why. Content without such a check (Debian's) is used as is.
 
-**Default profile (0.7.5).** When none is chosen the agent uses `standard` if the content has it (Debian's does), otherwise the closest common one that it has (Ubuntu's content has CIS and STIG profiles, not `standard`: `cis_level1_server`), and logs the choice. A profile that is chosen but does not exist in the content is refused with the list of those that do; before 0.7.5 that failed with oscap's own "no such profile" error.
+**No applicable rule.** An audit where nothing applies is not a 0 % score: the server keeps it as evidence, records
+`compliance.no_applicable_rules` instead of `compliance.score_low`, leaves the host out of the fleet score, and the
+host tab and the Compliance page say *no rule applies to this machine*.
+
+**Recommended profile (0.8).** When no profile is chosen, the agent uses the baseline for its system and kind of
+machine, and reports it in its facts (`openscap.recommended`), shown in the host's Compliance tab and marked
+*recommended* in the profile list:
+
+| Machine | Profiles tried, first found wins |
+| --- | --- |
+| server (anything that is not a laptop or a desktop) | `cis_level1_server` (Ubuntu), `cis_server_l1` (Red Hat family), `standard` (Debian), `anssi_bp28_minimal`, `cis`, then the level 2 and STIG ones |
+| laptop or desktop | `cis_level1_workstation`, `cis_workstation_l1`, `standard`, `anssi_bp28_minimal`, then the server ones |
+
+The *fleet default* of *Compliance > Audit settings* can stay **Automatic** (each host takes its recommended
+profile), or name one profile: a host whose content does not have it (one fleet of Ubuntu and Debian machines cannot
+share CIS for Ubuntu) takes its recommended profile instead of failing. A profile chosen for a host itself, or in a
+request, is used as is and refused with the list of those that exist when the content lacks it.
 
 **Profiles.** Each host has its own audit profile (*Compliance* tab, `PATCH /api/v1/hosts/{id}` with
-`{"compliance_profile": …}`): empty (the fleet default of *Compliance > Audit settings*, else the SSG `standard`
+`{"compliance_profile": …}`): empty (the fleet default of *Compliance > Audit settings*, else the recommended
 profile), a profile of the SSG content, or a **custom profile**. A request can name another one
 (`POST /api/v1/hosts/{id}/compliance-scan` with `{"profile": …}`).
 
@@ -210,8 +229,21 @@ result file. Reports are append-only in the database (an update trigger refuses 
 webhook or e-mail. The **Compliance** page shows the fleet score (mean of each host's latest report), the latest
 audit of each host and the audit settings; the dashboard tile shows the same score.
 
-Not in this release: scheduled audits (start them from the host or the API), tailoring beyond rules off, and SSG
-content for Arch.
+**Planned audits (0.8).** *Compliance > Audit settings > Planned audits*: never (the default), daily, weekly or
+monthly, at a time in a time zone (the `schedule` of the `compliance` setting). At that moment the server queues an
+audit for every host whose OpenSCAP module is on, with its own profile, except quarantined hosts, hosts not yet
+approved and hosts that already have one open; a host that is offline runs it when it comes back (queued work expires
+after 7 days). A moment is caught up for 6 hours (a server restarting at 03:10 still runs the 03:00 audit), never
+later, and a schedule saved after today's moment waits for the next one. Each run is recorded in the audit log
+(`compliance.planned_run`: the moment and the hosts). The Compliance page shows the next planned audit.
+
+**Audit reporting (0.8).** The *Compliance* section of a report (*Reports*) gives the fleet average, the number of
+machines below the threshold, audited in the period, with a last audit over 30 days old and never audited (OpenSCAP
+on, no audit yet), then each machine's latest audit, worst score first: profile, score (▼ below the threshold), failed
+rules, of which high severity, and date; and the next planned audit.
+
+Not in this release: tailoring beyond rules off, SSG content served by the server for hosts without internet, and SSG
+content for Arch (there is none upstream).
 
 ## App center (portal)
 

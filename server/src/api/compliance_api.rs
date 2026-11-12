@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-type Row = (Uuid, Uuid, String, i32, i32, i32, f64, Value, String, DateTime<Utc>);
+pub type Row = (Uuid, Uuid, String, i32, i32, i32, f64, Value, String, DateTime<Utc>);
 const COLS: (compliance_reports::id, compliance_reports::host_id, compliance_reports::profile, compliance_reports::passed, compliance_reports::failed, compliance_reports::not_applicable, compliance_reports::score, compliance_reports::failed_rules, compliance_reports::results_sha256, compliance_reports::collected_at) =
     (compliance_reports::id, compliance_reports::host_id, compliance_reports::profile, compliance_reports::passed, compliance_reports::failed, compliance_reports::not_applicable, compliance_reports::score, compliance_reports::failed_rules, compliance_reports::results_sha256, compliance_reports::collected_at);
 
@@ -24,7 +24,7 @@ fn row_json(r: &Row, with_rules: bool) -> Value {
 }
 
 /// Latest report per host.
-fn latest(c: &mut PgConnection) -> QueryResult<Vec<Row>> {
+pub fn latest(c: &mut PgConnection) -> QueryResult<Vec<Row>> {
     let all: Vec<Row> = compliance_reports::table.order((compliance_reports::host_id, compliance_reports::created_at.desc())).select(COLS).load(c)?;
     let mut seen = std::collections::HashSet::new();
     Ok(all.into_iter().filter(|r| seen.insert(r.1)).collect())
@@ -46,6 +46,8 @@ pub async fn fleet(state: web::Data<AppState>, user: AuthUser) -> ApiResult<Http
             Ok(json!({
                 "score": fleet_score(c)?,
                 "threshold": crate::compliance::threshold(c),
+                // the next planned audit of the fleet (null when no schedule is set)
+                "planned_next": crate::api::admin::load_setting_plain(c, "compliance").and_then(|v| crate::compliance::planned_next(&v, chrono::Utc::now())),
                 "hosts": l.iter().map(|r| { let mut v = row_json(r, false); v["hostname"] = json!(names.iter().find(|n| n.0 == r.1).map(|n| n.1.clone())); v }).collect::<Vec<_>>(),
             }))
         })
@@ -59,7 +61,7 @@ pub async fn host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uu
     let out = state
         .db(move |c| {
             let rows: Vec<Row> = compliance_reports::table.filter(compliance_reports::host_id.eq(id)).order(compliance_reports::created_at.desc()).limit(20).select(COLS).load(c)?;
-            let (facts, profile, module): (Value, String, Value) = hosts::table.find(id).select((hosts::facts, hosts::compliance_profile, hosts::modules)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+            let (facts, profile, module, pm): (Value, String, Value, String) = hosts::table.find(id).select((hosts::facts, hosts::compliance_profile, hosts::modules, hosts::package_manager)).first(c).map_err(|_| ApiError::NotFound("host"))?;
             let effective = crate::compliance::effective_profile(c, id);
             Ok(json!({
                 "reports": rows.iter().enumerate().map(|(i, r)| row_json(r, i == 0)).collect::<Vec<_>>(),
@@ -69,6 +71,8 @@ pub async fn host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uu
                 "profile": profile,
                 "effective_profile": effective,
                 "auto_install": crate::compliance::auto_install(c),
+                // Arch has OpenSCAP but no SCAP Security Guide benchmark: the page says so instead of promising an install.
+                "package_manager": pm,
             }))
         })
         .await?;
