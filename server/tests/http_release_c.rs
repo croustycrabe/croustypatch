@@ -726,3 +726,25 @@ fn the_new_image_is_the_running_one_with_the_suggested_tag() {
     assert_eq!(retag_ref("nginx:1.27", ""), None);
     assert_eq!(retag_ref("nginx@sha256:abcd", "1.28"), None);
 }
+
+/// Visual Studio Code added to the catalog before 0.7.5 gets the source of its latest version, so its updates show.
+#[actix_web::test]
+async fn the_vscode_latest_migration_completes_older_catalog_entries_only() {
+    let db = support::TestDb::new();
+    {
+        let mut c = db.conn();
+        let old = json!({"pacman": {"command": {"install": "set -eu\ngit clone https://aur.archlinux.org/visual-studio-code-bin.git", "uninstall": "pacman -Rns --noconfirm visual-studio-code-bin", "check": "/usr/bin/code"}}, "apt": {"command": {"install": "x", "uninstall": "y", "check": "/usr/bin/code"}}});
+        for (name, recipes) in [("Visual Studio Code", old.clone()), ("Other tool", json!({"pacman": {"command": {"install": "make install", "uninstall": "rm", "check": "/usr/bin/t"}}})), ("Code - OSS", json!({"pacman": {"packages": ["code"]}}))] {
+            diesel::sql_query(format!("INSERT INTO portal_apps (name, icon, recipes) VALUES ('{name}', '', '{}')", recipes.to_string().replace('\'', "''"))).execute(&mut c).unwrap();
+        }
+        for stmt in include_str!("../migrations/2026-11-12-000015_vscode_latest/up.sql").split(';').filter(|s| s.contains("UPDATE")) {
+            diesel::sql_query(stmt).execute(&mut c).unwrap();
+        }
+    }
+    let rows: Vec<(String, Value)> = croustypatch_server::schema::portal_apps::table.select((croustypatch_server::schema::portal_apps::name, croustypatch_server::schema::portal_apps::recipes)).load(&mut db.conn()).unwrap();
+    let get = |n: &str| rows.iter().find(|r| r.0 == n).unwrap().1.clone();
+    assert_eq!(get("Visual Studio Code")["pacman"]["command"]["latest"], json!({"aur": "visual-studio-code-bin"}));
+    assert_eq!(get("Visual Studio Code")["apt"]["command"].get("latest"), None, "Debian's recipe is updated by apt itself");
+    assert_eq!(get("Other tool")["pacman"]["command"].get("latest"), None);
+    assert_eq!(get("Code - OSS"), json!({"pacman": {"packages": ["code"]}}));
+}
