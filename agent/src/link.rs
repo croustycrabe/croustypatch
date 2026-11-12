@@ -168,10 +168,12 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
     send(&mut sink, &AgentMessage::Heartbeat(first)).await?;
     let mut last_hb = Instant::now();
     let mut last_inv = Instant::now();
+    let mut last_rx = Instant::now();
+    let silence = Duration::from_secs(link.agent.cfg.link_silence_secs.max(10));
     loop {
-        let wake = link.interval(eco).min(Duration::from_secs(30));
+        let wake = link.interval(eco).min(Duration::from_secs(30)).min(silence / 3);
         tokio::select! {
-            incoming = stream.next() => match incoming {
+            incoming = stream.next() => { last_rx = Instant::now(); match incoming {
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<ServerMessage>(&t) {
                     Ok(ServerMessage::Command(c)) => { link.accept(&c); }
                     Ok(ServerMessage::Ping) => link.spawn_inventory(),
@@ -183,12 +185,17 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
                 Some(Err(e)) => return Err(e.into()),
                 _ => {}
-            },
+            } },
             out = out_rx.recv() => {
                 let Some(m) = out else { return Ok(()) };
                 if let Err(e) = send(&mut sink, &m).await { link.pending.lock().unwrap().push_back(m); return Err(e); }
             }
             _ = tokio::time::sleep(wake) => {
+                // A connection left half-open by a suspend or a network change gives no error until the system gives
+                // up on it (about 15 min): the server pings every 30 s, so silence means it is gone.
+                if tunnel_is_dead(last_rx.elapsed(), silence) {
+                    return Err(anyhow!("no frame from the server for {} s: reconnecting", last_rx.elapsed().as_secs()));
+                }
                 let hb = link.heartbeat().await;
                 let eco_changed = hb.eco != eco;
                 eco = hb.eco;
@@ -204,6 +211,11 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
             }
         }
     }
+}
+
+/// Has the server been silent long enough for the tunnel to be taken for dead?
+pub fn tunnel_is_dead(since_last_frame: Duration, limit: Duration) -> bool {
+    since_last_frame > limit
 }
 
 async fn send<S>(sink: &mut S, m: &AgentMessage) -> Result<()>

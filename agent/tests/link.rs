@@ -70,3 +70,13 @@ async fn only_valid_fresh_unique_commands_for_this_agent_are_accepted() {
     assert!(!w.link.accept(&sign_command(&impostor.private_pem, &payload(w.agent_id, "n6", now, Duration::minutes(5))).unwrap()), "signed by someone else");
     assert!(w.cmd_rx.try_recv().is_err(), "nothing rejected ever reached the runner");
 }
+
+#[test]
+fn a_silent_tunnel_is_taken_for_dead_after_three_missed_server_pings() {
+    use croustypatch_agent::link::tunnel_is_dead;
+    use std::time::Duration as D;
+    let limit = D::from_secs(croustypatch_agent::config::Config::default().link_silence_secs);
+    assert_eq!(limit, D::from_secs(90), "the server pings every 30 s");
+    assert!(!tunnel_is_dead(D::from_secs(31), limit), "one missed ping is not enough");
+    assert!(tunnel_is_dead(D::from_secs(91), limit));
+}
