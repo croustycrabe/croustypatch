@@ -67,6 +67,11 @@ impl Agent {
         self.settings.lock().unwrap().clone()
     }
 
+    /// Air-gapped installation: nothing is looked up on the internet.
+    pub fn offline(&self) -> bool {
+        self.settings().is_some_and(|s| s.offline)
+    }
+
     /// Store new settings from the server; returns true if they changed.
     pub fn apply_settings(&self, s: AgentSettings) -> bool {
         let mut cur = self.settings.lock().unwrap();
@@ -114,7 +119,7 @@ impl Agent {
         // The mock backend simulates a whole system: never mix the real host's modules into it.
         if !matches!(self.backend, Backend::Mock(_)) {
             if self.module_on("docker") && crate::modules::docker::available() {
-                packages.extend(crate::modules::docker::inventory(&self.runner).await);
+                packages.extend(crate::modules::docker::inventory(&self.runner, !self.offline()).await);
             }
             if self.module_on("helper_script") {
                 packages.extend(crate::modules::helper_scripts::detect(std::path::Path::new("/opt")));

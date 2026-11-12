@@ -399,7 +399,8 @@ export const fr = {
   'settings.conn': 'Connectivité',
   'settings.conn.mode': 'Mode',
   'settings.conn.connected': 'Connecté à Internet',
-  'settings.conn.air_gapped': 'Hors ligne (flux importés)',
+  'settings.conn.air_gapped': 'Hors ligne (sans accès internet)',
+  'settings.conn.hint': 'Hors ligne : les agents ne consultent plus rien sur internet (registres Docker, AUR). Les conteneurs restent listés sans mise à jour détectée, les correctifs viennent de vos miroirs apt/pacman. Les applications du catalogue qui téléchargent depuis internet (VS Code, Zed) ne s’installeront pas.',
   'settings.agent': 'Agents',
   'settings.agent.heartbeat': 'Intervalle de battement (secondes)',
 
@@ -1466,7 +1467,8 @@ export const en: Record<MessageKey, string> = {
   'settings.conn': 'Connectivity',
   'settings.conn.mode': 'Mode',
   'settings.conn.connected': 'Connected to the Internet',
-  'settings.conn.air_gapped': 'Offline (imported feeds)',
+  'settings.conn.air_gapped': 'Offline (no internet access)',
+  'settings.conn.hint': 'Offline: agents look nothing up on the internet (Docker registries, the AUR). Containers are still listed but no update is detected, patches come from your apt/pacman mirrors. Catalog apps that download from the internet (VS Code, Zed) will not install.',
   'settings.agent': 'Agents',
   'settings.agent.heartbeat': 'Heartbeat interval (seconds)',
 

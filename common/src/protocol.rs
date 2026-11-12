@@ -156,6 +156,10 @@ pub struct AgentSettings {
     pub modules: HostModules,
     #[serde(default)]
     pub isolation: IsolationSettings,
+    /// Air-gapped installation (Settings > Connectivity): no lookup on the internet (container registries, the AUR).
+    /// The agent then reports what is installed, and what its own package manager offers through local mirrors.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 /// What stays reachable while a host is isolated (double failure or manual quarantine), besides the server.

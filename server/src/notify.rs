@@ -45,6 +45,8 @@ pub const CATALOG: &[EventKind] = &[
     EventKind { key: "report.failed", severity: "high", title_en: "Report could not be sent", title_fr: "Rapport non envoyé" },
     EventKind { key: "host.offline", severity: "medium", title_en: "Host offline", title_fr: "Hôte hors ligne" },
     EventKind { key: "approval.required", severity: "medium", title_en: "Patch awaiting approval", title_fr: "Correctif en attente d’approbation" },
+    EventKind { key: "updates.system_available", severity: "medium", title_en: "New system updates", title_fr: "Nouvelles mises à jour système" },
+    EventKind { key: "updates.docker_available", severity: "info", title_en: "New container updates", title_fr: "Nouvelles mises à jour de conteneurs" },
     EventKind { key: "compliance.reported", severity: "info", title_en: "Compliance scan finished", title_fr: "Analyse de conformité terminée" },
     EventKind { key: "task.succeeded", severity: "info", title_en: "Patch applied", title_fr: "Correctif appliqué" },
     EventKind { key: "reboot.scheduled", severity: "info", title_en: "Reboot scheduled", title_fr: "Redémarrage planifié" },
@@ -404,6 +406,32 @@ async fn send_digests(state: &web::Data<AppState>, now: DateTime<Utc>) -> anyhow
 
 /// Combine a rule's queued events into one message per channel and send it now (public for the "send now" button
 /// and tests).
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The daily digest as an e-mail page: the events grouped by severity, the worst first, each with its badge.
+/// (`severity`, `title`) per event, in the order they happened.
+pub fn digest_html(rule: &str, events: &[(String, String)]) -> String {
+    let colour = |s: &str| match s { "critical" => "#b3261e", "high" => "#c2410c", "medium" => "#b7791f", "low" => "#2b6cb0", _ => "#5f6f75" };
+    let mut sections = String::new();
+    for sev in SEVERITIES.iter().rev() {
+        let rows: Vec<&(String, String)> = events.iter().filter(|e| e.0 == *sev).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        sections.push_str(&format!("<h2 style=\"font:700 15px Arial,sans-serif;margin:22px 0 8px;color:{}\">{} · {}</h2><table style=\"width:100%;border-collapse:collapse\">", colour(sev), esc(sev), rows.len()));
+        for (_, title) in rows {
+            sections.push_str(&format!("<tr><td style=\"padding:7px 0;border-bottom:1px solid #e6e1d6\"><span style=\"display:inline-block;width:8px;height:8px;border-radius:4px;background:{};margin-right:8px\"></span>{}</td></tr>", colour(sev), esc(title)));
+        }
+        sections.push_str("</table>");
+    }
+    format!(
+        "<!doctype html><html><body style=\"margin:0;background:#f5f2ea\"><div style=\"max-width:720px;margin:0 auto;padding:24px;background:#fcfbf8;font:14px/1.5 Arial,sans-serif;color:#1b2125\"><h1 style=\"font:700 20px Arial,sans-serif;margin:0 0 4px\">Daily summary</h1><p style=\"margin:0;color:#5f6f75\">{} · {} event(s)</p>{}<p style=\"margin-top:28px;color:#8a979c;font-size:12px\">CroustyPatch</p></div></body></html>",
+        esc(rule), events.len(), sections
+    )
+}
+
 pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) -> anyhow::Result<usize> {
     type Row = (Uuid, Uuid, String, String, Value);
     let rows: Vec<Row> = state
@@ -418,6 +446,7 @@ pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) ->
     for (ch, items) in by_channel {
         let worst = items.iter().map(|r| severity_rank(&r.2)).max().unwrap_or(0);
         let lines: Vec<String> = items.iter().map(|r| format!("- {}", r.3.trim_start_matches("[CroustyPatch] "))).collect();
+        let html = digest_html(name, &items.iter().map(|r| (r.2.clone(), r.3.trim_start_matches("[CroustyPatch] ").to_string())).collect::<Vec<_>>());
         let m = Message {
             id: Uuid::new_v4(),
             event: "digest".into(),
@@ -426,7 +455,7 @@ pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) ->
             body: lines.join("\n"),
             payload: json!({ "rule": rule, "events": items.len() }),
             recipients: strs(&items[0].4),
-            html: None,
+            html: Some(html),
         };
         let res = deliver(state, ch, &m).await;
         let ids: Vec<Uuid> = items.iter().map(|r| r.0).collect();

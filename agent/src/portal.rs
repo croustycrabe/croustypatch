@@ -152,7 +152,9 @@ impl Relay {
                             // Command apps: usable by the person at the keyboard, not just present for root.
                             let target = crate::app_command::lookup(user).await.unwrap_or(crate::app_command::Target { name: user.to_string(), uid, gid: u32::MAX - 1, groups: vec![], home: String::new() });
                             annotate_local(&mut v, &names, |p| crate::app_command::usable_by(Path::new(p), &target).is_ok());
-                            annotate_updates(&mut v).await;
+                            if !a.offline() {
+                                annotate_updates(&mut v).await;
+                            }
                         }
                     }
                     Ok(v)

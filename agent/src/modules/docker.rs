@@ -223,7 +223,8 @@ pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
 
 /// Inventory entries for every running container, with the registry's current digest and the newest version tag
 /// when they can be checked (four registry lookups at a time).
-pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
+/// `online` false (an air-gapped installation): the containers are reported, no registry is asked.
+pub async fn inventory(r: &Runner, online: bool) -> Vec<PackageEntry> {
     let Ok(list) = containers(r).await.inspect_err(|e| tracing::warn!("docker inventory: {e:#}")) else { return vec![] };
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
     let mut jobs = tokio::task::JoinSet::new();
@@ -235,7 +236,7 @@ pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
             let _slot = gate.acquire().await;
             match registry::parse(&image) {
                 // pinned by digest: never updated, nothing to look for
-                Ok(img) if img.digest.is_none() => {
+                Ok(img) if img.digest.is_none() && online => {
                     let remote = registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %name, "registry check: {e:#}")).ok();
                     (i, remote, newer_version(&img).await)
                 }

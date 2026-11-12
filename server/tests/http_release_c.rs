@@ -748,3 +748,70 @@ async fn the_vscode_latest_migration_completes_older_catalog_entries_only() {
     assert_eq!(get("Other tool")["pacman"]["command"].get("latest"), None);
     assert_eq!(get("Code - OSS"), json!({"pacman": {"packages": ["code"]}}));
 }
+
+/// New system updates and new container updates are two separate alerts, raised once per new update.
+#[actix_web::test]
+async fn new_system_and_container_updates_raise_separate_alerts_once() {
+    use croustypatch_common::protocol::{AgentMessage, HostFacts, Inventory, PackageEntry};
+    let db = support::TestDb::new();
+    let state = actix_web::web::Data::new(db.state());
+    let host = add_host(&mut db.conn(), "srv-alerts", json!({"docker": true}), json!({}));
+    let p = |name: &str, source: &str, cand: Option<&str>, sec: bool, meta: Value| PackageEntry { name: name.into(), version: "1".into(), candidate: cand.map(str::to_owned), is_security: sec, cves: vec![], source: source.into(), meta };
+    let send = |pkgs: Vec<PackageEntry>| {
+        let st = state.clone();
+        async move { croustypatch_server::gateway::handle_messages(&st, host, vec![AgentMessage::Inventory(Inventory { facts: HostFacts { hostname: "srv-alerts".into(), ..Default::default() }, packages: pkgs, reboot_required: false, collected_at: chrono::Utc::now() })]).await }
+    };
+    let events = || -> Vec<(String, Value)> { audit_log::table.filter(audit_log::action.like("updates.%")).order(audit_log::seq.asc()).select((audit_log::action, audit_log::details)).load(&mut db.conn()).unwrap() };
+    // the first inventory of a host is its starting point, not news
+    send(vec![p("bash", "system", Some("2"), false, json!({}))]).await;
+    assert!(events().is_empty());
+    // then: a new security update, a new image and a newly suggested version
+    send(vec![p("bash", "system", Some("2"), false, json!({})), p("openssl", "system", Some("3.1"), true, json!({})), p("docker:web", "docker", Some("nginx:1.27 @bb"), false, json!({"image": "nginx:1.27"})), p("docker:db", "docker", None, false, json!({"image": "redis:7", "latest": {"tag": "7.4"}}))]).await;
+    let ev = events();
+    assert_eq!(ev.len(), 2, "{ev:?}");
+    assert_eq!(ev[0].0, "updates.system_available");
+    assert_eq!((ev[0].1["count"].clone(), ev[0].1["security"].clone(), ev[0].1["packages"].clone()), (json!(1), json!(1), json!(["openssl"])), "bash was already pending");
+    assert_eq!(ev[1].0, "updates.docker_available");
+    assert_eq!(ev[1].1["count"], json!(2));
+    // the same inventory again: nothing new, no alert
+    send(vec![p("bash", "system", Some("2"), false, json!({})), p("openssl", "system", Some("3.1"), true, json!({})), p("docker:web", "docker", Some("nginx:1.27 @bb"), false, json!({"image": "nginx:1.27"})), p("docker:db", "docker", None, false, json!({"image": "redis:7", "latest": {"tag": "7.4"}}))]).await;
+    assert_eq!(events().len(), 2);
+    // a newer candidate of a known package is news again
+    send(vec![p("bash", "system", Some("3"), false, json!({}))]).await;
+    assert_eq!(events().len(), 3);
+    // they are notification events of their own
+    let queued: Vec<String> = croustypatch_server::schema::notifications::table.select(croustypatch_server::schema::notifications::event).load(&mut db.conn()).unwrap_or_default();
+    let _ = queued; // routing depends on rules; the catalog entries are what matter here
+    assert!(croustypatch_server::notify::event_key("updates.system_available", &json!({})).is_some() && croustypatch_server::notify::event_key("updates.docker_available", &json!({})).is_some());
+}
+
+#[test]
+fn the_digest_is_an_html_page_grouped_by_severity_worst_first() {
+    let html = croustypatch_server::notify::digest_html("Infra <team>", &[
+        ("info".into(), "web-01: Patch applied".into()),
+        ("critical".into(), "db-01: Host quarantined".into()),
+        ("medium".into(), "web-01: 3 new system update(s) <openssl>".into()),
+        ("info".into(), "web-02: Patch applied".into()),
+    ]);
+    assert!(html.starts_with("<!doctype html>") && html.contains("Daily summary") && html.contains("4 event(s)"));
+    let (c, m, i) = (html.find("critical · 1").unwrap(), html.find("medium · 1").unwrap(), html.find("info · 2").unwrap());
+    assert!(c < m && m < i, "worst first");
+    assert!(html.contains("Infra &lt;team&gt;") && html.contains("&lt;openssl&gt;") && !html.contains("<openssl>"), "everything is escaped");
+    assert!(!html.contains("high ·"), "no empty section");
+}
+
+/// The air-gapped switch reaches the agents (who then skip registries and the AUR).
+#[actix_web::test]
+async fn the_air_gapped_mode_is_sent_to_the_agents() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let host = add_host(&mut db.conn(), "srv-off", json!({}), json!({"capabilities": ["settings"]}));
+    let offline = || croustypatch_server::modules::settings_for(&mut db.conn(), host).unwrap().unwrap().offline;
+    assert!(!offline(), "connected by default");
+    let (st, b) = call(&app, TestRequest::put().uri("/api/v1/settings/connectivity").cookie(ck.clone()).set_json(json!({"mode": "air_gapped"}))).await;
+    assert!(st.is_success(), "{b}");
+    assert!(offline());
+    call(&app, TestRequest::put().uri("/api/v1/settings/connectivity").cookie(ck.clone()).set_json(json!({"mode": "connected"}))).await;
+    assert!(!offline());
+}

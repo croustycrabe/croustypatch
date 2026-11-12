@@ -307,7 +307,7 @@ pub async fn put_setting(state: web::Data<AppState>, user: AuthUser, path: web::
     }
     validate_setting(&key, &value)?;
     // Agents carry the isolation rules themselves (a double failure isolates the host without asking the server).
-    let push_to_agents = key == "isolation";
+    let push_to_agents = key == "isolation" || key == "connectivity";
     let st = state.clone();
     state
         .db(move |c| {

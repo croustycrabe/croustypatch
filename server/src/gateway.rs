@@ -278,6 +278,9 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
         apply_facts(c, host_id, &inv.facts)?;
         // The inventory is complete each time: replace every source. Module data (containers, helper scripts) is
         // kept only while its module is switched on for this host.
+        // What was pending before this inventory, to tell what is new (one alert per new update, not one per inventory).
+        let first_inventory = hosts::table.find(host_id).select(hosts::last_inventory_at).first::<Option<DateTime<Utc>>>(c)?.is_none();
+        let before: Vec<(String, String, Option<String>, Value)> = host_packages::table.filter(host_packages::host_id.eq(host_id)).select((host_packages::name, host_packages::source, host_packages::candidate, host_packages::meta)).load(c)?;
         diesel::delete(host_packages::table.filter(host_packages::host_id.eq(host_id))).execute(c)?;
         let modules = crate::modules::for_host(c, host_id)?;
         let keep = |src: &str| match src {
@@ -313,8 +316,54 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
             diesel::insert_into(vulnerabilities::table).values(chunk).on_conflict_do_nothing().execute(c)?;
         }
         diesel::update(hosts::table.find(host_id)).set((hosts::reboot_required.eq(inv.reboot_required), hosts::last_inventory_at.eq(now))).execute(c)?;
+        if !first_inventory {
+            let after: Vec<(String, String, Option<String>, Value)> = host_packages::table.filter(host_packages::host_id.eq(host_id)).select((host_packages::name, host_packages::source, host_packages::candidate, host_packages::meta)).load(c)?;
+            alert_new_updates(c, host_id, &before, &after)?;
+        }
         Ok(())
     })
+}
+
+/// What an inventory row offers: a newer package or image (`candidate`), or for a container a newer version tag.
+fn offers(row: &(String, String, Option<String>, Value)) -> Vec<String> {
+    let mut v = vec![];
+    if let Some(c) = &row.2 {
+        v.push(c.clone());
+    }
+    if row.1 == "docker" {
+        if let Some(t) = row.3.pointer("/latest/tag").and_then(|t| t.as_str()) {
+            v.push(format!("tag {t}"));
+        }
+    }
+    v
+}
+
+/// Separate alerts for new system updates and new container updates: only what was not pending before.
+pub fn alert_new_updates(c: &mut PgConnection, host_id: Uuid, before: &[(String, String, Option<String>, Value)], after: &[(String, String, Option<String>, Value)]) -> ApiResult<()> {
+    let known: HashSet<(String, String)> = before.iter().flat_map(|r| offers(r).into_iter().map(move |o| (r.0.clone(), o))).collect();
+    let (mut system, mut docker, mut security) = (vec![], vec![], 0);
+    for r in after {
+        let new: Vec<String> = offers(r).into_iter().filter(|o| !known.contains(&(r.0.clone(), o.clone()))).collect();
+        if new.is_empty() {
+            continue;
+        }
+        if r.1 == "docker" {
+            docker.push(format!("{} ({})", r.0.trim_start_matches("docker:"), new.join(", ").replace(" @", " ")));
+        } else {
+            security += host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::name.eq(&r.0)).filter(host_packages::is_security.eq(true)).count().get_result::<i64>(c)?;
+            system.push(r.0.clone());
+        }
+    }
+    let list = |v: &[String]| { let mut s = v.iter().take(10).cloned().collect::<Vec<_>>().join(", "); if v.len() > 10 { s.push_str(&format!(" and {} more", v.len() - 10)); } s };
+    if !system.is_empty() {
+        let msg = format!("{} new system update(s){}: {}", system.len(), if security > 0 { format!(" ({security} security)") } else { String::new() }, list(&system));
+        audit::record(c, Event::new("agent", "updates.system_available").target("host", &host_id.to_string()).host(host_id).details(json!({ "count": system.len(), "security": security, "packages": system, "message": msg })))?;
+    }
+    if !docker.is_empty() {
+        let msg = format!("{} new container update(s): {}", docker.len(), list(&docker));
+        audit::record(c, Event::new("agent", "updates.docker_available").target("host", &host_id.to_string()).host(host_id).details(json!({ "count": docker.len(), "containers": docker, "message": msg })))?;
+    }
+    Ok(())
 }
 
 fn can_agent_set(s: TaskStatus) -> bool {

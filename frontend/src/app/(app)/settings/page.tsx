@@ -83,7 +83,7 @@ function Settings() {
 
         <div className="grid grid--2">
           <Card title={t('settings.conn')} actions={<SaveBtn k="connectivity" />}>
-            <Field label={t('settings.conn.mode')}>{(i) => (
+            <Field label={t('settings.conn.mode')} hint={t('settings.conn.hint')}>{(i) => (
               <Select id={i} value={s.connectivity.mode} disabled={!writable} onChange={(e) => setS({ ...s, connectivity: { mode: e.target.value as 'connected' | 'air_gapped' } })}>
                 <option value="connected">{t('settings.conn.connected')}</option>
                 <option value="air_gapped">{t('settings.conn.air_gapped')}</option>

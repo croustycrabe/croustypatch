@@ -57,7 +57,8 @@ pub fn settings_for(c: &mut PgConnection, host_id: Uuid) -> ApiResult<Option<Age
         return Ok(None);
     }
     let isolation = settings::table.find("isolation").select(settings::value).first::<Value>(c).optional()?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
-    Ok(Some(AgentSettings { modules: parse(&modules), isolation }))
+    let offline = settings::table.find("connectivity").select(settings::value).first::<Value>(c).optional()?.and_then(|v| v.get("mode").and_then(|m| m.as_str()).map(|m| m == "air_gapped")).unwrap_or(false);
+    Ok(Some(AgentSettings { modules: parse(&modules), isolation, offline }))
 }
 
 /// Send the host's settings over its tunnel right away (push-mode agents get them with their next telemetry).
