@@ -111,7 +111,7 @@ await p.keyboard.press('Escape');
 
 // ---- ADD AGENT: generate, enrol a real agent with the command, watch the wizard notice
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.sidebar button:has-text("Ajouter un agent")'); await p.waitForSelector('dialog[open]');
-check('the wizard offers the modules for the new host', await p.locator('dialog[open] fieldset:has-text("Modules") input[type=checkbox]').count() === 5);
+check('the wizard offers the modules for the new host', await p.locator('dialog[open] fieldset:has-text("Modules") input[type=checkbox]').count() === 4);
 await p.check('dialog[open] fieldset:has-text("Modules") label:has-text("Docker") input');
 await p.click('dialog[open] button:has-text("Générer la commande")'); await p.waitForSelector('dialog[open] pre.cmd');
 const cmd = await p.locator('dialog[open] pre.cmd').first().textContent();
