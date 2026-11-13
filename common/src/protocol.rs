@@ -125,7 +125,9 @@ pub mod capability {
     /// Changes the tag of a container's image in its compose file (`ApplyUpdates::retag`). An agent without it would
     /// ignore the field and pull the tag it already has, so the server never sends it one.
     pub const DOCKER_RETAG: &str = "docker_retag";
-    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE, DOCKER_RETAG];
+    /// Runs the migration console's steps (`CommandAction::DockerShell`).
+    pub const DOCKER_SHELL: &str = "docker_shell";
+    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE, DOCKER_RETAG, DOCKER_SHELL];
 }
 
 /// Optional features switched on per host by the server (Hosts > host > Modules).
@@ -419,6 +421,44 @@ pub enum CommandAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gui_sha256: Option<String>,
     },
+    /// Docker migration console (agents with `capability::DOCKER_SHELL`): run the steps one after the other as root
+    /// with `sh -c`, stop at the first one that fails. The commands were written or reviewed by a person with the
+    /// `docker:shell` permission, and are recorded in the audit log as sent.
+    DockerShell {
+        /// `docker:<container>` the migration is about (for the log).
+        container: String,
+        steps: Vec<ShellStep>,
+        /// Who wrote the steps: `manual` (templates and edits) or `ai` (a draft the person reviewed).
+        #[serde(default)]
+        source: String,
+    },
+}
+
+/// One command of the migration console.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellStep {
+    pub title: String,
+    pub command: String,
+}
+
+/// What the console accepts: 1 to 20 steps, each with a title and a command of at most 8000 characters.
+pub const SHELL_MAX_STEPS: usize = 20;
+pub const SHELL_MAX_COMMAND: usize = 8000;
+
+pub fn check_shell_steps(steps: &[ShellStep]) -> Result<(), String> {
+    if steps.is_empty() || steps.len() > SHELL_MAX_STEPS {
+        return Err(format!("a migration has 1 to {SHELL_MAX_STEPS} steps"));
+    }
+    for (i, s) in steps.iter().enumerate() {
+        let n = i + 1;
+        if s.title.trim().is_empty() || s.title.chars().count() > 120 || s.title.chars().any(|c| c.is_control()) {
+            return Err(format!("step {n}: the title is 1 to 120 characters"));
+        }
+        if s.command.trim().is_empty() || s.command.chars().count() > SHELL_MAX_COMMAND || s.command.contains('\0') {
+            return Err(format!("step {n}: the command is 1 to {SHELL_MAX_COMMAND} characters"));
+        }
+    }
+    Ok(())
 }
 
 /// Command recipe of an app-center application (run as root with `sh -c`, umask 022).

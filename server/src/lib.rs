@@ -7,6 +7,7 @@ pub mod compliance;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod docker_migration;
 pub mod engine;
 pub mod error;
 pub mod gateway;

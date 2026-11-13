@@ -534,6 +534,15 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
                     message: e.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 }
             }
+            Some(TaskKind::DockerShell) => {
+                let e = exec.unwrap_or_default();
+                let steps: Vec<croustypatch_common::protocol::ShellStep> = e.get("steps").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                if croustypatch_common::protocol::check_shell_steps(&steps).is_err() {
+                    mark_failed(c, id, "the migration steps are not valid", now)?;
+                    continue;
+                }
+                CommandAction::DockerShell { container: e.get("container").and_then(|v| v.as_str()).unwrap_or("").to_string(), steps, source: e.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string() }
+            }
             None => {
                 mark_failed(c, id, "unknown task kind", now)?;
                 continue;

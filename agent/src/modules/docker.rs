@@ -125,6 +125,10 @@ pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::
         "image": c.image_ref, "project": c.compose.as_ref().map(|x| x.project.as_str()), "service": c.compose.as_ref().map(|x| x.service.as_str()),
         "state": c.state, "health": c.health, "started_at": c.started_at,
     });
+    if let Some(cp) = &c.compose {
+        // where the stack's files are (as the labels say), for the migration console's command lines
+        meta["compose"] = serde_json::json!({ "dir": cp.working_dir, "files": cp.config_files });
+    }
     if let Some(n) = newer {
         meta["latest"] = serde_json::json!({ "tag": n.tag, "major": n.major, "same_major": n.same_major });
         if let Some(a) = apply {
