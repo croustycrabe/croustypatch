@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "croustypatch-agent"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "croustypatch-common"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "croustypatch-server"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "actix-cors",
  "actix-files",

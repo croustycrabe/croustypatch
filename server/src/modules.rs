@@ -1,4 +1,4 @@
-//! Optional modules, switched on per host (docker, helper scripts, OpenSCAP, app center, eco mode).
+//! Optional modules, switched on per host (docker, helper scripts, app center, eco mode).
 //!
 //! The `modules` setting (Settings > Modules) holds the defaults given to new hosts; the "Add agent" wizard can
 //! override them per enrolment token; afterwards each host keeps its own switches (`hosts.modules`). Agents that
