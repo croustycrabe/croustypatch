@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The app center window may only list the catalog, ask for installs and removals, list, check and start the updates of its own machine, and read its own version.",
+  "windows": ["main"],
+  "permissions": ["allow-list", "allow-install", "allow-uninstall", "allow-updates", "allow-update", "allow-check", "allow-version"]
+}
