@@ -172,6 +172,30 @@ pub struct AgentSettings {
     /// newer version with each inventory, so the web interface can show app updates too (agents 0.9+).
     #[serde(default)]
     pub watch_aur: Vec<String>,
+    /// Docker registries the administrator configured (Settings > Docker registries), for hosts with the Docker
+    /// module on: the agent looks images up there (and logs in with what is given), and in offline mode only through
+    /// the local ones. Agents before 0.10 ignore the field.
+    #[serde(default)]
+    pub registries: Vec<RegistryProfile>,
+}
+
+/// A Docker registry the agent may use: a distant one (Docker Hub, GHCR, a private one) or one on the local network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegistryProfile {
+    pub name: String,
+    /// `local` (on the local network: usable in offline mode) or `distant`.
+    pub kind: String,
+    /// `host[:port]` as written in image references (`registry.lan:5000`).
+    pub host: String,
+    /// Upstream registries this one mirrors (`docker.io`, `ghcr.io`): their images are looked up here first.
+    pub mirror_of: Vec<String>,
+    /// Path before the repository on this registry (a Harbor proxy project: `dockerhub-proxy/`).
+    pub path_prefix: String,
+    pub username: String,
+    pub password: String,
+    /// Plain HTTP (a registry on the local network without TLS).
+    pub insecure: bool,
 }
 
 /// An application installed outside the package manager's own update check (built from the AUR) that has a newer

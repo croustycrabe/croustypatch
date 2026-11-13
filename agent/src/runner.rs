@@ -82,6 +82,12 @@ impl Agent {
         out
     }
 
+    /// The configured Docker registries and the offline flag, as the server last said.
+    pub fn registries(&self) -> crate::modules::registry::Registries {
+        let s = self.settings();
+        crate::modules::registry::Registries { profiles: s.as_ref().map(|s| s.registries.clone()).unwrap_or_default(), offline: s.is_some_and(|s| s.offline) }
+    }
+
     pub fn offline(&self) -> bool {
         self.settings().is_some_and(|s| s.offline)
     }
@@ -134,7 +140,7 @@ impl Agent {
         // The mock backend simulates a whole system: never mix the real host's modules into it.
         if !matches!(self.backend, Backend::Mock(_)) {
             if self.module_on("docker") && crate::modules::docker::available() {
-                packages.extend(crate::modules::docker::inventory(&self.runner, !self.offline()).await);
+                packages.extend(crate::modules::docker::inventory(&self.runner, &self.registries()).await);
             }
             if self.module_on("helper_script") {
                 packages.extend(crate::modules::helper_scripts::detect(std::path::Path::new("/opt")));
@@ -542,6 +548,13 @@ async fn update_containers(agent: &Agent, id: Uuid, names: &[String], retag: &st
             compose::Outcome::Changed { path } => log.line(format!("{service}: image {running} -> {new} in {path}")),
             compose::Outcome::AlreadyThere { path } => log.line(format!("{service}: {path} already says {new}; the container is recreated on it")),
         }
+    }
+    // a configured registry with a login: log in before anything is changed, so that a refusal changes nothing
+    let regs = agent.registries();
+    let wanted: Vec<String> = pins.iter().map(|p| p.image_ref.clone()).chain(requests.iter().map(|(_, _, new, _)| new.clone())).collect();
+    if let Err(e) = docker::login(&agent.runner, &regs, &wanted, log).await {
+        agent.update(id, TaskStatus::Failed, format!("{e:#}; nothing was changed"), log, vec![], false);
+        return Ok(None);
     }
     let stored: Vec<compose::StoredEdit> = edits.iter().map(compose::FileEdit::stored).collect();
     let rp = RestorePoint { task_id: id, created_at: Utc::now(), pins: vec![], extra: serde_json::json!({ "docker": pins, "compose_edits": stored }), unrestorable: vec![] };

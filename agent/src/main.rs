@@ -172,7 +172,7 @@ async fn scan(cli: &Cli) -> Result<()> {
     let r = exec::Runner { dry_run: true };
     let mut packages = backend.inventory(&r).await?;
     if croustypatch_agent::modules::docker::available() {
-        packages.extend(croustypatch_agent::modules::docker::inventory(&r, true).await);
+        packages.extend(croustypatch_agent::modules::docker::inventory(&r, &Default::default()).await);
     }
     packages.extend(croustypatch_agent::modules::helper_scripts::detect(std::path::Path::new("/opt")));
     let facts = facts::collect(&cfg.server_url, backend.kind(), croustypatch_agent::modules::detected()).await;

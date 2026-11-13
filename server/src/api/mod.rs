@@ -11,6 +11,7 @@ mod mcp;
 pub mod agent_dist;
 pub(crate) mod notifications;
 mod docker;
+mod docker_registries;
 mod docker_shell;
 mod reports;
 mod packages;
@@ -116,6 +117,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/docker/migration", web::get().to(docker_shell::migration))
             .route("/docker/shell", web::post().to(docker_shell::run))
             .route("/docker/migration-plan", web::post().to(docker_shell::plan))
+            .route("/docker/registries", web::get().to(docker_registries::list))
+            .route("/docker/registries", web::put().to(docker_registries::put))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))

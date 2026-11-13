@@ -252,8 +252,11 @@ pub async fn newer_version(img: &registry::ImageRef) -> Option<registry::Newer> 
 
 /// What the registry checks of one container found, kept in its inventory entry (`meta.check`) so the interface can
 /// say why there is no suggestion.
-pub fn with_check(mut e: PackageEntry, digest: &str, tags: &str) -> PackageEntry {
+pub fn with_check(mut e: PackageEntry, digest: &str, tags: &str, via: &str) -> PackageEntry {
     e.meta["check"] = serde_json::json!({ "digest": digest, "tags": tags });
+    if !via.is_empty() {
+        e.meta["check"]["via"] = serde_json::json!(via);
+    }
     e
 }
 
@@ -278,9 +281,9 @@ pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
 }
 
 /// Inventory entries for every running container, with the registry's current digest and the newest version tag
-/// when they can be checked (four registry lookups at a time).
-/// `online` false (an air-gapped installation): the containers are reported, no registry is asked.
-pub async fn inventory(r: &Runner, online: bool) -> Vec<PackageEntry> {
+/// when they can be checked (four registry lookups at a time). Images are looked up where `regs` says: a configured
+/// local mirror first, then their own registry (never in offline mode, where only local registries are asked).
+pub async fn inventory(r: &Runner, regs: &registry::Registries) -> Vec<PackageEntry> {
     let Ok(list) = containers(r).await.inspect_err(|e| tracing::warn!("docker inventory: {e:#}")) else { return vec![] };
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
     let mut jobs = tokio::task::JoinSet::new();
@@ -288,38 +291,76 @@ pub async fn inventory(r: &Runner, online: bool) -> Vec<PackageEntry> {
         let image = c.image_ref.clone();
         let name = c.name.clone();
         let gate = gate.clone();
+        let regs = regs.clone();
         jobs.spawn(async move {
             let _slot = gate.acquire().await;
             match registry::parse(&image) {
                 // pinned by digest: never updated, nothing to look for
-                Ok(img) if img.digest.is_none() && online => {
-                    let remote = registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %name, "registry check: {e:#}"));
-                    let tags = newer_version_checked(&img).await;
-                    let digest = match &remote {
-                        Ok(_) => "ok".to_string(),
-                        Err(e) => format!("error: {}", format!("{e:#}").chars().take(160).collect::<String>()),
-                    };
-                    (i, remote.ok(), tags.newer, digest, tags.how)
+                Ok(img) if img.digest.is_some() => (i, None, None, "pinned".to_string(), "pinned".to_string(), String::new()),
+                Ok(img) => {
+                    let targets = regs.targets(&img);
+                    if targets.is_empty() {
+                        // offline, and no local registry holds this image's registry
+                        return (i, None, None, "offline".to_string(), "offline".to_string(), String::new());
+                    }
+                    // the first place that answers; the version tags are looked up in the same place
+                    let mut last_err = String::new();
+                    for t in &targets {
+                        match registry::remote_digest(t).await {
+                            Ok(d) => {
+                                let tags = newer_version_checked(t).await;
+                                let via = if t.registry.eq_ignore_ascii_case(&img.registry) { String::new() } else { t.registry.clone() };
+                                return (i, Some(d), tags.newer, "ok".to_string(), tags.how, via);
+                            }
+                            Err(e) => {
+                                tracing::debug!(container = %name, registry = %t.registry, "registry check: {e:#}");
+                                last_err = format!("{e:#}").chars().take(160).collect();
+                            }
+                        }
+                    }
+                    // none answered the digest: the tags may still be readable (a registry that refuses HEAD)
+                    let tags = newer_version_checked(&targets[0]).await;
+                    (i, None, tags.newer, format!("error: {last_err}"), tags.how, String::new())
                 }
-                Ok(img) if img.digest.is_some() => (i, None, None, "pinned".to_string(), "pinned".to_string()),
-                Ok(_) => (i, None, None, "offline".to_string(), "offline".to_string()),
-                Err(e) => (i, None, None, format!("error: {e:#}"), "error".to_string()),
+                Err(e) => (i, None, None, format!("error: {e:#}"), "error".to_string(), String::new()),
             }
         });
     }
-    let mut found: Vec<(Option<String>, Option<registry::Newer>, String, String)> = vec![(None, None, String::new(), String::new()); list.len()];
-    while let Some(Ok((i, remote, newer, digest, tags))) = jobs.join_next().await {
-        found[i] = (remote, newer, digest, tags);
+    type Found = (Option<String>, Option<registry::Newer>, String, String, String);
+    let mut found: Vec<Found> = vec![(None, None, String::new(), String::new(), String::new()); list.len()];
+    while let Some(Ok((i, remote, newer, digest, tags, via))) = jobs.join_next().await {
+        found[i] = (remote, newer, digest, tags, via);
     }
     let all_mounts: Vec<(String, String)> = list.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
     list.iter()
         .zip(found)
-        .map(|(c, (remote, newer, digest, tags))| {
+        .map(|(c, (remote, newer, digest, tags, via))| {
             // can the suggested version be applied (and by changing which file)? Planned on the real compose files.
             let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag), n.major));
-            with_check(entry_with(c, remote.as_deref(), newer.as_ref(), apply), &digest, &tags)
+            with_check(entry_with(c, remote.as_deref(), newer.as_ref(), apply), &digest, &tags, &via)
         })
         .collect()
+}
+
+/// Log in (`docker login`) to the configured registries that hold these images and have a login, so that the pull
+/// that follows can read them. The login lands in root's Docker config, as if the administrator had typed it.
+/// Nothing is asked of a registry without credentials, or (offline) a distant one.
+pub async fn login(r: &Runner, regs: &registry::Registries, images: &[String], log: &TaskLog) -> Result<()> {
+    let mut done: Vec<String> = vec![];
+    for image in images {
+        let Ok(img) = registry::parse(image) else { continue };
+        let Some(p) = regs.profiles.iter().find(|p| p.host.eq_ignore_ascii_case(&img.registry) && !p.username.is_empty() && (!regs.offline || p.kind == "local")) else { continue };
+        if done.contains(&p.host) {
+            continue;
+        }
+        let cmd = Cmd::new("docker", &["login", &p.host, "-u", &p.username, "--password-stdin"]).stdin(p.password.clone().into_bytes()).timeout(60);
+        let out = r.mutate(cmd, log).await?;
+        if !out.ok() {
+            bail!("cannot log in to {} as {}: {}", p.host, p.username, out.stderr.trim());
+        }
+        done.push(p.host.clone());
+    }
+    Ok(())
 }
 
 fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {
