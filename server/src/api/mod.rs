@@ -115,6 +115,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/docker", web::get().to(docker::list))
             .route("/docker/migration", web::get().to(docker_shell::migration))
             .route("/docker/shell", web::post().to(docker_shell::run))
+            .route("/docker/migration-plan", web::post().to(docker_shell::plan))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))

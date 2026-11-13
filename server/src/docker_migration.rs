@@ -338,3 +338,82 @@ pub fn templates(ctx: &Ctx) -> Vec<Template> {
     out.push(inspect(ctx));
     out
 }
+
+// ------------------------------------------------------------------------------------------------ AI draft
+
+/// What the model is told. The plan is a DRAFT: a person reads and edits every command before anything runs.
+pub const AI_SYSTEM: &str = "You help a system administrator migrate ONE Docker container to another image version on a Linux host, where \
+the new image cannot simply replace the old one (for instance a database major version). You receive the container, \
+its image and the target tag, where its compose files are, and a baseline list of shell steps. Write the steps to \
+run as root on the host, one after the other, adapted to this software and these versions (data directory, dump and \
+restore tools, version-specific upgrade notes you are sure of). Rules: the first steps back up the data to /var/backups/croustypatch; \
+never delete anything (rename with a .pre-upgrade suffix instead); stop at the first failure is automatic, so every \
+step must exit non-zero when it did not work; use only docker, docker compose, sh and standard tools; use the \
+container, service and file names you are given and no others; never write a password or secret in a command (read \
+them from the container's own environment, as the baseline does); no downloads; at most 12 steps. Answer with ONE JSON \
+object and nothing else: {\"summary\": one or two sentences, \"risks\": [up to 4 short sentences on what could go wrong, \
+including anything you are not sure about], \"steps\": [{\"title\": short, \"command\": shell}]}.";
+
+/// The message sent with [`AI_SYSTEM`]: names, tags and paths only; never environment values or file contents.
+pub fn ai_prompt(ctx: &Ctx, baseline: &[ShellStep]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "container": ctx.container, "image": ctx.image, "target_image": with_tag(&ctx.image, &ctx.to_tag), "kind": family(&ctx.image),
+        "compose": { "project": ctx.project, "service": ctx.service, "directory": ctx.compose_dir, "files": ctx.compose_files },
+        "baseline_steps": baseline,
+    }))
+    .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Plan {
+    pub summary: String,
+    pub risks: Vec<String>,
+    pub steps: Vec<ShellStep>,
+}
+
+fn one_line(s: &str, max: usize) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect()
+}
+
+/// The plan in a model's answer (a JSON object, possibly inside a code fence or after a sentence), or why it is not usable.
+pub fn parse_plan(text: &str) -> Result<Plan, String> {
+    let (a, b) = (text.find('{').ok_or("no JSON object in the answer")?, text.rfind('}').ok_or("no JSON object in the answer")?);
+    if b < a {
+        return Err("no JSON object in the answer".into());
+    }
+    let v: serde_json::Value = serde_json::from_str(&text[a..=b]).map_err(|e| format!("the answer is not valid JSON ({e})"))?;
+    let steps: Vec<ShellStep> = v
+        .get("steps")
+        .and_then(|s| s.as_array())
+        .ok_or("the answer has no steps")?
+        .iter()
+        .filter_map(|s| Some(ShellStep { title: one_line(s.get("title")?.as_str()?, 120), command: s.get("command")?.as_str()?.trim().to_string() }))
+        .collect();
+    if steps.len() > 12 {
+        return Err("the plan has more than 12 steps".into());
+    }
+    croustypatch_common::protocol::check_shell_steps(&steps)?;
+    let risks = v.get("risks").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(|x| one_line(x, 300)).filter(|x| !x.is_empty()).take(4).collect()).unwrap_or_default();
+    Ok(Plan { summary: one_line(v.get("summary").and_then(|s| s.as_str()).unwrap_or(""), 400), risks, steps })
+}
+
+/// What in a command deserves a second look before it runs (shown next to the step; a person decides).
+pub fn warnings(command: &str) -> Vec<&'static str> {
+    let c = command.to_ascii_lowercase();
+    let mut out = vec![];
+    let mut add = |hit: bool, label: &'static str| {
+        if hit && !out.contains(&label) {
+            out.push(label);
+        }
+    };
+    add(c.contains("rm -") || c.contains("rmdir") || c.contains("shred") || c.contains("unlink "), "deletes files");
+    add(c.contains("docker volume rm") || c.contains("docker volume prune") || c.contains("docker system prune") || c.contains("docker image prune") || c.contains("compose down -v") || c.contains("down --volumes"), "deletes Docker data");
+    add(c.contains("docker rm"), "removes a container");
+    add(c.contains("drop database") || c.contains("drop table") || c.contains("drop schema") || c.contains("truncate "), "drops data in a database");
+    add(c.contains("mkfs") || c.contains("dd if=") || c.contains("dd of=") || c.contains("/dev/sd") || c.contains("/dev/nvme") || c.contains("wipefs"), "writes to a disk");
+    add(c.contains("curl ") || c.contains("wget ") || c.contains("| sh") || c.contains("| bash") || c.contains("|sh"), "downloads or runs something from the network");
+    add(c.contains("shutdown") || c.contains("reboot") || c.contains("poweroff") || c.contains("systemctl stop") || c.contains("systemctl restart"), "restarts or stops the host or a service");
+    add(c.contains("chmod -r") || c.contains("chown -r /") || c.contains("--force") || c.contains(" -f /"), "forces or changes permissions widely");
+    add(c.contains("password=") || c.contains("passwd ") || c.contains("-p'") || (c.contains("-p") && c.contains("secret")), "may contain a password");
+    out
+}

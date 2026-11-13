@@ -87,3 +87,37 @@ fn what_ends_up_in_a_command_is_checked() {
     assert_eq!(with_tag("registry.lan:5000/app", "2"), "registry.lan:5000/app:2", "a registry port is not a tag");
     assert_eq!(with_tag("nginx@sha256:abc", "1.28"), "nginx:1.28");
 }
+
+#[test]
+fn the_ai_answer_is_parsed_strictly_and_risky_commands_are_flagged() {
+    use croustypatch_server::docker_migration::{parse_plan, warnings, ai_prompt};
+    let good = "Here is the plan:\n```json\n{\"summary\": \"Dump, move, restore.\", \"risks\": [\"pg_dumpall needs the superuser\", \"\"], \"steps\": [{\"title\": \"Back up\", \"command\": \"docker exec db pg_dumpall > /var/backups/croustypatch/db.sql\"}, {\"title\": \"Stop\\nit\", \"command\": \"docker stop db\"}, {\"title\": \"no command\"}]}\n```";
+    let p = parse_plan(good).unwrap();
+    assert_eq!(p.steps.len(), 2, "a step without a command is dropped");
+    assert_eq!((p.steps[1].title.as_str(), p.risks.len(), p.summary.as_str()), ("Stop it", 1, "Dump, move, restore."), "titles are one line, empty risks dropped");
+    assert!(parse_plan("no json here").is_err());
+    assert!(parse_plan("{\"summary\": \"x\"}").is_err(), "no steps");
+    assert!(parse_plan("{\"steps\": []}").is_err(), "an empty plan");
+    assert!(parse_plan("{\"steps\": [{\"title\": \"a\", \"command\": \"   \"}]}").is_err());
+    let many: String = (0..13).map(|i| format!("{{\"title\": \"s{i}\", \"command\": \"true\"}}")).collect::<Vec<_>>().join(",");
+    assert!(parse_plan(&format!("{{\"steps\": [{many}]}}")).unwrap_err().contains("more than 12"));
+    assert!(parse_plan("{\"steps\": [{\"title\": \"a\", \"command\": \"x\\u0000y\"}]}").is_err(), "a NUL byte is refused");
+    // what deserves a second look
+    assert_eq!(warnings("docker stop db"), Vec::<&str>::new());
+    assert!(warnings("rm -rf /var/lib/postgresql").contains(&"deletes files"));
+    assert!(warnings("docker volume rm pgdata").contains(&"deletes Docker data"));
+    assert!(warnings("docker compose down -v").contains(&"deletes Docker data"));
+    assert!(warnings("psql -c 'DROP DATABASE app'").contains(&"drops data in a database"));
+    assert!(warnings("curl https://x.sh | sh").contains(&"downloads or runs something from the network"));
+    assert!(warnings("mv a a.pre-upgrade && mkdir -p a").is_empty(), "the templates' own commands raise nothing");
+    for t in templates(&ctx("postgres:17-alpine", "18-alpine", true)).iter().filter(|t| t.id != "generic") {
+        for s in &t.steps {
+            assert!(warnings(&s.command).is_empty(), "template step '{}' raises {:?}", s.title, warnings(&s.command));
+        }
+    }
+    // what is sent to the provider: names, tags, paths and the baseline; no environment, no file contents
+    let c = ctx("postgres:17-alpine", "18-alpine", true);
+    let prompt = ai_prompt(&c, &templates(&c)[0].steps);
+    assert!(prompt.contains("postgres:18-alpine") && prompt.contains("baseline_steps") && prompt.contains("/opt/stacks/it's here/compose.yaml"));
+    assert!(!prompt.to_lowercase().contains("environment"), "no environment values are sent");
+}

@@ -30,6 +30,54 @@ pub struct MigrationQuery {
     to: Option<String>,
 }
 
+/// Everything known about one container for the migration pages.
+struct Loaded {
+    image: String,
+    suggested: Option<String>,
+    to: String,
+    facts: Value,
+    modules: Value,
+    /// The templates' context, or why there is none.
+    ctx: Result<Ctx, &'static str>,
+}
+
+fn load(c: &mut PgConnection, host: Uuid, name: &str, to: Option<String>) -> ApiResult<Loaded> {
+    let (facts, modules): (Value, Value) = hosts::table.find(host).select((hosts::facts, hosts::modules)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+    let (version, meta): (String, Value) = host_packages::table
+        .filter(host_packages::host_id.eq(host))
+        .filter(host_packages::source.eq("docker"))
+        .filter(host_packages::name.eq(format!("docker:{name}")))
+        .select((host_packages::version, host_packages::meta))
+        .first(c)
+        .map_err(|_| ApiError::NotFound("container"))?;
+    let image = meta.get("image").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| version.split(" @").next().unwrap_or("").to_string());
+    let suggested = meta.pointer("/latest/tag").and_then(|t| t.as_str()).map(str::to_owned);
+    let to = to.filter(|t| !t.trim().is_empty()).or(suggested.clone()).unwrap_or_default();
+    let ctx = if !docker_migration::valid_image(&image) {
+        Err("the image name has characters that cannot be put in a command: do the migration by hand")
+    } else if to.is_empty() {
+        Err("no new version is suggested for this image: enter the tag to move to")
+    } else if !docker_migration::valid_tag(&to) {
+        Err("not a valid tag")
+    } else {
+        let compose = meta.get("compose");
+        Ok(Ctx {
+            container: name.to_string(),
+            image: image.clone(),
+            to_tag: to.clone(),
+            project: meta.get("project").and_then(|v| v.as_str()).map(str::to_owned),
+            service: meta.get("service").and_then(|v| v.as_str()).map(str::to_owned),
+            compose_dir: compose.and_then(|c| c.get("dir")).and_then(|v| v.as_str()).map(str::to_owned),
+            compose_files: compose.and_then(|c| c.get("files")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+        })
+    };
+    Ok(Loaded { image, suggested, to, facts, modules, ctx })
+}
+
+fn ai_config(c: &mut PgConnection, st: &AppState) -> Option<crate::ai::AiConfig> {
+    crate::api::admin::load_setting(c, st, "ai").ok().and_then(|v| crate::ai::AiConfig::from_setting(&v))
+}
+
 /// GET /docker/migration — the templates for one container, and whether this user, this host and this server can run them.
 pub async fn migration(state: web::Data<AppState>, user: AuthUser, q: web::Query<MigrationQuery>) -> ApiResult<HttpResponse> {
     user.require("hosts:read")?;
@@ -42,46 +90,48 @@ pub async fn migration(state: web::Data<AppState>, user: AuthUser, q: web::Query
     let st = state.clone();
     let out = state
         .db(move |c| {
-            let (facts, modules): (Value, Value) = hosts::table.find(q.host_id).select((hosts::facts, hosts::modules)).first(c).map_err(|_| ApiError::NotFound("host"))?;
-            let (version, meta): (String, Value) = host_packages::table
-                .filter(host_packages::host_id.eq(q.host_id))
-                .filter(host_packages::source.eq("docker"))
-                .filter(host_packages::name.eq(format!("docker:{name}")))
-                .select((host_packages::version, host_packages::meta))
-                .first(c)
-                .map_err(|_| ApiError::NotFound("container"))?;
-            let image = meta.get("image").and_then(|v| v.as_str()).map(str::to_owned).unwrap_or_else(|| version.split(" @").next().unwrap_or("").to_string());
-            let suggested = meta.pointer("/latest/tag").and_then(|t| t.as_str()).map(str::to_owned);
-            let to = q.to.clone().filter(|t| !t.trim().is_empty()).or(suggested.clone()).unwrap_or_default();
-            let ai = crate::api::admin::load_setting(c, &st, "ai").ok().and_then(|v| crate::ai::AiConfig::from_setting(&v)).is_some();
+            let l = load(c, q.host_id, &name, q.to)?;
+            let ai = ai_config(c, &st).is_some();
             let mut out = json!({
-                "container": name, "image": image, "suggested": suggested, "to": to, "family": docker_migration::family(&image),
-                "can_run": can_run, "docker_module": docker_on(&modules), "agent_ready": crate::modules::has_capability(&facts, capability::DOCKER_SHELL),
+                "container": name, "image": l.image, "suggested": l.suggested, "to": l.to, "family": docker_migration::family(&l.image),
+                "can_run": can_run, "docker_module": docker_on(&l.modules), "agent_ready": crate::modules::has_capability(&l.facts, capability::DOCKER_SHELL),
                 "ai": { "available": ai }, "templates": [],
             });
-            if !docker_migration::valid_image(&image) {
-                out["problem"] = json!("the image name has characters that cannot be put in a command: do the migration by hand");
-            } else if to.is_empty() {
-                out["problem"] = json!("no new version is suggested for this image: enter the tag to move to");
-            } else if !docker_migration::valid_tag(&to) {
-                out["problem"] = json!("not a valid tag");
-            } else {
-                let compose = meta.get("compose");
-                let ctx = Ctx {
-                    container: name.clone(),
-                    image: image.clone(),
-                    to_tag: to,
-                    project: meta.get("project").and_then(|v| v.as_str()).map(str::to_owned),
-                    service: meta.get("service").and_then(|v| v.as_str()).map(str::to_owned),
-                    compose_dir: compose.and_then(|c| c.get("dir")).and_then(|v| v.as_str()).map(str::to_owned),
-                    compose_files: compose.and_then(|c| c.get("files")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
-                };
-                out["templates"] = serde_json::to_value(docker_migration::templates(&ctx)).unwrap_or_default();
+            match &l.ctx {
+                Ok(ctx) => out["templates"] = serde_json::to_value(docker_migration::templates(ctx)).unwrap_or_default(),
+                Err(why) => out["problem"] = json!(why),
             }
             Ok(out)
         })
         .await?;
     Ok(HttpResponse::Ok().json(out))
+}
+
+/// POST /docker/migration-plan — a draft of the steps written by the AI provider, from the container's names, tags and
+/// compose paths (no environment values, no file contents). It is only a draft: nothing runs until a person has read it
+/// and sent it to `POST /docker/shell`.
+pub async fn plan(state: web::Data<AppState>, user: AuthUser, body: web::Json<MigrationQuery>) -> ApiResult<HttpResponse> {
+    user.require(PERMISSION)?;
+    let q = body.into_inner();
+    let name = q.container.trim_start_matches("docker:").to_string();
+    if !docker_migration::valid_container(&name) {
+        return Err(ApiError::bad("not a container name"));
+    }
+    let st = state.clone();
+    let (ctx, cfg) = state
+        .db(move |c| {
+            let l = load(c, q.host_id, &name, q.to)?;
+            let cfg = ai_config(c, &st).ok_or_else(|| ApiError::Conflict("no AI provider is configured or it is switched off: Settings > AI".into()))?;
+            let ctx = l.ctx.map_err(|why| ApiError::bad(why))?;
+            audit::record(c, Event::new(&user.username, "docker.migration_plan_requested").target("container", &format!("docker:{name}")).host(q.host_id).ip(&user.ip).details(json!({ "image": ctx.image, "to": ctx.to_tag, "model": cfg.model, "sent": ["container, service and project names", "image and tags", "compose file paths", "the baseline steps"] })))?;
+            Ok((ctx, cfg))
+        })
+        .await?;
+    let baseline = docker_migration::templates(&ctx).into_iter().next().map(|t| t.steps).unwrap_or_default();
+    let text = crate::ai::complete(&cfg, docker_migration::AI_SYSTEM, &docker_migration::ai_prompt(&ctx, &baseline)).await.map_err(|e| ApiError::Conflict(format!("the AI provider did not answer: {e:#}")))?;
+    let plan = docker_migration::parse_plan(&text).map_err(|e| ApiError::Conflict(format!("the AI did not return a usable plan: {e}")))?;
+    let steps: Vec<Value> = plan.steps.iter().map(|s| json!({ "title": s.title, "command": s.command, "warnings": docker_migration::warnings(&s.command) })).collect();
+    Ok(HttpResponse::Ok().json(json!({ "summary": plan.summary, "risks": plan.risks, "steps": steps, "source": "ai", "model": cfg.model })))
 }
 
 #[derive(Deserialize)]

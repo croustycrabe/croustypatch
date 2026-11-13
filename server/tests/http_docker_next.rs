@@ -114,3 +114,96 @@ async fn the_migration_console_offers_templates_and_runs_reviewed_steps_only_for
     assert_eq!(payload["action"]["steps"], steps, "{payload}");
     assert_eq!(payload["action"]["type"], json!("docker_shell"));
 }
+
+/// Minimal OpenAI-compatible endpoint answering `content` to every chat completion; returns the request bodies.
+async fn fake_llm(content: String) -> (String, tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", l.local_addr().unwrap());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else { return };
+            let (tx, content) = (tx.clone(), content.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![];
+                let mut tmp = [0u8; 8192];
+                loop {
+                    let n = s.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 { return; }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..p]).to_lowercase();
+                        let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+                        if buf.len() >= p + 4 + len {
+                            let _ = tx.send(serde_json::from_slice(&buf[p + 4..p + 4 + len]).unwrap_or(serde_json::Value::Null));
+                            break;
+                        }
+                    }
+                }
+                let body = json!({ "choices": [{ "message": { "role": "assistant", "content": content } }] }).to_string();
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+            });
+        }
+    });
+    (url, rx)
+}
+
+#[actix_web::test]
+async fn the_ai_drafts_a_migration_that_a_person_reviews_before_anything_runs() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let host: Uuid = diesel::insert_into(hosts::table).values((hosts::hostname.eq("docker-ai"), hosts::public_key_pem.eq("pem"), hosts::status.eq("online"), hosts::modules.eq(json!({"docker": true})), hosts::facts.eq(json!({"capabilities": croustypatch_common::protocol::capability::ALL})))).returning(hosts::id).get_result(&mut db.conn()).unwrap();
+    diesel::insert_into(host_packages::table)
+        .values((host_packages::host_id.eq(host), host_packages::name.eq("docker:db"), host_packages::source.eq("docker"), host_packages::version.eq("postgres:17-alpine @abc"), host_packages::meta.eq(json!({"image": "postgres:17-alpine", "project": "app", "service": "db", "compose": {"dir": "/opt/app", "files": ["/opt/app/compose.yaml"]}, "latest": {"tag": "18-alpine", "major": true}, "env": {"POSTGRES_PASSWORD": "hunter2"}}))))
+        .execute(&mut db.conn())
+        .unwrap();
+    let plan = |body: serde_json::Value| TestRequest::post().uri("/api/v1/docker/migration-plan").cookie(ck.clone()).set_json(body);
+    let q = json!({"host_id": host, "container": "docker:db"});
+    let (st, b) = call(&app, plan(q.clone())).await;
+    assert_eq!(st, 409, "without a provider: {b}");
+    assert!(b["message"].as_str().unwrap().contains("Settings > AI"));
+
+    let answer = "{\"summary\": \"Dump, move the data aside, restore.\", \"risks\": [\"Extensions must exist in the new image\"], \"steps\": [{\"title\": \"Back up\", \"command\": \"mkdir -p /var/backups/croustypatch && docker exec db pg_dumpall -U postgres > /var/backups/croustypatch/db.sql\"}, {\"title\": \"Remove the old data\", \"command\": \"rm -rf /opt/app/data\"}]}".to_string();
+    let (url, mut rx) = fake_llm(answer).await;
+    let (st, _) = call(&app, TestRequest::put().uri("/api/v1/settings/ai").cookie(ck.clone()).set_json(json!({"enabled": true, "provider": "openai_compatible", "base_url": url, "model": "test-model", "api_key": ""}))).await;
+    assert!(st.is_success());
+    let (_, m) = call(&app, TestRequest::get().uri(&format!("/api/v1/docker/migration?host_id={host}&container=db")).cookie(ck.clone())).await;
+    assert_eq!(m["ai"]["available"], json!(true), "the page can offer 'do with AI'");
+    let (st, p) = call(&app, plan(q.clone())).await;
+    assert_eq!(st, 200, "{p}");
+    assert_eq!((p["source"].clone(), p["model"].clone(), p["steps"].as_array().unwrap().len()), (json!("ai"), json!("test-model"), 2));
+    assert_eq!(p["steps"][0]["warnings"], json!([]));
+    assert_eq!(p["steps"][1]["warnings"], json!(["deletes files"]), "a risky command is flagged for the reviewer");
+    assert_eq!(p["risks"][0], json!("Extensions must exist in the new image"));
+    // what the provider received: the container's names and tags, never environment values
+    let sent = rx.recv().await.unwrap().to_string();
+    assert!(sent.contains("postgres:18-alpine") && sent.contains("/opt/app/compose.yaml") && sent.contains("baseline_steps"), "{sent}");
+    assert!(!sent.contains("hunter2"), "no secret leaves the server");
+    // it is a draft: nothing was queued, and the request is in the audit log (without the content)
+    let queued: i64 = tasks::table.filter(tasks::kind.eq("docker_shell")).count().get_result(&mut db.conn()).unwrap();
+    assert_eq!(queued, 0);
+    let ev: serde_json::Value = audit_log::table.filter(audit_log::action.eq("docker.migration_plan_requested")).select(audit_log::details).first(&mut db.conn()).unwrap();
+    assert_eq!((ev["model"].clone(), ev["to"].clone()), (json!("test-model"), json!("18-alpine")));
+    // without the permission
+    let op = user_with_role(&app, &ck, "op", "operator").await;
+    let (st, _) = call(&app, TestRequest::post().uri("/api/v1/docker/migration-plan").cookie(op).set_json(q)).await;
+    assert_eq!(st, 403);
+}
+
+#[actix_web::test]
+async fn an_unusable_ai_answer_is_reported_not_run() {
+    let db = support::TestDb::new();
+    let app = app(&db).await;
+    let ck = admin(&app).await;
+    let host: Uuid = diesel::insert_into(hosts::table).values((hosts::hostname.eq("docker-ai2"), hosts::public_key_pem.eq("pem"), hosts::status.eq("online"), hosts::modules.eq(json!({"docker": true})))).returning(hosts::id).get_result(&mut db.conn()).unwrap();
+    diesel::insert_into(host_packages::table).values((host_packages::host_id.eq(host), host_packages::name.eq("docker:db"), host_packages::source.eq("docker"), host_packages::version.eq("postgres:17 @abc"), host_packages::meta.eq(json!({"image": "postgres:17", "latest": {"tag": "18"}})))).execute(&mut db.conn()).unwrap();
+    let (url, _rx) = fake_llm("I cannot help with that.".to_string()).await;
+    call(&app, TestRequest::put().uri("/api/v1/settings/ai").cookie(ck.clone()).set_json(json!({"enabled": true, "provider": "openai_compatible", "base_url": url, "model": "m", "api_key": ""}))).await;
+    let (st, b) = call(&app, TestRequest::post().uri("/api/v1/docker/migration-plan").cookie(ck.clone()).set_json(json!({"host_id": host, "container": "db"}))).await;
+    assert_eq!(st, 409, "{b}");
+    assert!(b["message"].as_str().unwrap().contains("did not return a usable plan"), "{b}");
+    let (st, b) = call(&app, TestRequest::post().uri("/api/v1/docker/migration-plan").cookie(ck).set_json(json!({"host_id": host, "container": "db", "to": "1;id"}))).await;
+    assert_eq!(st, 400, "{b}");
+}
