@@ -13,7 +13,8 @@ PORT="${E2E_PORT:-8443}"; BASE="https://localhost:$PORT"
 for b in croustypatch-server croustypatch-agent; do [ -x "$BIN/$b" ] || { echo "missing $BIN/$b: run cargo build --workspace"; exit 1; }; done
 [ -f "$ROOT/frontend/out/index.html" ] || { echo "missing frontend/out: run npm run build"; exit 1; }
 
-pkill -x croustypatch-se 2>/dev/null; pkill -x croustypatch-ag 2>/dev/null; sleep 1
+# only the processes of THIS checkout (several sessions may run their own environment on one machine)
+pkill -f "^$BIN/croustypatch-(server|agent) " 2>/dev/null; sleep 1
 docker exec croustypatch-pg psql -U croustypatch -d postgres -qc "drop database if exists $DB WITH (FORCE)" -c "create database $DB" || { echo "cannot reach the dev PostgreSQL container 'croustypatch-pg'"; exit 1; }
 mkdir -p "$RUN/agents" && rm -rf "$RUN/data" && mkdir -p "$RUN/data"
 (DATABASE_URL="$DB_URL" CROUSTYPATCH_BOOTSTRAP_PASSWORD='bootstrap-pass-123' CROUSTYPATCH_DATA_DIR="$RUN/data" CROUSTYPATCH_STATIC_DIR="$ROOT/frontend/out" CROUSTYPATCH_AGENT_DIR="$RUN/agents" \

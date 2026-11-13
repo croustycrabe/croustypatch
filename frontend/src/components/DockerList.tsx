@@ -8,6 +8,7 @@ import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import type { DockerData } from '@/lib/types';
 import { useToast } from '@/lib/toast';
+import { DockerMigration, type MigrationTarget } from './DockerMigration';
 import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Notice, SearchInput, Spinner, StatCard, Table, Tag } from './ui';
 
 /** Containers with their image state; only the images are ever updated (never start, stop or remove). */
@@ -28,6 +29,7 @@ export function DockerList({ hostId }: { hostId?: string }) {
   const [confirm, setConfirm] = useState<string[] | null>(null);
   const [apply, setApply] = useState<DockerData['containers'][number] | null>(null);
   const [ackMajor, setAckMajor] = useState(false);
+  const [migrate, setMigrate] = useState<MigrationTarget | null>(null);
   const data = useApi<DockerData>(`/docker?updates=${updatesOnly}&newer=${newerOnly}&q=${encodeURIComponent(q)}${hostId ? `&host=${hostId}` : ''}`, { poll: 20000 });
   const d = data.data;
   const key = (c: { host_id: string; package: string }) => `${c.host_id}|${c.package}`;
@@ -95,12 +97,20 @@ export function DockerList({ hostId }: { hostId?: string }) {
               {c.started_at && c.state === 'running' && <span className="sub">{t('docker.since', { d: date(c.started_at, { dateStyle: 'medium' }) })}</span>}
             </td>
             <td className="wrap">
+              {!c.open_task && c.check && !c.latest && (c.check.tags.startsWith('error') || c.check.digest.startsWith('error')) && (
+                <span style={{ display: 'block', marginBottom: 4 }} title={t('docker.check.error.tip')}>
+                  <Tag tone="warn">{t('docker.check.error')}</Tag>
+                  <span className="sub">{(c.check.digest.startsWith('error') ? c.check.digest : c.check.tags).replace(/^error: /, '')}</span>
+                </span>
+              )}
               {c.open_task ? <Tag tone="info">{t('docker.updating')}</Tag> : c.update ? <span className="row row--tight"><Tag tone="warn">{t('docker.available')}</Tag><span className="mono muted">@{c.candidate}</span></span> : !c.latest && <Tag tone="ok">{t('docker.current')}</Tag>}
+              {!c.open_task && !c.latest && c.check && ['not_version', 'pinned', 'offline'].includes(c.check.tags) && <span className="sub" style={{ display: 'block' }}>{t(`docker.check.${c.check.tags === 'not_version' ? 'floating' : c.check.tags}` as 'docker.check.pinned')}</span>}
               {c.latest && (
                 <span className="sub" style={{ display: 'block' }}>
                   <Tag tone="warn">{t('docker.suggested')}</Tag> <span className="mono">{tagOf(c.image)} → {c.latest.tag}</span>
                   {c.latest.major && <> <Tag tone="warn">{t('docker.major')}</Tag></>}
                   {c.latest.major && c.latest.same_major && <span className="muted"> {t('docker.same_major', { tag: c.latest.same_major })}</span>}
+                  {!c.open_task && <span style={{ display: 'block', marginTop: 4 }}><Button small onClick={() => setMigrate({ host_id: c.host_id, hostname: c.hostname, name: c.name, package: c.package, image: c.image, suggested: c.latest?.tag ?? null })}>{t('docker.mig.open')}</Button></span>}
                   {c.open_task ? null : c.latest.apply?.mode === 'file' ? (
                     canUpdate && <span style={{ display: 'block', marginTop: 4 }}><Button small icon={<ArrowCircleUp size={14} weight="bold" />} disabled={act.pending} onClick={() => { act.clearError(); setAckMajor(false); setApply(c); }}>{t('docker.apply.button', { tag: c.latest.tag })}</Button></span>
                   ) : (
@@ -142,6 +152,7 @@ export function DockerList({ hostId }: { hostId?: string }) {
           </div>
         )}
       </Dialog>
+      <DockerMigration target={migrate} onClose={() => setMigrate(null)} onDone={() => data.reload()} />
       <ConfirmDialog message={confirm ? t('docker.confirm', { n: confirm.length }) : null} onNo={() => setConfirm(null)} onYes={() => { if (confirm) void update(confirm); }} />
     </div>
   );

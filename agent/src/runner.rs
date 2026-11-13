@@ -222,6 +222,7 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::App { install, command: Some(cmd), user, .. } => app_command(agent, id, install, &cmd, user.as_deref(), &log).await,
         CommandAction::App { install, packages, command: None, .. } => app(agent, id, install, &packages, &log).await,
         CommandAction::UpdateAgent { platform, sha256, version, gui_sha256 } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, gui_sha256.as_deref(), &log).await,
+        CommandAction::DockerShell { container, steps, source } => crate::docker_shell::run(agent, id, &container, &steps, &source, &log).await,
     };
     if let Err(e) = res {
         log.line(format!("error: {e:#}"));
@@ -270,6 +271,8 @@ async fn app_command(agent: &Agent, id: Uuid, install: bool, cmd: &AppCommand, u
 
 async fn scan(agent: &Agent, id: Uuid, log: &TaskLog) -> Result<()> {
     agent.update(id, TaskStatus::Running, "scanning", log, vec![], false);
+    // a manual scan asks the container registries again instead of trusting what was found hours ago
+    crate::modules::docker::forget_cache();
     agent.backend.refresh(&agent.runner, log).await;
     let inv = agent.send_inventory().await?;
     let pending = inv.packages.iter().filter(|p| p.candidate.is_some()).count();

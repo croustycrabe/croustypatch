@@ -10,6 +10,7 @@ mod mcp;
 pub mod agent_dist;
 pub(crate) mod notifications;
 mod docker;
+mod docker_shell;
 mod reports;
 mod packages;
 pub mod portal;
@@ -101,6 +102,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/hosts/{id}/reboot", web::post().to(fleet::reboot_host))
             .route("/hosts/{id}/agent-update", web::post().to(fleet::update_agent))
             .route("/docker", web::get().to(docker::list))
+            .route("/docker/migration", web::get().to(docker_shell::migration))
+            .route("/docker/shell", web::post().to(docker_shell::run))
+            .route("/docker/migration-plan", web::post().to(docker_shell::plan))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))

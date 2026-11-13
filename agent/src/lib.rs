@@ -1,6 +1,7 @@
 //! CroustyPatch agent library. The binary (`main.rs`) is only the CLI on top of this.
 pub mod app_command;
 pub mod config;
+pub mod docker_shell;
 pub mod exec;
 pub mod facts;
 pub mod health;

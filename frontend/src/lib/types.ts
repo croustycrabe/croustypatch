@@ -106,7 +106,7 @@ export interface Task {
   id: string;
   host_id: string;
   hostname: string;
-  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'app' | 'agent_update' | 'docker';
+  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'app' | 'agent_update' | 'docker' | 'docker_shell';
   status: TaskStatus;
   policy_id: string | null;
   parent_task_id: string | null;
@@ -164,6 +164,8 @@ export interface DockerData {
     project: string | null; service: string | null; state: string | null; health: string | null; started_at: string | null; open_task: { id: string; status: string } | null;
     /** A newer version tag in the registry (informative: moving to it means changing the compose file). */
     latest: { tag: string; major: boolean; same_major: string | null; apply?: { mode: 'file' | 'manual'; file?: string; reason?: string; already?: boolean } } | null;
+    /** What the agent's registry checks found: `digest` ok / pinned / offline / error: …; `tags` listed / probed / not_version / pinned / offline / error: … */
+    check?: { digest: string; tags: string } | null;
   }[];
 }
 
@@ -359,3 +361,15 @@ export interface Paged<T> { items: T[]; total: number; page: number; per_page: n
 
 /** A line of Administration > Logs. */
 export interface LogEntry { ts: string; source: 'tasks' | 'notifications' | 'reports' | 'server'; level: 'info' | 'warn' | 'error'; title: string; message: string; host_id?: string; hostname?: string; ref_id?: string }
+
+/** One command of the Docker migration console. */
+export interface ShellStep { title: string; command: string }
+export interface MigrationTemplate { id: string; title: string; description: string; steps: ShellStep[]; rollback: ShellStep[] }
+/** GET /docker/migration: the prebuilt lines for a container and what this user, host and server can do with them. */
+export interface MigrationInfo {
+  container: string; image: string; suggested: string | null; to: string; family: string;
+  can_run: boolean; docker_module: boolean; agent_ready: boolean; ai: { available: boolean };
+  templates: MigrationTemplate[]; problem?: string;
+}
+/** POST /docker/migration-plan: a draft written by the AI provider, to be read before anything runs. */
+export interface MigrationPlan { summary: string; risks: string[]; steps: (ShellStep & { warnings: string[] })[]; source: 'ai'; model: string }
