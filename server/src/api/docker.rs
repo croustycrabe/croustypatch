@@ -68,6 +68,8 @@ pub async fn list(state: web::Data<AppState>, user: AuthUser, q: web::Query<Dock
                         "host_id": host_id, "hostname": hostname, "name": name.trim_start_matches("docker:"), "package": name,
                         "image": image, "current": version.split(" @").nth(1).unwrap_or(""), "candidate": candidate.as_deref().map(|c| c.split(" @").nth(1).unwrap_or("")),
                         "update": candidate.is_some(),
+                        // what the agent's registry checks found, and why there is no suggestion when there is none (agents 0.10+)
+                        "check": meta.get("check").filter(|c| c.is_object()).cloned(),
                         "latest": meta.get("latest").filter(|l| l.get("tag").is_some_and(|t| t.is_string())).map(|l| json!({
                             "tag": l.get("tag"), "major": l.get("major").and_then(|m| m.as_bool()).unwrap_or(false), "same_major": l.get("same_major").filter(|x| x.is_string()),
                             // whether the agent can apply it, and by changing which file (agents 0.7.4 and later)

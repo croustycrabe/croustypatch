@@ -58,24 +58,55 @@ fn base_url(registry: &str) -> String {
     if matches!(host, "localhost" | "127.0.0.1") { format!("http://{registry}") } else { format!("https://{registry}") }
 }
 
-/// An HTTP client that remembers the registry's anonymous bearer token between requests.
+/// The user and password `docker login` stored for a registry, from the `auths` of a Docker config file. Credential
+/// helpers (`credsStore`, `credHelpers`) are not run: the agent only reads what is written in the file.
+pub fn credentials_from_config(config: &str, registry: &str) -> Option<(String, String)> {
+    use base64::Engine;
+    let v: serde_json::Value = serde_json::from_str(config).ok()?;
+    // `registry-1.docker.io` is Docker Hub: `docker login` records it as https://index.docker.io/v1/
+    let hub = |h: &str| matches!(h, "registry-1.docker.io" | "index.docker.io" | "docker.io");
+    let host_of = |k: &str| k.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or("").to_ascii_lowercase();
+    let want = registry.to_ascii_lowercase();
+    let (key, entry) = v.get("auths")?.as_object()?.iter().find(|(k, _)| {
+        let h = host_of(k);
+        h == want || (hub(&h) && hub(&want))
+    })?;
+    let _ = key;
+    if let (Some(u), Some(p)) = (entry.get("username").and_then(|x| x.as_str()), entry.get("password").and_then(|x| x.as_str())) {
+        return Some((u.to_string(), p.to_string()));
+    }
+    let raw = base64::engine::general_purpose::STANDARD.decode(entry.get("auth")?.as_str()?).ok()?;
+    let (u, p) = String::from_utf8(raw).ok()?.split_once(':').map(|(u, p)| (u.to_string(), p.to_string()))?;
+    (!u.is_empty()).then_some((u, p))
+}
+
+/// `$DOCKER_CONFIG/config.json`, else `~/.docker/config.json` (the agent runs as root, as `docker compose pull` does).
+fn docker_config_text() -> Option<String> {
+    let dir = std::env::var("DOCKER_CONFIG").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).or_else(|| std::env::var("HOME").ok().filter(|h| !h.is_empty()).map(|h| std::path::Path::new(&h).join(".docker")))?;
+    std::fs::read_to_string(dir.join("config.json")).or_else(|_| std::fs::read_to_string("/root/.docker/config.json")).ok()
+}
+
+/// An HTTP client that remembers the registry's bearer token between requests, and logs in with what `docker login`
+/// recorded for that registry (private images), else anonymously.
 struct Session {
     http: reqwest::Client,
-    token: Option<String>,
+    token: std::sync::Mutex<Option<String>>,
+    credentials: Option<(String, String)>,
 }
 
 impl Session {
-    fn new() -> Result<Self> {
-        Ok(Self { http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).user_agent(concat!("croustypatch-agent/", env!("CARGO_PKG_VERSION"))).build()?, token: None })
+    fn for_registry(registry: &str) -> Result<Self> {
+        let credentials = (!registry.is_empty()).then(|| docker_config_text().and_then(|c| credentials_from_config(&c, registry))).flatten();
+        Ok(Self { http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).user_agent(concat!("croustypatch-agent/", env!("CARGO_PKG_VERSION"))).build()?, token: Default::default(), credentials })
     }
 
-    async fn send(&mut self, method: reqwest::Method, url: &str, repository: &str, accept: Option<&str>) -> Result<reqwest::Response> {
+    async fn send(&self, method: reqwest::Method, url: &str, repository: &str, accept: Option<&str>) -> Result<reqwest::Response> {
         let build = |this: &Self| {
             let mut r = this.http.request(method.clone(), url);
             if let Some(a) = accept {
                 r = r.header("accept", a);
             }
-            if let Some(t) = &this.token {
+            if let Some(t) = this.token.lock().unwrap().clone() {
                 r = r.bearer_auth(t);
             }
             r
@@ -84,20 +115,34 @@ impl Session {
         if r.status() != reqwest::StatusCode::UNAUTHORIZED {
             return Ok(r);
         }
-        let ch = r.headers().get("www-authenticate").and_then(|v| v.to_str().ok()).and_then(bearer_challenge).ok_or_else(|| anyhow!("registry wants an authentication this agent does not support"))?;
+        let header = r.headers().get("www-authenticate").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        // a registry that wants basic authentication (a private one): the stored login
+        if header.to_ascii_lowercase().starts_with("basic") {
+            let (u, p) = self.credentials.clone().ok_or_else(|| anyhow!("registry wants a login: run `docker login` on this host as root"))?;
+            let mut req = self.http.request(method.clone(), url).basic_auth(u, Some(p));
+            if let Some(a) = accept {
+                req = req.header("accept", a);
+            }
+            return Ok(req.send().await?);
+        }
+        let ch = bearer_challenge(&header).ok_or_else(|| anyhow!("registry wants an authentication this agent does not support"))?;
         let mut q: Vec<(String, String)> = ch.1;
         if !q.iter().any(|(k, _)| k == "scope") {
             q.push(("scope".into(), format!("repository:{repository}:pull")));
         }
         let qs: Vec<String> = q.iter().map(|(k, v)| format!("{}={}", pct(k), pct(v))).collect();
         let sep = if ch.0.contains('?') { '&' } else { '?' };
-        let resp = self.http.get(format!("{}{sep}{}", ch.0, qs.join("&"))).send().await?;
+        let mut tr = self.http.get(format!("{}{sep}{}", ch.0, qs.join("&")));
+        if let Some((u, p)) = &self.credentials {
+            tr = tr.basic_auth(u, Some(p));
+        }
+        let resp = tr.send().await?;
         if !resp.status().is_success() {
-            bail!("token request answered {}", resp.status());
+            bail!("token request answered {}{}", resp.status(), if self.credentials.is_none() && resp.status().as_u16() == 401 { " (private image? run `docker login` on this host as root)" } else { "" });
         }
         let tok: serde_json::Value = resp.json().await?;
         let token = tok.get("token").or_else(|| tok.get("access_token")).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("no token from the registry"))?;
-        self.token = Some(token.to_string());
+        *self.token.lock().unwrap() = Some(token.to_string());
         Ok(build(self).send().await?)
     }
 }
@@ -106,7 +151,7 @@ impl Session {
 /// `RepoDigests` records after a pull).
 pub async fn remote_digest(image: &ImageRef) -> Result<String> {
     let url = format!("{}/v2/{}/manifests/{}", base_url(&image.registry), image.repository, image.tag);
-    let r = Session::new()?.send(reqwest::Method::HEAD, &url, &image.repository, Some(ACCEPT)).await?;
+    let r = Session::for_registry(&image.registry)?.send(reqwest::Method::HEAD, &url, &image.repository, Some(ACCEPT)).await?;
     if !r.status().is_success() {
         bail!("registry answered {} for {}:{}", r.status(), image.repository, image.tag);
     }
@@ -114,9 +159,18 @@ pub async fn remote_digest(image: &ImageRef) -> Result<String> {
 }
 
 /// Pages of 1000 tags read at most from one repository, and the time allowed for all of them. GHCR lists tags in no
-/// particular order and immich-server has more than 33 000 (34 pages, about 10 s): the newest version can be on any page.
+/// particular order, and some repositories have more than a hundred pages (immich-machine-learning: a tag per commit and
+/// per hardware variant): past these limits the list is partial, and the newest version may be missing from it.
 const MAX_TAG_PAGES: usize = 100;
-const TAG_LISTING_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+const TAG_LISTING_BUDGET: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// The tags read from a registry, and whether that is all of the ones that could matter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listing {
+    pub tags: Vec<String>,
+    /// False when the page or time limit stopped the reading, or a later page failed: a newer tag may be missing.
+    pub complete: bool,
+}
 
 /// The `rel="next"` target of a `Link` header, as an absolute URL on the registry itself (a link to another host is
 /// ignored: the agent only talks to the registry the image comes from).
@@ -146,13 +200,15 @@ fn past_prefix(tag: &str, prefix: &str) -> bool {
 /// The tags of `image`'s repository that have the shape of its own tag (`v3.3.1` and `v3.4.0`, not `v3.4.0-rc.1` or
 /// `pr-123`), read page by page and filtered as they arrive. When a page shows that the registry lists tags
 /// alphabetically (Docker Hub does) and has gone past the tag's prefix, the rest is not read.
-pub async fn list_tags(image: &ImageRef) -> Result<Vec<String>> {
+pub async fn list_tags_checked(image: &ImageRef) -> Result<Listing> {
     let (template, _) = tag_shape(&image.tag).ok_or_else(|| anyhow!("{} is not a version tag", image.tag))?;
     let prefix = tag_prefix(&image.tag);
-    tokio::time::timeout(TAG_LISTING_BUDGET, async {
-        let mut s = Session::new()?;
+    let mut kept: Vec<String> = vec![];
+    let mut complete = false;
+    let mut failure: Option<anyhow::Error> = None;
+    let read = async {
+        let s = Session::for_registry(&image.registry)?;
         let mut url = format!("{}/v2/{}/tags/list?n=1000", base_url(&image.registry), image.repository);
-        let mut kept = vec![];
         for _ in 0..MAX_TAG_PAGES {
             let r = s.send(reqwest::Method::GET, &url, &image.repository, None).await?;
             if !r.status().is_success() {
@@ -165,13 +221,28 @@ pub async fn list_tags(image: &ImageRef) -> Result<Vec<String>> {
             kept.extend(page.iter().filter(|t| tag_shape(t).is_some_and(|(tt, _)| tt == template)).map(|t| t.to_string()));
             match next {
                 Some(n) if !done => url = n,
-                _ => break,
+                // the end of the list, or the rest is past the tag's prefix in an alphabetical list
+                _ => return Ok::<bool, anyhow::Error>(true),
             }
         }
-        Ok(kept)
-    })
-    .await
-    .map_err(|_| anyhow!("listing the tags of {} took more than {} s", image.repository, TAG_LISTING_BUDGET.as_secs()))?
+        Ok(false)
+    };
+    match tokio::time::timeout(TAG_LISTING_BUDGET, read).await {
+        Ok(Ok(c)) => complete = c,
+        Ok(Err(e)) => failure = Some(e),
+        Err(_) => {}
+    }
+    if let Some(e) = failure {
+        if kept.is_empty() {
+            return Err(e);
+        }
+    }
+    Ok(Listing { tags: kept, complete })
+}
+
+/// [`list_tags_checked`] without the completeness flag.
+pub async fn list_tags(image: &ImageRef) -> Result<Vec<String>> {
+    Ok(list_tags_checked(image).await?.tags)
 }
 
 /// The text before the first number of a tag: `v` for `v3.3.1`, empty for `17-alpine`.
@@ -180,9 +251,14 @@ pub fn tag_prefix(tag: &str) -> String {
 }
 
 /// A tag split into its numbers and the text around them: `v3.3.1` is the template `v#.#.#` with `[3, 3, 1]`, and
-/// `16-vectorchord1.1.1` is `#-vectorchord#.#.#` with `[16, 1, 1, 1]`. None when there is no number to compare, or
-/// when the tag carries a build hash (`2026.10.12-sha-3699278`), whose digits mean nothing as a version.
+/// `16-vectorchord1.1.1` is `#-vectorchord#.#.#` with `[16, 1, 1, 1]`. A trailing build hash is left out
+/// (`2026.10.12-sha-3699278` is `#.#.#-sha-HASH` with `[2026, 10, 12]`). None when there is no number to compare.
 pub fn tag_shape(tag: &str) -> Option<(String, Vec<u64>)> {
+    // a trailing build hash (`2026.10.12-sha-3699278`) is dropped, and only the version before it is compared
+    let (tag, hashed) = match tag.rfind("-sha-") {
+        Some(i) if tag.len() - i - 5 >= 7 && tag[i + 5..].chars().all(|c| c.is_ascii_hexdigit()) => (&tag[..i], true),
+        _ => (tag, false),
+    };
     let (mut template, mut nums) = (String::new(), vec![]);
     let mut chars = tag.chars().peekable();
     while let Some(&c) = chars.peek() {
@@ -201,6 +277,9 @@ pub fn tag_shape(tag: &str) -> Option<(String, Vec<u64>)> {
     }
     if nums.is_empty() || nums.len() > 6 || template.to_ascii_lowercase().contains("sha") {
         return None;
+    }
+    if hashed {
+        template.push_str("-sha-HASH");
     }
     Some((template, nums))
 }
@@ -237,6 +316,154 @@ pub fn newer_version(current: &str, tags: &[String]) -> Option<Newer> {
     let (n, t) = best?;
     let major = n[0] > cur[0];
     Some(Newer { tag: t.clone(), major, same_major: if major { within.map(|(_, w)| w.clone()) } else { None } })
+}
+
+/// The digit runs of a tag as written (`019` keeps its zero), to write the probed tags the same way.
+fn digit_runs(tag: &str) -> Vec<String> {
+    let tag = tag.rfind("-sha-").map_or(tag, |i| &tag[..i]);
+    let mut out: Vec<String> = vec![];
+    let mut cur = String::new();
+    for c in tag.chars() {
+        if c.is_ascii_digit() {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// A tag from its template and numbers (`v#.#.#` and `[3, 4, 1]` is `v3.4.1`); a number that was written with leading
+/// zeros in the running tag keeps that width.
+fn render(template: &str, nums: &[u64], widths: &[usize]) -> String {
+    let mut i = 0;
+    template
+        .chars()
+        .map(|c| {
+            if c == '#' {
+                let n = nums.get(i).copied().unwrap_or(0);
+                let w = widths.get(i).copied().unwrap_or(0);
+                i += 1;
+                format!("{n:0w$}")
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// The versions that could follow `cur`, highest first: each number raised by 1 to 3 (2 for all but the last), with
+/// the numbers after it set to 0 (`v3.3.1` to `v3.4.0`) or left as they were (`16-vectorchord1.1.1` to
+/// `17-vectorchord1.1.1`). `keep_major`: the first number stays (the newest of the running major).
+pub fn probe_candidates(cur: &[u64], keep_major: bool) -> Vec<Vec<u64>> {
+    let mut out: Vec<Vec<u64>> = vec![];
+    for i in (0..cur.len()).filter(|i| !(keep_major && *i == 0)) {
+        for d in 1..=if i + 1 == cur.len() { 3 } else { 2 } {
+            let mut zero = cur.to_vec();
+            zero[i] += d;
+            zero[i + 1..].iter_mut().for_each(|n| *n = 0);
+            let mut keep = cur.to_vec();
+            keep[i] += d;
+            for c in [zero, keep] {
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.cmp(a));
+    out
+}
+
+/// Requests one search makes at most for an image.
+const PROBE_BUDGET: usize = 90;
+
+/// The search itself: from `start`, the highest existing candidate becomes the new start, until nothing follows.
+async fn walk<F, Fut>(template: &str, widths: &[usize], start: Vec<u64>, keep_major: bool, exists: &mut F, budget: &mut usize) -> (Vec<u64>, Option<anyhow::Error>)
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let mut best = start.clone();
+    let mut err: Option<anyhow::Error> = None;
+    'rounds: for _ in 0..12 {
+        let mut hit: Option<Vec<u64>> = None;
+        for n in probe_candidates(&best, keep_major) {
+            // a first number that jumps by dozens is another numbering scheme
+            if n[0].saturating_sub(start[0]) > 50 {
+                continue;
+            }
+            if *budget == 0 {
+                break 'rounds;
+            }
+            *budget -= 1;
+            match exists(render(template, &n, widths)).await {
+                Ok(true) => {
+                    hit = Some(n);
+                    break; // highest first: the rest are lower
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    err = Some(e);
+                    break 'rounds;
+                }
+            }
+        }
+        match hit {
+            Some(h) => best = h,
+            None => break,
+        }
+    }
+    (best, err)
+}
+
+/// Follow the versions of an image one step at a time instead of listing them: the registry is asked (through `exists`)
+/// whether `v3.3.2`, `v3.4.0`, `v4.0.0`... exist, the highest that does becomes the new starting point, and the search
+/// goes on until nothing follows. For repositories whose tag list is too long to read (a tag per commit): a handful of
+/// requests find the newest release. `exists` failing (not "no such tag") ends the search with an error unless
+/// something newer was already found.
+pub async fn probe_newer<F, Fut>(current: &str, mut exists: F) -> Result<Option<Newer>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let (template, cur) = tag_shape(current).ok_or_else(|| anyhow!("{current} is not a version tag"))?;
+    if template.contains("-sha-") {
+        bail!("a tag with a build hash cannot be followed by its number");
+    }
+    let widths: Vec<usize> = digit_runs(current).iter().map(|d| if d.len() > 1 && d.starts_with('0') { d.len() } else { 0 }).collect();
+    let mut budget = PROBE_BUDGET;
+    let (best, err) = walk(&template, &widths, cur.clone(), false, &mut exists, &mut budget).await;
+    if best == cur {
+        return match err {
+            Some(e) => Err(e),
+            None => Ok(None),
+        };
+    }
+    let major = best[0] > cur[0];
+    let same_major = if major { Some(walk(&template, &widths, cur.clone(), true, &mut exists, &mut budget).await.0).filter(|w| *w > cur).map(|w| render(&template, &w, &widths)) } else { None };
+    Ok(Some(Newer { tag: render(&template, &best, &widths), major, same_major }))
+}
+
+/// [`probe_newer`] against the image's registry: does `<repository>:<tag>` have a manifest?
+pub async fn probe_registry(image: &ImageRef) -> Result<Option<Newer>> {
+    let s = Session::for_registry(&image.registry)?;
+    let base = base_url(&image.registry);
+    probe_newer(&image.tag, |tag| {
+        let (s, url, repo) = (&s, format!("{base}/v2/{}/manifests/{tag}", image.repository), image.repository.clone());
+        async move {
+            let r = s.send(reqwest::Method::HEAD, &url, &repo, Some(ACCEPT)).await?;
+            match r.status().as_u16() {
+                200 => Ok(true),
+                404 => Ok(false),
+                other => bail!("registry answered {other} for {repo}:{tag}"),
+            }
+        }
+    })
+    .await
 }
 
 /// Percent-encode a query component (RFC 3986 unreserved characters stay).

@@ -344,6 +344,8 @@ async fn sync_scap_content(agent: &Agent, hint: &str, log: &TaskLog) {
 
 async fn scan(agent: &Agent, id: Uuid, log: &TaskLog) -> Result<()> {
     agent.update(id, TaskStatus::Running, "scanning", log, vec![], false);
+    // a manual scan asks the container registries again instead of trusting what was found hours ago
+    crate::modules::docker::forget_cache();
     agent.backend.refresh(&agent.runner, log).await;
     let inv = agent.send_inventory().await?;
     let pending = inv.packages.iter().filter(|p| p.candidate.is_some()).count();

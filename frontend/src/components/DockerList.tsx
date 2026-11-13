@@ -95,7 +95,14 @@ export function DockerList({ hostId }: { hostId?: string }) {
               {c.started_at && c.state === 'running' && <span className="sub">{t('docker.since', { d: date(c.started_at, { dateStyle: 'medium' }) })}</span>}
             </td>
             <td className="wrap">
+              {!c.open_task && c.check && !c.latest && (c.check.tags.startsWith('error') || c.check.digest.startsWith('error')) && (
+                <span style={{ display: 'block', marginBottom: 4 }} title={t('docker.check.error.tip')}>
+                  <Tag tone="warn">{t('docker.check.error')}</Tag>
+                  <span className="sub">{(c.check.digest.startsWith('error') ? c.check.digest : c.check.tags).replace(/^error: /, '')}</span>
+                </span>
+              )}
               {c.open_task ? <Tag tone="info">{t('docker.updating')}</Tag> : c.update ? <span className="row row--tight"><Tag tone="warn">{t('docker.available')}</Tag><span className="mono muted">@{c.candidate}</span></span> : !c.latest && <Tag tone="ok">{t('docker.current')}</Tag>}
+              {!c.open_task && !c.latest && c.check && ['not_version', 'pinned', 'offline'].includes(c.check.tags) && <span className="sub" style={{ display: 'block' }}>{t(`docker.check.${c.check.tags === 'not_version' ? 'floating' : c.check.tags}` as 'docker.check.pinned')}</span>}
               {c.latest && (
                 <span className="sub" style={{ display: 'block' }}>
                   <Tag tone="warn">{t('docker.suggested')}</Tag> <span className="mono">{tagOf(c.image)} → {c.latest.tag}</span>

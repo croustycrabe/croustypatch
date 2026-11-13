@@ -167,6 +167,8 @@ export interface DockerData {
     project: string | null; service: string | null; state: string | null; health: string | null; started_at: string | null; open_task: { id: string; status: string } | null;
     /** A newer version tag in the registry (informative: moving to it means changing the compose file). */
     latest: { tag: string; major: boolean; same_major: string | null; apply?: { mode: 'file' | 'manual'; file?: string; reason?: string; already?: boolean } } | null;
+    /** What the agent's registry checks found: `digest` ok / pinned / offline / error: …; `tags` listed / probed / not_version / pinned / offline / error: … */
+    check?: { digest: string; tags: string } | null;
   }[];
 }
 

@@ -201,7 +201,8 @@ fn a_tag_is_compared_only_with_tags_of_the_same_shape() {
     assert_eq!(tag_shape("16-vectorchord1.1.1"), Some(("#-vectorchord#.#.#".into(), vec![16, 1, 1, 1])));
     assert_eq!(tag_shape("17.6.1.136"), Some(("#.#.#.#".into(), vec![17, 6, 1, 136])));
     assert_eq!(tag_shape("17-alpine"), Some(("#-alpine".into(), vec![17])));
-    assert_eq!(tag_shape("2026.10.12-sha-3699278"), None, "a build hash is not a version");
+    assert_eq!(tag_shape("2026.10.12-sha-3699278"), Some(("#.#.#-sha-HASH".into(), vec![2026, 10, 12])), "the build hash is left out of the comparison");
+    assert_eq!(tag_shape("v1-sha-xyz"), None, "a word after -sha- is not a hash");
     assert!(tag_shape("latest").is_none() && tag_shape("release").is_none() && tag_shape("").is_none());
     assert!(tag_shape(&format!("v1.{}", "9".repeat(30))).is_none(), "a number that does not fit is not a version");
 
@@ -222,7 +223,8 @@ fn a_tag_is_compared_only_with_tags_of_the_same_shape() {
     assert!(newer_version("4", &tags(&["4", "20261111"])).is_none());
     assert_eq!(newer_version("4", &tags(&["4", "5"])).unwrap().tag, "5");
     // a tag with a build hash, or a moving tag, has no version to compare
-    assert!(newer_version("2026.10.12-sha-3699278", &tags(&["2026.10.13-sha-aaaaaaa", "2026.11.1"])).is_none());
+    assert_eq!(newer_version("2026.10.12-sha-3699278", &tags(&["2026.10.13-sha-aaaaaaa", "2026.11.1", "2026.10.20-sha-bbbbbbb"])).unwrap().tag, "2026.10.20-sha-bbbbbbb", "only tags built the same way are compared");
+    assert!(newer_version("2026.10.12-sha-3699278", &tags(&["2026.10.12-sha-aaaaaaa", "2026.10.11-sha-bbbbbbb"])).is_none(), "a rebuild of the same version is not newer");
     assert!(newer_version("latest", &tags(&["v1.0.0"])).is_none());
 }
 
@@ -445,4 +447,67 @@ async fn the_app_list_says_when_a_command_app_has_a_newer_version() {
     let before = v.clone();
     croustypatch_agent::portal::annotate_updates(&mut v).await;
     assert_eq!(v, before, "no lookup, no change");
+}
+
+#[tokio::test]
+async fn the_newest_release_is_found_by_asking_for_the_versions_after_the_running_one() {
+    use registry::probe_newer;
+    use std::collections::HashSet;
+    let has = |set: &[&str]| -> HashSet<String> { set.iter().map(|s| s.to_string()).collect() };
+    // immich-machine-learning: a tag per commit, more than 100 pages of them; only the releases matter
+    let published = has(&["v3.3.1", "v3.3.2", "v3.3.3", "v3.3.4", "v3.3.5", "v3.3.6", "v3.4.0", "v3.4.1"]);
+    let mut asked = 0;
+    let n = probe_newer("v3.3.1", |t| {
+        asked += 1;
+        let ok = published.contains(&t);
+        async move { Ok(ok) }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(n.tag, "v3.4.1", "the walk goes through v3.3.4 and v3.3.6 to v3.4.1");
+    assert!(!n.major && n.same_major.is_none());
+    assert!(asked < 60, "a few dozen requests at most, asked {asked}");
+    // a new major, and the newest of the running one
+    let published = has(&["v2.5.0", "v2.5.1", "v2.6.0", "v3.0.0", "v3.1.0"]);
+    let n = probe_newer("v2.5.0", |t| { let ok = published.contains(&t); async move { Ok(ok) } }).await.unwrap().unwrap();
+    assert_eq!((n.tag.as_str(), n.major, n.same_major.as_deref()), ("v3.1.0", true, Some("v2.6.0")));
+    // two numbers (envoy v1.39.1 has no v1.39.2 yet but v1.40.0), a leading zero kept, a suffix after the numbers
+    assert_eq!(probe_newer("v1.39.1", |t| async move { Ok(t == "v1.40.0") }).await.unwrap().unwrap().tag, "v1.40.0");
+    assert_eq!(probe_newer("17.6.1.019", |t| async move { Ok(t == "17.6.1.020") }).await.unwrap().unwrap().tag, "17.6.1.020");
+    assert_eq!(probe_newer("16-vectorchord1.1.1", |t| async move { Ok(t == "17-vectorchord1.1.1") }).await.unwrap().unwrap().tag, "17-vectorchord1.1.1", "numbers after the raised one can stay");
+    assert_eq!(probe_newer("9.19", |t| async move { Ok(t == "9.20") }).await.unwrap().unwrap().tag, "9.20");
+    // nothing newer, a registry that fails, and tags that cannot be followed
+    assert!(probe_newer("v3.4.1", |_| async { Ok(false) }).await.unwrap().is_none());
+    assert!(probe_newer("v3.4.1", |_| async { anyhow::bail!("registry answered 500") }).await.is_err(), "a failing registry is not 'up to date'");
+    let found = std::cell::Cell::new(false);
+    let n = probe_newer("v3.4.1", |t| {
+        let r = if found.get() { Err(anyhow::anyhow!("registry answered 429")) } else { Ok(t == "v3.4.2") };
+        if t == "v3.4.2" {
+            found.set(true);
+        }
+        async move { r }
+    })
+    .await;
+    assert_eq!(n.unwrap().unwrap().tag, "v3.4.2", "a failure after a find keeps the find");
+    assert!(probe_newer("2026.10.12-sha-3699278", |_| async { Ok(true) }).await.is_err());
+    assert!(probe_newer("latest", |_| async { Ok(true) }).await.is_err());
+    // the number of requests is bounded even when every tag exists
+    let mut count = 0;
+    let _ = probe_newer("v1.0.0", |_| { count += 1; async { Ok(true) } }).await;
+    assert!(count <= 90, "{count}");
+}
+
+#[test]
+fn private_registries_use_the_login_docker_recorded() {
+    use base64::Engine;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let cfg = format!(r#"{{"auths": {{"https://index.docker.io/v1/": {{"auth": "{}"}}, "registry.lan:5000": {{"auth": "{}"}}, "ghcr.io": {{"username": "bot", "password": "tok"}}, "empty.example": {{}}}}, "credsStore": "pass"}}"#, b64("hubuser:hubpass"), b64("me:se:cret"));
+    let creds = registry::credentials_from_config;
+    assert_eq!(creds(&cfg, "registry-1.docker.io"), Some(("hubuser".into(), "hubpass".into())), "Docker Hub is recorded under its index address");
+    assert_eq!(creds(&cfg, "registry.lan:5000"), Some(("me".into(), "se:cret".into())), "a colon in the password stays in the password");
+    assert_eq!(creds(&cfg, "ghcr.io"), Some(("bot".into(), "tok".into())));
+    assert_eq!(creds(&cfg, "quay.io"), None);
+    assert_eq!(creds(&cfg, "empty.example"), None);
+    assert_eq!(creds("not json", "ghcr.io"), None);
 }

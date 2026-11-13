@@ -173,32 +173,84 @@ pub fn retag_hint(c: &Container, all_mounts: &[(String, String)], new_ref: &str,
     }
 }
 
-type NewerCache = std::sync::Mutex<std::collections::HashMap<(String, String, String), (std::time::Instant, Option<registry::Newer>, bool)>>;
+/// What the registry lookup for newer versions of one image found, and how: why there is (or is not) a suggestion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagCheck {
+    pub newer: Option<registry::Newer>,
+    /// `listed` (every tag read), `probed` (the list was too long: the versions after the running one were asked
+    /// for one by one), `not_version` (the tag is `latest` or a name: only its digest is followed), `pinned`, `offline`,
+    /// or `error: …`.
+    pub how: String,
+}
 
-/// The newer version of `img`'s tag, from the registry's tag list. Asked at most every 6 hours per image (a failed
-/// lookup again after 20 minutes): versions do not appear by the minute, and a registry should not be queried for
-/// every inventory. No request at all when the tag is not a version (`latest`, `release`).
-pub async fn newer_version(img: &registry::ImageRef) -> Option<registry::Newer> {
+type NewerCache = std::sync::Mutex<std::collections::HashMap<(String, String, String), (std::time::Instant, TagCheck)>>;
+
+fn newer_cache() -> &'static NewerCache {
     static CACHE: std::sync::OnceLock<NewerCache> = std::sync::OnceLock::new();
-    registry::tag_shape(&img.tag)?;
-    let cache = CACHE.get_or_init(Default::default);
+    CACHE.get_or_init(Default::default)
+}
+
+/// Forget what was found: the next inventory asks the registries again (a manual scan does this).
+pub fn forget_cache() {
+    if let Ok(mut c) = newer_cache().lock() {
+        c.clear();
+    }
+}
+
+/// The newer version of `img`'s tag. Asked at most every 6 hours per image (a failed lookup again after 20 minutes):
+/// versions do not appear by the minute, and a registry should not be queried for every inventory. No request at all
+/// when the tag is not a version (`latest`, `release`). A repository whose tag list is too long to read is followed
+/// version by version instead of being trusted as "nothing newer".
+pub async fn newer_version_checked(img: &registry::ImageRef) -> TagCheck {
+    if registry::tag_shape(&img.tag).is_none() {
+        return TagCheck { newer: None, how: "not_version".into() };
+    }
     let key = (img.registry.clone(), img.repository.clone(), img.tag.clone());
-    if let Some((at, found, ok)) = cache.lock().ok()?.get(&key) {
-        if at.elapsed() < Duration::from_secs(if *ok { 6 * 3600 } else { 20 * 60 }) {
-            return found.clone();
+    if let Some((at, found)) = newer_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        if at.elapsed() < Duration::from_secs(if found.how.starts_with("error") { 20 * 60 } else { 6 * 3600 }) {
+            return found;
         }
     }
-    let (found, ok) = match registry::list_tags(img).await {
-        Ok(tags) => (registry::newer_version(&img.tag, &tags), true),
-        Err(e) => {
-            tracing::debug!(image = %format!("{}:{}", img.repository, img.tag), "tag list: {e:#}");
-            (None, false)
+    let found = match registry::list_tags_checked(img).await {
+        Ok(l) if l.complete => TagCheck { newer: registry::newer_version(&img.tag, &l.tags), how: "listed".into() },
+        listing => {
+            // partial (or no) list: start from the best the partial list showed, and follow the versions from there
+            let mut tags = listing.as_ref().map(|l| l.tags.clone()).unwrap_or_default();
+            let from = registry::newer_version(&img.tag, &tags).map(|n| n.tag).unwrap_or_else(|| img.tag.clone());
+            let probe_img = registry::ImageRef { tag: from, ..img.clone() };
+            match registry::probe_registry(&probe_img).await {
+                Ok(p) => {
+                    tags.push(img.tag.clone());
+                    if let Some(p) = p {
+                        tags.push(p.tag);
+                        tags.extend(p.same_major);
+                    }
+                    TagCheck { newer: registry::newer_version(&img.tag, &tags), how: "probed".into() }
+                }
+                Err(e) => {
+                    tracing::debug!(image = %format!("{}:{}", img.repository, img.tag), "newer version lookup: {e:#}");
+                    let why = listing.err().map(|l| format!("{l:#}")).unwrap_or_else(|| format!("{e:#}"));
+                    // the partial list may still have shown something newer
+                    TagCheck { newer: registry::newer_version(&img.tag, &tags), how: format!("error: {}", why.chars().take(160).collect::<String>()) }
+                }
+            }
         }
     };
-    if let Ok(mut c) = cache.lock() {
-        c.insert(key, (std::time::Instant::now(), found.clone(), ok));
+    if let Ok(mut c) = newer_cache().lock() {
+        c.insert(key, (std::time::Instant::now(), found.clone()));
     }
     found
+}
+
+pub async fn newer_version(img: &registry::ImageRef) -> Option<registry::Newer> {
+    newer_version_checked(img).await.newer
+}
+
+/// What the registry checks of one container found, kept in its inventory entry (`meta.check`) so the interface can
+/// say why there is no suggestion.
+pub fn with_check(mut e: PackageEntry, digest: &str, tags: &str) -> PackageEntry {
+    e.meta["check"] = serde_json::json!({ "digest": digest, "tags": tags });
+    e
 }
 
 pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
@@ -237,24 +289,31 @@ pub async fn inventory(r: &Runner, online: bool) -> Vec<PackageEntry> {
             match registry::parse(&image) {
                 // pinned by digest: never updated, nothing to look for
                 Ok(img) if img.digest.is_none() && online => {
-                    let remote = registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %name, "registry check: {e:#}")).ok();
-                    (i, remote, newer_version(&img).await)
+                    let remote = registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %name, "registry check: {e:#}"));
+                    let tags = newer_version_checked(&img).await;
+                    let digest = match &remote {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => format!("error: {}", format!("{e:#}").chars().take(160).collect::<String>()),
+                    };
+                    (i, remote.ok(), tags.newer, digest, tags.how)
                 }
-                _ => (i, None, None),
+                Ok(img) if img.digest.is_some() => (i, None, None, "pinned".to_string(), "pinned".to_string()),
+                Ok(_) => (i, None, None, "offline".to_string(), "offline".to_string()),
+                Err(e) => (i, None, None, format!("error: {e:#}"), "error".to_string()),
             }
         });
     }
-    let mut found: Vec<(Option<String>, Option<registry::Newer>)> = vec![(None, None); list.len()];
-    while let Some(Ok((i, remote, newer))) = jobs.join_next().await {
-        found[i] = (remote, newer);
+    let mut found: Vec<(Option<String>, Option<registry::Newer>, String, String)> = vec![(None, None, String::new(), String::new()); list.len()];
+    while let Some(Ok((i, remote, newer, digest, tags))) = jobs.join_next().await {
+        found[i] = (remote, newer, digest, tags);
     }
     let all_mounts: Vec<(String, String)> = list.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
     list.iter()
         .zip(found)
-        .map(|(c, (remote, newer))| {
+        .map(|(c, (remote, newer, digest, tags))| {
             // can the suggested version be applied (and by changing which file)? Planned on the real compose files.
             let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag), n.major));
-            entry_with(c, remote.as_deref(), newer.as_ref(), apply)
+            with_check(entry_with(c, remote.as_deref(), newer.as_ref(), apply), &digest, &tags)
         })
         .collect()
 }
