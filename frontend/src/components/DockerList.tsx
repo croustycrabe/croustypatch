@@ -6,10 +6,10 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
-import type { DockerData } from '@/lib/types';
+import type { DockerData, DockerRegistries } from '@/lib/types';
 import { useToast } from '@/lib/toast';
 import { DockerMigration, type MigrationTarget } from './DockerMigration';
-import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Notice, SearchInput, Spinner, StatCard, Table, Tag } from './ui';
+import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Field, Notice, SearchInput, Select, Spinner, StatCard, Table, Tag } from './ui';
 
 /** Containers with their image state; only the images are ever updated (never start, stop or remove). */
 /** The tag of an image reference (`ghcr.io/x/y:v3.3.1` -> `v3.3.1`), `latest` without one. A port is not a tag. */
@@ -30,6 +30,8 @@ export function DockerList({ hostId }: { hostId?: string }) {
   const [apply, setApply] = useState<DockerData['containers'][number] | null>(null);
   const [ackMajor, setAckMajor] = useState(false);
   const [migrate, setMigrate] = useState<MigrationTarget | null>(null);
+  const [registryId, setRegistryId] = useState('');
+  const registries = useApi<DockerRegistries>('/docker/registries');
   const data = useApi<DockerData>(`/docker?updates=${updatesOnly}&newer=${newerOnly}&q=${encodeURIComponent(q)}${hostId ? `&host=${hostId}` : ''}`, { poll: 20000 });
   const d = data.data;
   const key = (c: { host_id: string; package: string }) => `${c.host_id}|${c.package}`;
@@ -51,7 +53,7 @@ export function DockerList({ hostId }: { hostId?: string }) {
 
   /** Move one container to the suggested version: the agent changes the tag in its compose file and recreates it. */
   const applyVersion = (c: NonNullable<typeof apply>) => act.run(async () => {
-    await api('POST', '/tasks', { host_ids: [c.host_id], scope: 'docker', packages: [c.package], to_latest: true, allow_major: !!c.latest?.major && ackMajor });
+    await api('POST', '/tasks', { host_ids: [c.host_id], scope: 'docker', packages: [c.package], to_latest: true, allow_major: !!c.latest?.major && ackMajor, ...(registryId ? { registry_id: registryId } : {}) });
     setApply(null);
     toast.success(t('docker.apply.queued', { name: c.name }));
     data.reload();
@@ -71,6 +73,7 @@ export function DockerList({ hostId }: { hostId?: string }) {
           <StatCard value={d.summary.hosts} label={t('docker.stat.hosts')} />
         </div>
       )}
+      {registries.data?.blocked && <Notice kind="error">{t('docker.registries.blocked')} <Link href="/settings">{t('nav.settings')}</Link></Notice>}
       <p className="muted" style={{ margin: 0 }}>{t('docker.note')}{d.summary.with_newer_version > 0 ? ` ${t('docker.newer.note')}` : ''}</p>
       <div className="toolbar">
         <SearchInput value={q} onChange={setQ} placeholder={t('docker.search')} />
@@ -112,7 +115,7 @@ export function DockerList({ hostId }: { hostId?: string }) {
                   {c.latest.major && c.latest.same_major && <span className="muted"> {t('docker.same_major', { tag: c.latest.same_major })}</span>}
                   {!c.open_task && <span style={{ display: 'block', marginTop: 4 }}><Button small onClick={() => setMigrate({ host_id: c.host_id, hostname: c.hostname, name: c.name, package: c.package, image: c.image, suggested: c.latest?.tag ?? null })}>{t('docker.mig.open')}</Button></span>}
                   {c.open_task ? null : c.latest.apply?.mode === 'file' ? (
-                    canUpdate && <span style={{ display: 'block', marginTop: 4 }}><Button small icon={<ArrowCircleUp size={14} weight="bold" />} disabled={act.pending} onClick={() => { act.clearError(); setAckMajor(false); setApply(c); }}>{t('docker.apply.button', { tag: c.latest.tag })}</Button></span>
+                    canUpdate && <span style={{ display: 'block', marginTop: 4 }}><Button small icon={<ArrowCircleUp size={14} weight="bold" />} disabled={act.pending} onClick={() => { act.clearError(); setAckMajor(false); setRegistryId(''); setApply(c); }}>{t('docker.apply.button', { tag: c.latest.tag })}</Button></span>
                   ) : (
                     <span className="muted" style={{ display: 'block' }}>
                       {c.latest.apply?.mode === 'manual' ? t('docker.apply.manual', { reason: c.latest.apply.reason ?? '' }) : t('docker.apply.old_agent')} {t('docker.suggest.how')} <span className="mono">{withTag(c.image, c.latest.tag)}</span>
@@ -133,6 +136,15 @@ export function DockerList({ hostId }: { hostId?: string }) {
             <dl className="kv">
               <dt>{t('docker.apply.file')}</dt><dd className="mono wrap">{apply.latest.apply?.file}</dd>
             </dl>
+            {registries.data && registries.data.registries.filter((r) => !registries.data!.offline || r.kind === 'local').length > 0 && (
+              <Field label={t('docker.registry')} hint={t('docker.registry.hint')}>
+                {(i) => (
+                  <Select id={i} value={registryId} onChange={(e) => setRegistryId(e.target.value)}>
+                    <option value="">{t('docker.registry.keep')}</option>
+                    {registries.data!.registries.filter((r) => !registries.data!.offline || r.kind === 'local').map((r) => <option key={r.id} value={r.id}>{r.name} · {r.host}</option>)}
+                  </Select>)}
+              </Field>
+            )}
             {apply.latest.apply?.already && <Notice kind="info">{t('docker.apply.already')}</Notice>}
             <ul className="muted" style={{ margin: 0, paddingLeft: 18 }}>
               <li>{t('docker.apply.what.file')}</li>

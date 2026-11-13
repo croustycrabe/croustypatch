@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { DockerRegistries } from '@/components/DockerRegistries';
 import { Button, Card, Field, LinkButton, Notice, PageHeader, Select, Spinner, Switch, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -93,6 +94,8 @@ function Settings() {
             <Field label={t('settings.agent.heartbeat')}>{(i) => <TextInput id={i} type="number" min={10} max={3600} value={s.agent.heartbeat_secs} disabled={!writable} onChange={(e) => setS({ ...s, agent: { heartbeat_secs: Number(e.target.value) } })} />}</Field>
           </Card>
         </div>
+
+        <DockerRegistries mode={data.data?.connectivity.mode} />
       </div>
     </>
   );

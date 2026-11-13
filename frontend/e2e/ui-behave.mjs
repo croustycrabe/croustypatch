@@ -639,6 +639,38 @@ check('and filtered to errors', (await p.locator('.tbl tbody tr').count()) === 0
   sql(`delete from host_packages where host_id='${h}' and name='docker:zz-pg'`);
 }
 
+// ---- Docker registries and the offline rule
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  sql(`delete from settings where key in ('docker_registries')`);
+  sql(`update hosts set modules = modules || '{"docker": true}' where id = (select id from hosts order by enrolled_at limit 1)`);
+  await p.goto(`${BASE}/settings/`); await p.waitForSelector('section.panel:has-text("Registres Docker")');
+  const conn = 'section.panel:has(h2:has-text("Connectivité"))';
+  await p.selectOption(`${conn} select`, 'air_gapped'); await p.click(`${conn} button:has-text("Enregistrer")`);
+  await p.waitForSelector('.alert--error:has-text("local Docker registry")', { timeout: 6000 }).then(() => check('offline mode is refused with the Docker module on and no local registry, and says how to fix it', true), () => check('offline mode is refused with the Docker module on and no local registry, and says how to fix it', false));
+  // add a local registry
+  const card = 'section.panel:has(h2:has-text("Registres Docker"))';
+  await p.click(`${card} button:has-text("Ajouter un registre")`);
+  await p.fill(`${card} input[placeholder="Harbor"]`, 'Harbor labo'); await p.fill(`${card} input[placeholder="registry.lan:5000"]`, 'registry.lan:5000');
+  await p.fill(`${card} input[placeholder="docker.io, ghcr.io"]`, 'docker.io, ghcr.io');
+  await p.fill(`${card} input[autocomplete=off]`, 'robot'); await p.fill(`${card} input[type=password]`, 'p4ss-secret');
+  await p.click(`${card} button:has-text("Enregistrer")`); await p.waitForSelector('.toast');
+  const saved = sql(`select value->'registries'->0->>'host' || '|' || (value->'registries'->0->>'kind') || '|' || (value->'registries'->0->'mirror_of')::text from settings where key='docker_registries'`);
+  check('a local registry is saved with its mirrored registries', saved === 'registry.lan:5000|local|["docker.io", "ghcr.io"]', saved);
+  const leak = sql(`select count(*) from settings where key='docker_registries' and value::text like '%p4ss-secret%'`);
+  check('its password is stored encrypted, not in clear', leak === '0', leak);
+  await p.reload(); await p.waitForSelector(`${card} input[placeholder="••••••••"]`);
+  check('and the page shows that a password is stored without showing it', (await p.locator(`${card} input[type=password]`).inputValue()) === '');
+  // now offline is allowed
+  await p.selectOption(`${conn} select`, 'air_gapped'); await p.click(`${conn} button:has-text("Enregistrer")`); await p.waitForSelector('.toast');
+  check('offline mode is accepted once a local registry exists', sql(`select value->>'mode' from settings where key='connectivity'`) === 'air_gapped');
+  check('and the registries card says only local registries are used', (await p.locator(`${card} .alert--info:has-text("seuls les registres locaux")`).count()) === 1);
+  // the Docker page explains when a local registry is missing (state set directly: the server refuses to create it)
+  sql(`delete from settings where key='docker_registries'`);
+  await p.goto(`${BASE}/docker/`); await p.waitForSelector('.alert--error:has-text("Mode hors ligne sans registre local")', { timeout: 8000 }).then(() => check('the Docker page says why the features are off, and where to configure a registry', true), () => check('the Docker page says why the features are off, and where to configure a registry', false));
+  sql(`update settings set value = '{"mode": "connected"}' where key='connectivity'`);
+}
+
 // ---- language + logout
 await p.goto(`${BASE}/`); await p.waitForSelector('.stat'); await p.click('.topbar .lang button:has-text("en")'); await p.waitForTimeout(300);
 check('language toggle switches the whole interface', await p.locator('.sidebar a:has-text("hosts")').count() === 1 && await p.locator('button:has-text("Add agent")').count() >= 2);
