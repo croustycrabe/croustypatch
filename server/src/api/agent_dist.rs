@@ -17,7 +17,7 @@ pub const PLATFORMS: &[(&str, &str, &str)] = &[("linux-x86_64", "linux", "x86_64
 
 const INSTALL_SCRIPT: &str = include_str!("../../assets/install-agent.sh");
 
-/// Platforms with a build of the desktop app center (Tauri; FreeBSD and aarch64 hosts use the terminal one).
+/// Platforms with a build of the desktop app center (GPUI; FreeBSD and aarch64 hosts use the terminal one).
 pub const GUI_PLATFORMS: &[&str] = &["linux-x86_64"];
 /// Download id of the desktop app center's icon (installed with its menu entry).
 pub const GUI_ICON: &str = "portal-gui-icon.png";

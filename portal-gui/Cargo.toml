@@ -1,5 +1,6 @@
-# Desktop app center (Tauri). Kept out of the main workspace on purpose: building it needs webkit2gtk-4.1, which
-# the server, the agent and their tests must not depend on. Built by docker/Dockerfile (stage "gui").
+# Desktop app center, built with GPUI (Zed's UI framework): a native window, no webview. Kept out of the main workspace
+# on purpose: building it needs the graphics and windowing libraries (see docker/Dockerfile, stage "gui"), which the
+# server, the agent and their tests must not depend on. Built by docker/Dockerfile (stage "gui").
 [package]
 name = "croustypatch-portal-gui"
 version = "0.9.0"
@@ -8,12 +9,16 @@ license = "MIT"
 authors = ["Croustycrabe <croustylab>"]
 description = "CroustyPatch desktop app center: a client of the agent's local socket"
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
-
 [dependencies]
-tauri = { version = "2", features = [] }
+gpui = "0.2.2"
 serde_json = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# gpui 0.2.2 pulls xattr 0.2.3, which does not compile with a recent libc (it names ENOATTR, absent on Linux): the same
+# crate with ENODATA, the value ENOATTR has on Linux, in vendor/xattr.
+[patch.crates-io]
+xattr = { path = "vendor/xattr" }
 
 [profile.release]
 opt-level = "s"

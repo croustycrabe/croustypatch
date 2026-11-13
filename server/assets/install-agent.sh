@@ -164,12 +164,12 @@ AUTOSTART
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q /usr/share/applications 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t /usr/share/icons/hicolor 2>/dev/null || true
     say "installed $GUI and its menu entry"
-    # Its only system requirement is the WebKitGTK runtime.
+    # Its system requirements are the X11 keyboard library it links and a Vulkan loader (and driver) for drawing.
     if command -v apt-get >/dev/null 2>&1; then
-      if ! dpkg -s libwebkit2gtk-4.1-0 >/dev/null 2>&1; then
-        say "installing libwebkit2gtk-4.1-0 (needed by the desktop app center)"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libwebkit2gtk-4.1-0 >/dev/null 2>&1 \
-          || say "warning: could not install libwebkit2gtk-4.1-0; install it, or use croustypatch-portal --tui"
+      if ! dpkg -s libxkbcommon-x11-0 libvulkan1 >/dev/null 2>&1; then
+        say "installing libxkbcommon-x11-0 and libvulkan1 (needed by the desktop app center)"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers >/dev/null 2>&1 \
+          || say "warning: could not install libxkbcommon-x11-0 and libvulkan1; install them, or use croustypatch-portal --tui"
       fi
       # notify-send, for the update notifications (optional)
       if ! command -v notify-send >/dev/null 2>&1; then
@@ -177,10 +177,10 @@ AUTOSTART
       fi
     elif command -v pacman >/dev/null 2>&1; then
       # Installing one package without a full upgrade could leave Arch partially upgraded: say what to run instead.
-      pacman -Q webkit2gtk-4.1 >/dev/null 2>&1 || say "warning: the desktop app center needs webkit2gtk-4.1: run 'pacman -Syu webkit2gtk-4.1'"
+      pacman -Q libxkbcommon-x11 vulkan-icd-loader >/dev/null 2>&1 || say "warning: the desktop app center needs libxkbcommon-x11 and vulkan-icd-loader (and a Vulkan driver): run 'pacman -Syu libxkbcommon-x11 vulkan-icd-loader'"
       command -v notify-send >/dev/null 2>&1 || say "note: for desktop notifications about updates, run 'pacman -S libnotify'"
     else
-      say "warning: make sure WebKitGTK 4.1 is installed for the desktop app center"
+      say "warning: make sure libxkbcommon-x11 and a Vulkan loader and driver are installed for the desktop app center"
     fi
   else
     say "this server has no desktop app center build: the terminal one is available (croustypatch-portal)"

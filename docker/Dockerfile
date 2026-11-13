@@ -20,11 +20,12 @@ RUN cargo build --release --locked -p croustypatch-server -p croustypatch-agent 
  && mkdir -p /out \
  && cp target/release/croustypatch-agent /out/croustypatch-agent-linux-$(uname -m)
 
-# Desktop app center (Tauri) for laptops and workstations. Its own stage so that a server-only change reuses the cache;
-# built on bookworm so that the binary runs on Debian 12+, Ubuntu and Arch (it links the system's webkit2gtk-4.1).
+# Desktop app center (GPUI, a native window) for laptops and workstations. Its own stage so that a server-only change reuses
+# the cache; built on bookworm so that the binary runs on Debian 12+, Ubuntu and Arch. It links libxcb and libxkbcommon and
+# loads the Wayland, Vulkan and fontconfig libraries at run time.
 FROM rust:1-bookworm AS gui
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev libssl-dev \
+ && apt-get install -y --no-install-recommends clang cmake pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libfontconfig1-dev libfreetype6-dev libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /gui
 COPY portal-gui ./

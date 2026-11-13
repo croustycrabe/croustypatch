@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["common", "server", "agent"]
-# The desktop app center needs webkit2gtk to build: it has its own lock file and is built in Docker (see portal-gui/).
+# The desktop app center (GPUI) needs the windowing and graphics libraries to build: it has its own lock file and is built in Docker (see portal-gui/).
 exclude = ["portal-gui"]
 
 [workspace.package]
