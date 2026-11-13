@@ -1,0 +1,87 @@
+# CroustyPatch for self-hosters: the server (web UI, API, agent gateway) and its PostgreSQL 17 database.
+#
+#   cp .env.example .env     # then fill in the three secrets (see the comments in .env.example)
+#   docker compose up -d
+#
+# Everything is configured from `.env`; this file needs no editing for a standard install.
+name: croustypatch
+
+services:
+  server:
+    image: ${CROUSTYPATCH_IMAGE:-ghcr.io/croustycrabe/croustypatch-server}:${CROUSTYPATCH_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://croustypatch:${CROUSTYPATCH_DB_PASSWORD:?set CROUSTYPATCH_DB_PASSWORD in .env}@database:5432/croustypatch
+      # Encrypts sensitive columns and derives the session key. Back it up separately from the database.
+      CROUSTYPATCH_MASTER_KEY: ${CROUSTYPATCH_MASTER_KEY:?set CROUSTYPATCH_MASTER_KEY in .env}
+      # Optional: the password of the first-login "admin" account (12 characters or more). Empty: a random one is
+      # generated and printed once in the server log.
+      CROUSTYPATCH_BOOTSTRAP_PASSWORD: ${CROUSTYPATCH_BOOTSTRAP_PASSWORD:-}
+      # direct: the server serves HTTPS itself (TLS 1.3, self-signed certificate unless you give one).
+      # proxy: plain HTTP behind a reverse proxy that terminates TLS.
+      CROUSTYPATCH_TLS_MODE: ${CROUSTYPATCH_TLS_MODE:-direct}
+      CROUSTYPATCH_TLS_SAN: ${CROUSTYPATCH_TLS_SAN:-localhost,127.0.0.1}
+      # proxy mode: X-Forwarded-* headers are honoured only from these addresses.
+      CROUSTYPATCH_TRUSTED_PROXIES: ${CROUSTYPATCH_TRUSTED_PROXIES:-127.0.0.1,::1}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${CROUSTYPATCH_BIND:-0.0.0.0}:${CROUSTYPATCH_PORT:-8443}:8443"
+    volumes:
+      # The generated certificate, the agent binaries served to new hosts and the master key file (when no
+      # CROUSTYPATCH_MASTER_KEY is given) live here.
+      - serverdata:/var/lib/croustypatch
+    networks:
+      - internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # The image has no curl, and in direct mode the port speaks TLS: check that the port accepts connections.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8443"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: croustypatch
+      POSTGRES_PASSWORD: ${CROUSTYPATCH_DB_PASSWORD:?set CROUSTYPATCH_DB_PASSWORD in .env}
+      POSTGRES_DB: croustypatch
+      TZ: ${TZ:-UTC}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U croustypatch -d croustypatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  serverdata:
+  pgdata:
+
+networks:
+  internal:
+    driver: bridge
