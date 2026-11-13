@@ -51,7 +51,7 @@ understanding what happened.
 
 The primary action of the product, reachable from the sidebar, the Hosts page, the Agent tokens page, the empty
 states and the palette. See `install.md`. Step 1 chooses mode, group and environment; step 2 shows the one-liner
-(Linux curl or wget, FreeBSD, or manual steps), the platforms this server can serve, and a live "waiting for the agent"
+(Linux curl or wget, or manual steps), the platforms this server can serve, and a live "waiting for the agent"
 line; step 3 confirms the connection and links to the new host.
 
 ## Design system

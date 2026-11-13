@@ -41,8 +41,8 @@ RUN apt-get update \
  && useradd --system --uid 10001 --home-dir /var/lib/croustypatch --shell /usr/sbin/nologin croustypatch \
  && install -d -o croustypatch -g croustypatch -m 0700 /var/lib/croustypatch
 COPY --from=build /src/target/release/croustypatch-server /usr/local/bin/croustypatch-server
-# The Linux agent is served to new hosts by the "Add agent" installer. Binaries for other platforms (FreeBSD must be
-# built on FreeBSD) can be dropped into /var/lib/croustypatch/agents, which lives in the persisted data volume.
+# The Linux agent is served to new hosts by the "Add agent" installer. Binaries for other platforms can be dropped
+# into /var/lib/croustypatch/agents, which lives in the persisted data volume.
 COPY --from=build /out/ /usr/share/croustypatch/agents/
 COPY --from=gui /out/ /usr/share/croustypatch/agents/
 COPY --from=web /web/out /usr/share/croustypatch/web

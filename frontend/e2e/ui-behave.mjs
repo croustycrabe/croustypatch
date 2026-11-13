@@ -117,7 +117,6 @@ await p.click('dialog[open] button:has-text("Générer la commande")'); await p.
 const cmd = await p.locator('dialog[open] pre.cmd').first().textContent();
 check('the Linux command is a curl one-liner for this server', new RegExp(`^curl -fsSL ${BASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/api/v1/agent/install\\.sh \\| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\\S+ sh$`).test(cmd), cmd.slice(0, 90));
 const token = cmd.match(/cpt_[A-Za-z0-9_-]+/)[0];
-await p.click('dialog[open] [role=tab]:has-text("FreeBSD")'); check('the FreeBSD tab uses fetch(1)', (await p.locator('dialog[open] pre.cmd').first().textContent()).startsWith('fetch -qo - '));
 await p.click('dialog[open] [role=tab]:has-text("Manuel")'); check('the manual tab shows download + checksum + enrol steps', (await p.locator('dialog[open] pre.cmd').first().textContent()).includes('sha256'));
 check('missing platform binaries are reported', await p.locator('dialog[open] .tag.tone-danger').count() >= 1);
 await p.click('dialog[open] [role=tab]:has-text("Linux")');

@@ -13,11 +13,11 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 /// (id, os, arch). The id is also the file suffix: `croustypatch-agent-<id>` in the agent directory.
-pub const PLATFORMS: &[(&str, &str, &str)] = &[("linux-x86_64", "linux", "x86_64"), ("linux-aarch64", "linux", "aarch64"), ("freebsd-amd64", "freebsd", "amd64")];
+pub const PLATFORMS: &[(&str, &str, &str)] = &[("linux-x86_64", "linux", "x86_64"), ("linux-aarch64", "linux", "aarch64")];
 
 const INSTALL_SCRIPT: &str = include_str!("../../assets/install-agent.sh");
 
-/// Platforms with a build of the desktop app center (Tauri; FreeBSD and aarch64 hosts use the terminal one).
+/// Platforms with a build of the desktop app center (Tauri; aarch64 hosts use the terminal one).
 pub const GUI_PLATFORMS: &[&str] = &["linux-x86_64"];
 /// Download id of the desktop app center's icon (installed with its menu entry).
 pub const GUI_ICON: &str = "portal-gui-icon.png";

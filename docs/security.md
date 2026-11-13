@@ -63,6 +63,6 @@ explicit confirmation. See `modules.md`.
   in English whatever the UI language; the UI's own text is fully bilingual.
 - A task in flight is lost if the agent restarts; the server marks it failed after 90 minutes of silence.
 - OIDC/SSO, SMTP/SMS, SIEM export and Vault are not implemented yet.
-- Verified on Linux with the mock package backend and unit-tested parsers. The apt, pacman and FreeBSD paths
-  run real commands that were not exercised on those systems here; `nft` and `pf` rule generation is tested
+- Verified on Linux with the mock package backend and unit-tested parsers. The apt and pacman paths
+  run real commands that were not exercised on those systems here; `nft` rule generation is tested
   but the rules were not applied on a live host.

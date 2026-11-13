@@ -10,7 +10,7 @@ import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { HostGroup, HostSummary } from '@/lib/types';
 
-type SystemKey = 'apt' | 'pacman' | 'pkg' | 'dnf' | '*';
+type SystemKey = 'apt' | 'pacman' | 'dnf' | '*';
 interface Command { install: string; uninstall: string; check: string; latest?: { aur: string } }
 type Recipe = { packages: string[] } | { command: Command };
 type Recipes = Partial<Record<SystemKey, Recipe>>;
@@ -18,7 +18,7 @@ interface App { id: string; name: string; version: string; category: string; des
 interface HostApp extends App { kind: 'packages' | 'command'; packages: string[]; command: Command | null; installed: boolean; pending: { task_id: string; status: string; install: boolean } | null; update?: { package: string; installed: string; latest: string } | null }
 interface Suggestion { name: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; in_catalog: boolean }
 
-const SYSTEMS: SystemKey[] = ['apt', 'pacman', 'pkg', 'dnf', '*'];
+const SYSTEMS: SystemKey[] = ['apt', 'pacman', 'dnf', '*'];
 
 
 function Store() {

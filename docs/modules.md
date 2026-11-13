@@ -164,7 +164,7 @@ The *App center* module is switched on per host. **App center > Catalog** (permi
 applications: name, version, category, description, icon, how to install it on each system, and the host groups that
 see it (none = every host).
 
-**Installation per system.** An application has one row per package manager (`apt`, `pacman`, `pkg`, `dnf`) and/or a
+**Installation per system.** An application has one row per package manager (`apt`, `pacman`, `dnf`) and/or a
 row for every system (`*`), used by hosts without a row of their own. A host whose package manager matches no row does
 not see the application. This is how a tool named `fd-find` on Debian and `fd` on Arch is one catalog entry. Each row
 is either:
@@ -244,7 +244,7 @@ anything runs, a progress bar and a notification log. French or English and ligh
   shell, file or network access, a strict content security policy, fonts and icons bundled.
 - **Updates.** *Update agent* on the host page also replaces the window when it is installed (same SHA-256 check;
   both files are verified before either is replaced).
-- Built for Linux x86_64 only (Debian 12+, Ubuntu, Arch). FreeBSD and aarch64 machines use the terminal app center.
+- Built for Linux x86_64 only (Debian 12+, Ubuntu, Arch). aarch64 machines use the terminal app center.
   If the window stays blank under Wayland with some graphics drivers, start it with
   `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
@@ -304,4 +304,4 @@ anything runs, a progress bar and a notification log. French or English and ligh
 On the web, a command app shows as installed after its last successful install (the server cannot look at the
 machine); the terminal app center checks the machine itself.
 
-Not in this release: a desktop window for FreeBSD and aarch64, and updates or notifications in the terminal app center.
+Not in this release: a desktop window for aarch64, and updates or notifications in the terminal app center.

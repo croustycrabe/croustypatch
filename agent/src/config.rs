@@ -19,7 +19,7 @@ pub struct Config {
     pub link_silence_secs: u64,
     /// Log what would be changed but never modify the system.
     pub dry_run: bool,
-    /// auto | apt | pacman | pkg | mock
+    /// auto | apt | pacman | mock
     pub package_manager: String,
     /// Test backend only: JSON file describing a fake package set.
     pub mock_file: String,

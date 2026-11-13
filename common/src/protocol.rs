@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HostFacts {
     pub hostname: String,
-    /// "linux" or "freebsd".
+    /// "linux".
     pub os_family: String,
     pub distro: String,
     pub os_version: String,

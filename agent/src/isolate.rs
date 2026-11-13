@@ -9,15 +9,15 @@ use std::path::PathBuf;
 
 const NFT_TABLE: &str = "croustypatch_quarantine";
 
-/// Inbound SSH rules kept during isolation: (nft lines, pf lines). Malformed sources are dropped, and if none is
+/// Inbound SSH rules kept during isolation (nft lines). Malformed sources are dropped, and if none is
 /// left from a non-empty list, SSH stays closed rather than open to everyone.
-fn ssh_rules(iso: &IsolationSettings) -> (String, String) {
+fn ssh_rules(iso: &IsolationSettings) -> String {
     if !iso.keep_ssh || iso.ssh_port == 0 {
-        return (String::new(), String::new());
+        return String::new();
     }
     let port = iso.ssh_port;
     if iso.ssh_sources.is_empty() {
-        return (format!("    tcp dport {port} accept\n"), format!("pass in quick proto tcp from any to any port {port} keep state\n"));
+        return format!("    tcp dport {port} accept\n");
     }
     let nets: Vec<(IpAddr, u8)> = iso.ssh_sources.iter().filter_map(|s| parse_cidr(s)).collect();
     let fmt = |v: &[&(IpAddr, u8)]| v.iter().map(|(ip, l)| format!("{ip}/{l}")).collect::<Vec<_>>().join(", ");
@@ -30,9 +30,7 @@ fn ssh_rules(iso: &IsolationSettings) -> (String, String) {
     if !v6.is_empty() {
         nft += &format!("    ip6 saddr {{ {} }} tcp dport {port} accept\n", fmt(&v6));
     }
-    let all: Vec<&(IpAddr, u8)> = nets.iter().collect();
-    let pf = if all.is_empty() { String::new() } else { format!("pass in quick proto tcp from {{ {} }} to any port {port} keep state\n", fmt(&all)) };
-    (nft, pf)
+    nft
 }
 
 /// nftables ruleset: drop everything except loopback, established flows, the management server and (by default)
@@ -54,15 +52,9 @@ pub fn nft_ruleset(server_ips: &[IpAddr], iso: &IsolationSettings) -> String {
     format!(
         "add table inet {NFT_TABLE}\ndelete table inet {NFT_TABLE}\ntable inet {NFT_TABLE} {{\n  chain input {{\n    type filter hook input priority -300; policy drop;\n    iifname \"lo\" accept\n    ct state established,related accept\n{}{}  }}\n  chain output {{\n    type filter hook output priority -300; policy drop;\n    oifname \"lo\" accept\n    ct state established,related accept\n{}  }}\n}}\n",
         rule("in", "saddr"),
-        ssh_rules(iso).0,
+        ssh_rules(iso),
         rule("out", "daddr"),
     )
-}
-
-/// pf anchor rules (FreeBSD). `anchor "croustypatch_quarantine"` must be referenced from pf.conf.
-pub fn pf_rules(server_ips: &[IpAddr], iso: &IsolationSettings) -> String {
-    let list = server_ips.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
-    format!("block drop all\npass quick on lo0 all\npass quick from {{ {list} }} to any keep state\npass quick from any to {{ {list} }} keep state\n{}", ssh_rules(iso).1)
 }
 
 /// One line for logs: what stays reachable.
@@ -81,37 +73,18 @@ pub async fn quarantine(r: &Runner, server_ips: &[IpAddr], iso: &IsolationSettin
         bail!("cannot quarantine: the management server address is unknown");
     }
     log.line(format!("isolating host: {}", describe(server_ips, iso)));
-    if cfg!(target_os = "freebsd") {
-        let sr = r.read(Cmd::new("pfctl", &["-sr"])).await?;
-        if !sr.stdout.contains(&format!("anchor \"{NFT_TABLE}\"")) && !r.dry_run {
-            bail!("pf.conf does not reference anchor \"{NFT_TABLE}\"; add it so quarantine can take effect");
-        }
-        let _ = r.mutate(Cmd::new("pfctl", &["-e"]), log).await;
-        let out = r.mutate(Cmd::new("pfctl", &["-a", NFT_TABLE, "-f", "-"]).stdin(pf_rules(server_ips, iso).into_bytes()), log).await?;
-        if !out.ok() {
-            bail!("pfctl failed ({})", out.code);
-        }
-    } else {
-        let out = r.mutate(Cmd::new("nft", &["-f", "-"]).stdin(nft_ruleset(server_ips, iso).into_bytes()), log).await?;
-        if !out.ok() {
-            bail!("nft failed ({}): {}", out.code, out.stderr.trim());
-        }
+    let out = r.mutate(Cmd::new("nft", &["-f", "-"]).stdin(nft_ruleset(server_ips, iso).into_bytes()), log).await?;
+    if !out.ok() {
+        bail!("nft failed ({}): {}", out.code, out.stderr.trim());
     }
     Ok(())
 }
 
 pub async fn release(r: &Runner, log: &TaskLog) -> Result<()> {
-    if cfg!(target_os = "freebsd") {
-        let out = r.mutate(Cmd::new("pfctl", &["-a", NFT_TABLE, "-F", "all"]), log).await?;
-        if !out.ok() {
-            bail!("pfctl flush failed ({})", out.code);
-        }
-    } else {
-        let out = r.mutate(Cmd::new("nft", &["delete", "table", "inet", NFT_TABLE]), log).await?;
-        // "No such file or directory": already released.
-        if !out.ok() && !out.stderr.contains("No such file") {
-            bail!("nft failed ({}): {}", out.code, out.stderr.trim());
-        }
+    let out = r.mutate(Cmd::new("nft", &["delete", "table", "inet", NFT_TABLE]), log).await?;
+    // "No such file or directory": already released.
+    if !out.ok() && !out.stderr.contains("No such file") {
+        bail!("nft failed ({}): {}", out.code, out.stderr.trim());
     }
     Ok(())
 }

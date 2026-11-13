@@ -6,7 +6,7 @@ use croustypatch_agent::launcher::{choose, force_from_args, has_display, Client,
 fn the_window_opens_only_in_a_graphical_session_with_the_app_installed() {
     assert_eq!(choose(Force::Auto, true, true), Client::Gui);
     assert_eq!(choose(Force::Auto, false, true), Client::Tui, "over SSH on a laptop: terminal");
-    assert_eq!(choose(Force::Auto, true, false), Client::Tui, "not installed (server, FreeBSD, aarch64)");
+    assert_eq!(choose(Force::Auto, true, false), Client::Tui, "not installed (server, aarch64)");
     assert_eq!(choose(Force::Tui, true, true), Client::Tui);
     assert_eq!(choose(Force::Gui, false, true), Client::Gui, "--gui is obeyed");
     assert_eq!(choose(Force::Gui, true, false), Client::Tui, "--gui without the app falls back");
@@ -39,10 +39,6 @@ fn a_desktop_is_recognised_by_its_display_manager_or_sessions() {
     std::fs::create_dir_all(dm.path().join("etc/systemd/system")).unwrap();
     std::fs::write(dm.path().join("etc/systemd/system/display-manager.service"), "").unwrap();
     assert!(desktop_detected_in(dm.path()), "a display manager");
-    let bsd = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(bsd.path().join("usr/local/share/xsessions")).unwrap();
-    std::fs::write(bsd.path().join("usr/local/share/xsessions/xfce.desktop"), "").unwrap();
-    assert!(desktop_detected_in(bsd.path()), "FreeBSD ports layout");
 }
 
 #[test]

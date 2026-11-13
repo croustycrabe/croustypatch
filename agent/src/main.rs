@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
-#[command(name = "croustypatch-agent", version, about = "CroustyPatch agent (Linux / FreeBSD)")]
+#[command(name = "croustypatch-agent", version, about = "CroustyPatch agent (Linux)")]
 struct Cli {
     #[arg(long, global = true, env = "CROUSTYPATCH_AGENT_CONFIG", default_value = "/etc/croustypatch/agent.toml")]
     config: PathBuf,
