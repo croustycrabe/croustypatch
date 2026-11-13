@@ -21,13 +21,12 @@ Guardrails:
 On a task, **Ask the AI** gives a second opinion (advisory; it changes neither the decision nor the task). It is
 stored on the task and audited.
 
-### Test setup in the homelab
+### Choosing a model
 
-LXC 107 `ollama` on the Proxmox host (Debian 12, 8 cores, 12 GB, VLAN 10, `10.0.10.40:11434`), model
-`croustypatch-risk` = `qwen2.5:3b` with `num_thread 4` and `temperature 0` (the host CPU is shared with other VMs; with
-8 threads llama.cpp slowed to 0.2 token/s, with 4 it runs at about 8 token/s, ~30 s per assessment). A 3B model
-answers in the right format but its reasoning is weak (it contradicted its input in testing): use a 7B+ model, ideally
-on a GPU, for real decisions. Ollama has no authentication: keep it on the management VLAN.
+The feature was tested with a local Ollama model (`qwen2.5:3b`, `temperature 0`, a limited thread count on a shared
+CPU, about 30 s per assessment). A 3B model answers in the right format but its reasoning is weak (it contradicted
+its input in testing): use a 7B+ model, ideally on a GPU, for real decisions. Ollama has no authentication: keep it
+on a management network that only the server can reach.
 
 ## MCP server
 

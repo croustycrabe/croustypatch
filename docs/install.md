@@ -34,9 +34,9 @@ Other admin commands: `admin enable --super-admin-fallback`, `admin reset-passwo
 
 ## Server behind a reverse proxy on a Docker host
 
-`docker/deploy/` holds the stack used on the lab's Docker host (compose file plus an operations README: files, first
-login, upgrade, reverse-proxy requirements, rollback). It runs in `proxy` mode, listens on plain HTTP and trusts
-forwarded headers only from the proxy's address.
+`deploy/` holds the ready-to-use Docker Compose stack (compose file, `.env.example` and a README: first login, upgrade,
+backup and restore, reverse-proxy requirements). In `proxy` mode the server listens on plain HTTP and trusts
+forwarded headers only from the proxy's address (`CROUSTYPATCH_TRUSTED_PROXIES`).
 
 ## Server from source
 
