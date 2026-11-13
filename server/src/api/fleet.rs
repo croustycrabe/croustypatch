@@ -21,8 +21,11 @@ struct HostSummary {
     #[serde(flatten)]
     host: Host,
     group_ids: Vec<Uuid>,
+    /// Pending updates of every kind (system packages and container images).
     updates: i64,
     security_updates: i64,
+    /// Of those, the container images: the system updates are `updates - docker_updates`.
+    docker_updates: i64,
 }
 
 #[derive(Deserialize)]
@@ -49,12 +52,13 @@ pub async fn list_hosts(state: web::Data<AppState>, user: AuthUser, q: web::Quer
                 query = query.filter(hosts::id.eq_any(host_group_members::table.filter(host_group_members::group_id.eq(g)).select(host_group_members::host_id)));
             }
             let list: Vec<Host> = query.order(hosts::hostname.asc()).select(Host::as_select()).load(c)?;
-            let counts: Vec<(Uuid, bool)> = host_packages::table.filter(host_packages::candidate.is_not_null()).select((host_packages::host_id, host_packages::is_security)).load(c)?;
-            let mut upd: HashMap<Uuid, (i64, i64)> = HashMap::new();
-            for (h, sec) in counts {
+            let counts: Vec<(Uuid, bool, String)> = host_packages::table.filter(host_packages::candidate.is_not_null()).select((host_packages::host_id, host_packages::is_security, host_packages::source)).load(c)?;
+            let mut upd: HashMap<Uuid, (i64, i64, i64)> = HashMap::new();
+            for (h, sec, source) in counts {
                 let e = upd.entry(h).or_default();
                 e.0 += 1;
                 e.1 += sec as i64;
+                e.2 += (source == "docker") as i64;
             }
             let members: Vec<(Uuid, Uuid)> = host_group_members::table.select((host_group_members::host_id, host_group_members::group_id)).load(c)?;
             let mut groups: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -64,8 +68,8 @@ pub async fn list_hosts(state: web::Data<AppState>, user: AuthUser, q: web::Quer
             Ok(list
                 .into_iter()
                 .map(|h| {
-                    let (updates, security_updates) = upd.get(&h.id).copied().unwrap_or_default();
-                    HostSummary { group_ids: groups.remove(&h.id).unwrap_or_default(), host: h, updates, security_updates }
+                    let (updates, security_updates, docker_updates) = upd.get(&h.id).copied().unwrap_or_default();
+                    HostSummary { group_ids: groups.remove(&h.id).unwrap_or_default(), host: h, updates, security_updates, docker_updates }
                 })
                 .collect::<Vec<_>>())
         })
@@ -89,6 +93,33 @@ pub async fn get_host(state: web::Data<AppState>, user: AuthUser, path: web::Pat
 }
 
 #[derive(Deserialize)]
+pub struct MetricsQuery {
+    /// How far back, in hours (default 24, at most two weeks).
+    hours: Option<i64>,
+}
+
+/// GET /hosts/{id}/metrics — the latest resource reading and its history (one point every five minutes).
+pub async fn host_metrics(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, q: web::Query<MetricsQuery>) -> ApiResult<HttpResponse> {
+    use crate::schema::host_metrics;
+    user.require("hosts:read")?;
+    let id = path.into_inner();
+    let hours = q.hours.unwrap_or(24).clamp(1, 24 * 14);
+    let out = state
+        .db(move |c| {
+            let (current, at): (serde_json::Value, Option<chrono::DateTime<Utc>>) = hosts::table.find(id).select((hosts::metrics, hosts::metrics_at)).first(c).map_err(|_| ApiError::NotFound("host"))?;
+            let pts: Vec<(chrono::DateTime<Utc>, Option<f32>, Option<f32>, Option<f32>)> = host_metrics::table
+                .filter(host_metrics::host_id.eq(id))
+                .filter(host_metrics::at.ge(Utc::now() - Duration::hours(hours)))
+                .order(host_metrics::at.asc())
+                .select((host_metrics::at, host_metrics::cpu_pct, host_metrics::mem_pct, host_metrics::load_1m))
+                .load(c)?;
+            Ok(json!({ "current": current, "at": at, "points": pts.into_iter().map(|(at, cpu, mem, load)| json!({ "at": at, "cpu": cpu, "mem": mem, "load": load })).collect::<Vec<_>>() }))
+        })
+        .await?;
+    Ok(HttpResponse::Ok().json(out))
+}
+
+#[derive(Deserialize)]
 pub struct HostPatch {
     display_name: Option<String>,
     environment: Option<String>,
@@ -100,6 +131,8 @@ pub struct HostPatch {
     tags: Option<Vec<String>>,
     heartbeat_secs: Option<i32>,
     group_ids: Option<Vec<Uuid>>,
+    /// Optional modules for this host: any subset of docker, helper_script, portal, eco.
+    modules: Option<serde_json::Value>,
 }
 
 pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, body: web::Json<HostPatch>) -> ApiResult<HttpResponse> {
@@ -129,6 +162,10 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
     if b.tags.as_ref().is_some_and(|t| t.len() > 30 || t.iter().any(|x| x.is_empty() || x.len() > 40)) {
         return Err(ApiError::bad("at most 30 tags of 1-40 characters"));
     }
+    if let Some(m) = &b.modules {
+        crate::modules::validate(m)?;
+    }
+    let modules_changed = b.modules.is_some();
     let out: Host = state
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
@@ -163,6 +200,24 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                         return Err(ApiError::NotFound("host"));
                     }
                 }
+                if let Some(m) = &b.modules {
+                    // A partial map only changes the modules it names.
+                    let mut cur: serde_json::Value = hosts::table.find(id).select(hosts::modules).first(c).map_err(|_| ApiError::NotFound("host"))?;
+                    let mut merged = serde_json::to_value(crate::modules::parse(&cur)).unwrap_or_default();
+                    for (k, v) in m.as_object().into_iter().flatten() {
+                        merged[k] = v.clone();
+                    }
+                    if merged != cur {
+                        // switching the Docker module on needs a local registry when the installation is offline
+                        if merged.get("docker").and_then(|d| d.as_bool()) == Some(true) && cur.get("docker").and_then(|d| d.as_bool()) != Some(true) {
+                            crate::docker_registry::require_local_when_offline(c)?;
+                        }
+                        diesel::update(hosts::table.find(id)).set(hosts::modules.eq(&merged)).execute(c)?;
+                        audit::record(c, Event::new(&user.username, "host.modules_changed").target("host", &id.to_string()).host(id).details(json!({ "before": cur, "after": merged })).ip(&user.ip))?;
+                        cur = merged;
+                    }
+                    let _ = cur;
+                }
                 if let Some(gs) = &b.group_ids {
                     diesel::delete(host_group_members::table.filter(host_group_members::host_id.eq(id))).execute(c)?;
                     for g in gs {
@@ -177,6 +232,9 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
             })
         })
         .await?;
+    if modules_changed {
+        crate::modules::push_settings(&state, id).await;
+    }
     Ok(HttpResponse::Ok().json(out))
 }
 
@@ -205,7 +263,7 @@ pub(crate) async fn control_task_with(state: &web::Data<AppState>, user: AuthUse
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
                 let status: String = hosts::table.find(host_id).select(hosts::status).first(c).map_err(|_| ApiError::NotFound("host"))?;
-                if status == "quarantined" && (kind == "scan" || kind == "reboot") {
+                if status == "quarantined" && matches!(kind, "scan" | "reboot" | "agent_update") {
                     return Err(ApiError::Conflict("host is quarantined; release it first".into()));
                 }
                 let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq(kind)).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
@@ -255,6 +313,38 @@ pub async fn reboot_host(state: web::Data<AppState>, user: AuthUser, path: web::
     let asset: String = state.db(move |c| Ok(hosts::table.find(id).select(hosts::asset_type).first::<String>(c).map_err(|_| ApiError::NotFound("host"))?)).await?;
     let delay = b.delay_minutes.unwrap_or(crate::reboot::default_delay(&asset)).min(24 * 60);
     control_task_with(&state, user, id, "reboot", "host.reboot_requested", Some(json!({ "delay_minutes": delay, "message": b.message }))).await
+}
+
+/// The agent build this server hands out, for a host's platform: (platform id, sha256, version, desktop app center
+/// sha256 when the host has it installed and this server has a build of it).
+pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult<(String, String, String, Option<String>)> {
+    let os = facts.get("os_family").and_then(|v| v.as_str()).unwrap_or("");
+    let arch = facts.get("arch").and_then(|v| v.as_str()).unwrap_or("");
+    let platform = match (os, arch) {
+        ("linux", "x86_64" | "amd64") => "linux-x86_64",
+        ("linux", "aarch64" | "arm64") => "linux-aarch64",
+        _ => return Err(ApiError::Conflict(format!("no agent build for {os} {arch}"))),
+    };
+    let path = super::agent_dist::binary_path(state, platform);
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::Conflict(format!("this server has no agent binary for {platform}")))?;
+    let gui = if facts.get("portal_gui").and_then(|v| v.as_bool()).unwrap_or(false) {
+        super::agent_dist::gui_path(state, platform).and_then(|p| std::fs::read(p).ok()).map(|b| croustypatch_common::crypto::sha256_hex(&b))
+    } else {
+        None
+    };
+    Ok((platform.to_string(), croustypatch_common::crypto::sha256_hex(&bytes), env!("CARGO_PKG_VERSION").to_string(), gui))
+}
+
+/// POST /hosts/{id}/agent-update — the agent downloads this server's build, checks its SHA-256 and restarts on it.
+pub async fn update_agent(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
+    user.require("hosts:write")?;
+    let id = path.into_inner();
+    let facts: serde_json::Value = state.db(move |c| Ok(hosts::table.find(id).select(hosts::facts).first(c).map_err(|_| ApiError::NotFound("host"))?)).await?;
+    if !crate::modules::has_capability(&facts, croustypatch_common::protocol::capability::SELF_UPDATE) {
+        return Err(ApiError::Conflict("this agent is too old to update itself: re-run the installer one-liner on the host once".into()));
+    }
+    let (platform, sha256, version, gui_sha256) = agent_build_for(&state, &facts)?;
+    control_task_with(&state, user, id, "agent_update", "host.agent_update_requested", Some(json!({ "platform": platform, "sha256": sha256, "version": version, "gui_sha256": gui_sha256 }))).await
 }
 
 pub async fn release_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
@@ -375,6 +465,8 @@ pub struct NewToken {
     /// Validity in hours (default 24, max 720).
     hours: Option<i64>,
     max_uses: Option<i32>,
+    /// Modules for the hosts enrolled with this token; absent = the defaults (Settings > Modules) at enrolment.
+    modules: Option<serde_json::Value>,
 }
 
 pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web::Json<NewToken>) -> ApiResult<HttpResponse> {
@@ -389,6 +481,15 @@ pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web:
     if !(1..=720).contains(&hours) || !(1..=1000).contains(&max_uses) {
         return Err(ApiError::bad("hours must be 1..=720 and max_uses 1..=1000"));
     }
+    // Stored as given (only the modules the person chose): a module left out is decided at enrolment, for example
+    // updates from the app center are on for laptops and workstations and off for servers.
+    let modules = match &b.modules {
+        Some(m) => {
+            crate::modules::validate(m)?;
+            Some(m.clone())
+        }
+        None => None,
+    };
     let token = format!("cpt_{}", random_token(24));
     let hash = token_hash(&token);
     let row: EnrollmentToken = state
@@ -403,10 +504,11 @@ pub async fn create_token(state: web::Data<AppState>, user: AuthUser, body: web:
                     enrollment_tokens::expires_at.eq(Utc::now() + Duration::hours(hours)),
                     enrollment_tokens::max_uses.eq(max_uses),
                     enrollment_tokens::created_by.eq(&user.username),
+                    enrollment_tokens::modules.eq(&modules),
                 ))
                 .returning(EnrollmentToken::as_returning())
                 .get_result(c)?;
-            audit::record(c, Event::new(&user.username, "enrollment.token_created").target("token", &t.id.to_string()).details(json!({"label": t.label, "max_uses": max_uses, "hours": hours})).ip(&user.ip))?;
+            audit::record(c, Event::new(&user.username, "enrollment.token_created").target("token", &t.id.to_string()).details(json!({"label": t.label, "max_uses": max_uses, "hours": hours, "modules": t.modules})).ip(&user.ip))?;
             Ok(t)
         })
         .await?;

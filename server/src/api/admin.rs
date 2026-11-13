@@ -225,15 +225,15 @@ pub async fn delete_role(state: web::Data<AppState>, user: AuthUser, path: web::
 
 /// Settings whose value is encrypted at rest and never returned in clear.
 const SECRET_KEYS: &[&str] = &["ai"];
-const KNOWN_KEYS: &[&str] = &["modules", "ai", "connectivity", "agent", "compliance"];
+const KNOWN_KEYS: &[&str] = &["modules", "ai", "connectivity", "agent", "isolation"];
 
 pub fn default_setting(key: &str) -> Value {
     match key {
-        "modules" => json!({ "docker": false, "helper_script": false, "openscap": false, "portal": false, "notifications": false, "eco": true }),
+        "modules" => json!({ "docker": false, "helper_script": false, "portal": false, "portal_updates": false, "notifications": false, "eco": true }),
         "ai" => json!({ "enabled": false, "provider": "openai_compatible", "base_url": "", "model": "", "api_key": "" }),
         "connectivity" => json!({ "mode": "connected" }),
         "agent" => json!({ "heartbeat_secs": 60 }),
-        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "" }),
+        "isolation" => serde_json::to_value(croustypatch_common::protocol::IsolationSettings::default()).unwrap_or_default(),
         _ => json!({}),
     }
 }
@@ -295,9 +295,13 @@ pub async fn put_setting(state: web::Data<AppState>, user: AuthUser, path: web::
         return Err(ApiError::bad("setting must be a JSON object"));
     }
     validate_setting(&key, &value)?;
+    // Agents carry the isolation rules themselves (a double failure isolates the host without asking the server).
+    let push_to_agents = key == "isolation" || key == "connectivity";
     let st = state.clone();
     state
         .db(move |c| {
+            // offline mode and the Docker module need a local registry (Settings > Docker registries)
+            crate::docker_registry::check_setting_change(c, &key, &value)?;
             // An empty api_key in an update means "keep the stored one".
             if key == "ai" {
                 let kept = value.get("api_key").and_then(|k| k.as_str()).is_none_or(str::is_empty);
@@ -320,6 +324,11 @@ pub async fn put_setting(state: web::Data<AppState>, user: AuthUser, path: web::
             audit::record(c, Event::new(&user.username, "settings.updated").target("setting", &key).details(json!({"fields": fields})).ip(&user.ip))
         })
         .await?;
+    if push_to_agents {
+        for h in state.hub.connected_hosts() {
+            crate::modules::push_settings(&state, h).await;
+        }
+    }
     Ok(HttpResponse::NoContent().finish())
 }
 
@@ -332,14 +341,13 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
             }
         }
         "connectivity" => super::one_of("mode", v.get("mode").and_then(|m| m.as_str()).unwrap_or(""), &["connected", "air_gapped"])?,
-        "compliance" => {
-            let t = v.get("threshold").and_then(|h| h.as_f64()).unwrap_or(-1.0);
-            if !(0.0..=100.0).contains(&t) {
-                return Err(ApiError::bad("threshold must be 0..=100"));
+        "isolation" => {
+            let iso: croustypatch_common::protocol::IsolationSettings = serde_json::from_value(v.clone()).map_err(|_| ApiError::bad("isolation needs keep_ssh (bool), ssh_port (1-65535) and ssh_sources (list)"))?;
+            if iso.ssh_port == 0 || iso.ssh_sources.len() > 50 {
+                return Err(ApiError::bad("ssh_port must be 1-65535 and ssh_sources at most 50 entries"));
             }
-            let p = v.get("profile").and_then(|h| h.as_str()).unwrap_or("");
-            if p.len() > 200 || !p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
-                return Err(ApiError::bad("profile must be an XCCDF profile id"));
+            if let Some(bad) = iso.ssh_sources.iter().find(|s| croustypatch_common::protocol::parse_cidr(s).is_none()) {
+                return Err(ApiError::bad(format!("not an address or network: {bad} (e.g. 10.0.10.0/24)")));
             }
         }
         "agent" => {

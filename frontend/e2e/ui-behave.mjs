@@ -16,8 +16,27 @@ const login = async (p, u, pw) => { await p.goto(`${BASE}/login/`); await p.fill
 
 let p = await open();
 await login(p, 'admin', 'wrong'); await p.waitForSelector('.alert--error'); check('bad credentials show an error on the login page', p.url().endsWith('/login/'));
+const serverVersion = await p.evaluate(async () => (await (await fetch('/api/v1/server-info')).json()).version);
+await p.waitForSelector('[data-testid=app-version]', { timeout: 8000 }).catch(() => {});
+check('the sign-in page shows the version of the running server', (await p.locator('[data-testid=app-version]').first().textContent().catch(() => '')) === `v${serverVersion}` && /^\d+\.\d+\.\d+$/.test(serverVersion), serverVersion);
 await login(p, 'admin', 'e2e-admin-password'); await p.waitForSelector('.sidebar'); await p.waitForSelector('.stat');
+await p.waitForSelector('.sidebar [data-testid=app-version]', { timeout: 8000 }).catch(() => {});
+check('the sidebar shows it once signed in', (await p.locator('.sidebar [data-testid=app-version]').textContent().catch(() => '')) === `v${serverVersion}`);
 check('dashboard shows fleet stat cards', await p.locator('.stat').count() >= 5);
+check('every indicator is a tile of its own, plus the new panels', (await p.locator('[data-widget^=stat_]').count()) >= 6 && (await p.locator('[data-widget=updates], [data-widget=patching], [data-widget=resources]').count()) === 3);
+{
+  await p.click('button:has-text("Personnaliser")');
+  check('customising offers the tiles and panels that are hidden', (await p.locator('button:has-text("Redémarrages requis")').count()) === 1);
+  await p.click('button:has-text("Afficher · Redémarrages requis")');
+  check('a hidden tile is shown with one click', (await p.locator('[data-widget=stat_reboot]').count()) === 1);
+  await p.waitForFunction(() => { const r = document.querySelector('[data-widget=stat_reboot]')?.getBoundingClientRect(); return !!r && r.top >= 0 && r.bottom <= innerHeight; }, null, { timeout: 5000 }).then(() => check('and brought into view', true), () => check('and brought into view', false));
+  await p.click('[data-widget=stat_reboot] button[aria-label="Masquer"]');
+  check('and hidden again', (await p.locator('[data-widget=stat_reboot]').count()) === 0);
+  await p.click('[data-widget=updates] button[aria-label="Masquer"]'); await p.click('button:has-text("Rétablir la disposition par défaut")');
+  await p.waitForSelector('[data-widget=updates]');
+  check('"Restore the default layout" brings everything back', (await p.locator('[data-widget=updates]').count()) === 1);
+  await p.click('button:has-text("Terminer")');
+}
 check('"Add agent" is offered in the sidebar and on the page', await p.locator('button:has-text("Ajouter un agent")').count() >= 2);
 
 // ---- navigation and hosts table
@@ -33,7 +52,7 @@ const firstName = async () => (await p.locator('.tbl tbody tr .cell-host a').fir
 const a0 = await firstName(); await p.click('th button:has-text("Hôte")'); await p.waitForTimeout(150); const a1 = await firstName();
 check('clicking a column header sorts', a0 !== a1, `${a0} -> ${a1}`);
 await p.locator('.tbl tbody tr input[type=checkbox]').nth(0).check(); await p.locator('.tbl tbody tr input[type=checkbox]').nth(1).check();
-check('selecting rows shows the bulk action bar', (await p.locator('.alert:has-text("sélectionné")').count()) === 1 && (await p.locator('.alert button:has-text("Corriger")').count()) === 1);
+check('selecting rows shows the bulk action bar', (await p.locator('.alert:has-text("sélectionné")').count()) === 1 && (await p.locator('.alert button:has-text("Mettre à jour le système")').count()) === 1, 'with only system updates pending the bulk action says so');
 await p.click('.alert button:has-text("Tout désélectionner")');
 
 // ---- host detail tabs (state kept in the URL)
@@ -67,7 +86,8 @@ await p.keyboard.press('Escape');
 await p.goto(`${BASE}/tasks/?filter=approval`); await p.waitForSelector('.tbl a');
 await p.click('.tbl a >> nth=0'); await p.waitForSelector('dialog[open] .timeline'); 
 check('task detail opens as a side panel with the decision reasoning', (await p.locator('dialog.drawer[open]').count()) === 1 && (await p.locator('dialog[open] li:has-text("stability")').count()) > 0);
-await p.click('dialog[open] button:has-text("Approuver")'); await p.waitForTimeout(800);
+await p.click('dialog[open] button:has-text("Approuver")');
+await p.waitForFunction(() => /en file|envoyée|en cours|observation|réussie/i.test(document.querySelector('dialog[open] .status')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {});
 check('approving moves the task on', (await p.locator('dialog[open] .status').first().textContent()).match(/en file|envoyée|en cours|observation|réussie/i) !== null, await p.locator('dialog[open] .status').first().textContent());
 await p.keyboard.press('Escape');
 
@@ -75,14 +95,28 @@ await p.keyboard.press('Escape');
 await p.goto(`${BASE}/policies/`); await p.waitForSelector('.tbl'); await p.click('button:has-text("Modifier") >> nth=0'); await p.waitForSelector('dialog[open] .section');
 await p.fill('dialog[open] input >> nth=0', 'default (edited)'); await p.click('dialog[open] .sticky-actions button[type=submit]'); await p.waitForSelector('.toast, tr:has-text("default (edited)")', { timeout: 6000 }).catch(() => {});
 await p.waitForTimeout(500); check('policy saved from the slide-over', (await p.locator('tr:has-text("default (edited)")').count()) === 1);
+// patch days: a clear "when" card, presets, a time zone and a live preview from the server
+await p.click('button:has-text("Nouvelle politique")'); await p.waitForSelector('dialog[open] :text("Quand les mises à jour sont-elles appliquées")');
+await p.click('dialog[open] button:has-text("Elle est appliquée automatiquement")');
+await p.click('dialog[open] button:has-text("Seulement les jours de patch")');
+await p.click('dialog[open] button:has-text("Premier lundi du mois")');
+await p.waitForFunction(() => document.querySelectorAll('dialog[open] fieldset li').length >= 5, null, { timeout: 8000 }).catch(() => {});
+{
+  const lis = await p.locator('dialog[open] fieldset li').allTextContents();
+  check('the patch-day preview lists the next five patch days, all on a Monday', lis.length === 5 && lis.every((x) => /lun/i.test(x)), JSON.stringify(lis.slice(0, 2)));
+  check('the summary says it in words', (await p.locator('dialog[open] .alert').last().textContent()).toLowerCase().includes('premier lundi'));
+  await p.fill('dialog[open] input[list=cp-zones]', 'Mars/Olympus'); await p.waitForSelector('dialog[open] .alert--error', { timeout: 8000 }).then(() => check('an unknown time zone is refused with a reason', true), () => check('an unknown time zone is refused with a reason', false));
+}
+await p.keyboard.press('Escape');
 
 // ---- ADD AGENT: generate, enrol a real agent with the command, watch the wizard notice
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.sidebar button:has-text("Ajouter un agent")'); await p.waitForSelector('dialog[open]');
+check('the wizard offers the modules for the new host', await p.locator('dialog[open] fieldset:has-text("Modules") input[type=checkbox]').count() === 4);
+await p.check('dialog[open] fieldset:has-text("Modules") label:has-text("Docker") input');
 await p.click('dialog[open] button:has-text("Générer la commande")'); await p.waitForSelector('dialog[open] pre.cmd');
 const cmd = await p.locator('dialog[open] pre.cmd').first().textContent();
-check('the Linux command is a curl one-liner for this server', /^curl -fsSL https:\/\/localhost:8443\/api\/v1\/agent\/install\.sh \| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\S+ sh$/.test(cmd), cmd.slice(0, 90));
+check('the Linux command is a curl one-liner for this server', new RegExp(`^curl -fsSL ${BASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/api/v1/agent/install\\.sh \\| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\\S+ sh$`).test(cmd), cmd.slice(0, 90));
 const token = cmd.match(/cpt_[A-Za-z0-9_-]+/)[0];
-await p.click('dialog[open] [role=tab]:has-text("FreeBSD")'); check('the FreeBSD tab uses fetch(1)', (await p.locator('dialog[open] pre.cmd').first().textContent()).startsWith('fetch -qo - '));
 await p.click('dialog[open] [role=tab]:has-text("Manuel")'); check('the manual tab shows download + checksum + enrol steps', (await p.locator('dialog[open] pre.cmd').first().textContent()).includes('sha256'));
 check('missing platform binaries are reported', await p.locator('dialog[open] .tag.tone-danger').count() >= 1);
 await p.click('dialog[open] [role=tab]:has-text("Linux")');
@@ -92,6 +126,12 @@ execFileSync(AGENT, ['--config', `${U}/wiz.toml`, 'enroll', '--server', BASE, '-
 const agent = spawn(AGENT, ['--config', `${U}/wiz.toml`, 'run'], { stdio: 'ignore' });
 await p.waitForSelector('dialog[open] :text("est connecté")', { timeout: 15000 }).then(() => check('the wizard detects the new agent and confirms the connection', true), () => check('the wizard detects the new agent and confirms the connection', false));
 check('and offers to open the new host', await p.locator('dialog[open] a:has-text("Ouvrir l’hôte")').count() === 1);
+{
+  const href = await p.locator('dialog[open] a:has-text("Ouvrir l’hôte")').getAttribute('href');
+  const hid = new URL(href, BASE).searchParams.get('id');
+  const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
+  check('the modules chosen in the wizard are switched on for the new host', m?.docker === true, JSON.stringify(m));
+}
 agent.kill();
 await p.keyboard.press('Escape');
 
@@ -189,6 +229,25 @@ for (const vp of [{ width: 1280, height: 520 }, { width: 1024, height: 420 }, { 
   await p.fill('dialog[open] input >> nth=0', 'alertes critiques'); await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("alertes critiques")');
   check('a rule is saved with the default critical events', (await p.locator('tr:has-text("alertes critiques")').textContent()).includes('quarantaine'));
   await p.click('[role=tab]:has-text("Historique")'); await p.waitForSelector('.tbl, .empty');
+  // reports: built from the database and sent even when nothing happened; every attempt is logged
+  got.length = 0;
+  await p.click('[role=tab]:has-text("Rapports")'); await p.waitForSelector('button:has-text("Nouveau rapport")');
+  await p.click('button:has-text("Nouveau rapport")'); await p.waitForSelector('dialog[open] input');
+  await p.fill('dialog[open] input >> nth=0', 'Rapport hebdo');
+  await p.click('dialog[open] .chip:has-text("siem")');
+  await p.click('dialog[open] button:has-text("Prévisualiser")'); await p.waitForSelector('dialog[open] iframe');
+  check('the report preview shows the formatted mail', ((await p.locator('dialog[open] iframe').getAttribute('sandbox')) ?? 'x') === '' && (await p.locator('dialog[open] iframe').getAttribute('srcdoc')).includes('Rapport hebdo'));
+  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Rapport hebdo")');
+  check('a report is saved with its next send time', (await p.locator('tr:has-text("Rapport hebdo")').textContent()).match(/chaque lundi/i) !== null);
+  await p.click('tr:has-text("Rapport hebdo") button:has-text("Envoyer maintenant")'); await p.waitForSelector('dialog[open] form');
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.alert--ok', { timeout: 15000 });
+  await p.waitForTimeout(300);
+  const rep = got.map((g) => { try { return JSON.parse(g.b); } catch { return null; } }).find((x) => x?.event === 'report');
+  check('"Send now" delivers the report to the channel', !!rep && rep.title.includes('Rapport hebdo') && rep.text.includes('Résumé'), JSON.stringify(rep)?.slice(0, 120));
+  await p.click('tr:has-text("Rapport hebdo") button:has-text("Journal")'); await p.waitForSelector('dialog[open] .tbl tr:has-text("envoyé")');
+  check('the delivery is logged', true);
+  await p.keyboard.press('Escape');
   sink.close();
 }
 
@@ -209,25 +268,54 @@ check('the reboot task is created and handled by the agent', await p.locator('.t
 await p.goto(`${BASE}/account/`); await p.waitForSelector('button:has-text("Nouveau jeton")');
 await p.click('button:has-text("Nouveau jeton")'); await p.waitForSelector('dialog[open]'); await p.fill('dialog[open] input >> nth=0', 'e2e assistant'); await p.click('dialog[open] button[type=submit]');
 await p.waitForSelector('code.cs-inline-code'); const tok = (await p.locator('code.cs-inline-code').textContent()).trim();
-check('a personal token is shown once after creation', tok.startsWith('cpat_') && (await p.locator('.tbl tr:has-text("e2e assistant")').count()) === 1);
+{
+  await p.waitForSelector('.tbl tr:has-text("e2e assistant")', { timeout: 5000 }).catch(() => {});
+  const n = await p.locator('.tbl tr:has-text("e2e assistant")').count();
+  check('a personal token is shown once after creation', tok.startsWith('cpat_') && n === 1, `${tok.slice(0, 9)}… rows=${n}`);
+}
 {
   const r = await p.evaluate(async (tk) => (await fetch('/api/v1/mcp', { method: 'POST', credentials: 'omit', headers: { 'content-type': 'application/json', authorization: `Bearer ${tk}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'fleet_summary', arguments: {} } }) })).json(), tok);
   check('an MCP client authenticates with the token and reads the fleet', r?.result?.isError === false && typeof r.result.structuredContent.pending_updates === 'number', JSON.stringify(r).slice(0, 120));
 }
 
-// ---- compliance tab: an audit can be requested
+// ---- host page: settings and modules
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.tbl tr:has(.status.tone-ok) .cell-host a >> nth=0'); await p.waitForSelector('.tabs');
-await p.click('[role=tab]:has-text("Conformité")'); await p.waitForSelector('button:has-text("Lancer un audit"), .empty');
-check('the compliance tab explains how to start when there is no report', (await p.locator('.empty').textContent()).includes('openscap'));
-await p.click('button:has-text("Lancer un audit")'); await p.waitForTimeout(1500);
-await p.click('[role=tab]:has-text("Historique")'); await p.waitForTimeout(600);
-check('a compliance task is created and answered by the agent', await p.locator('.tbl tr:has-text("conformité")').count() >= 1);
-
+await p.waitForSelector('.panel:has-text("Correctifs automatiques")', { timeout: 8000 }).then(() => check('the host page says why a host is, or is not, patched automatically', true), () => check('the host page says why a host is, or is not, patched automatically', false));
+await p.waitForSelector('.panel:has-text("Ressources") [role=meter]', { timeout: 40000 }).then(() => check('the host page shows live CPU, memory and disk use reported by the agent', true), () => check('the host page shows live CPU, memory and disk use reported by the agent', false));
+check('and the hardware: processor and memory', (await p.locator('.panel:has-text("Système")').first().textContent()).includes('Processeur'));
+check('the agent card shows the agent is up to date', await p.locator('.kv .tag:has-text("à jour")').count() === 1);
+await p.click('[role=tab]:has-text("Réglages")'); await p.waitForSelector('[role=switch]');
+check('the host settings list the modules, with the self-service updates of the app center', await p.locator('[role=switch]').count() === 5);
+await p.click('[role=switch]:has-text("Proxmox Helper Scripts")'); await p.waitForSelector('.toast');
+{
+  const hid = new URL(p.url()).searchParams.get('id');
+  const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
+  check('a module is switched on for this host only', m?.helper_script === true, JSON.stringify(m));
+}
 // ---- app center: catalog, then self-service install through the agent
 {
-  const mods = await p.evaluate(async () => (await (await fetch('/api/v1/settings')).json()).modules);
-  await p.evaluate(async (m) => fetch('/api/v1/settings/modules', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...m, portal: true }) }), mods);
+  // the app center is switched on per host
+  await p.evaluate(async () => { for (const h of await (await fetch('/api/v1/hosts')).json()) await fetch(`/api/v1/hosts/${h.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modules: { portal: true } }) }); });
   await p.goto(`${BASE}/portal/`); await p.waitForSelector('[role=tab]:has-text("Catalogue")');
+  await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("htop")');
+  check('suggested apps are listed with their packages per system', (await p.locator('.appcard:has-text("htop")').textContent()).includes('pacman'));
+  await p.click('.appcard:has-text("htop") button:has-text("Ajouter")'); await p.waitForSelector('.appcard:has-text("htop") .tag:has-text("Dans le catalogue")');
+  check('a suggestion is added to the catalog in one click', true);
+  const vs = p.locator('.appcard', { has: p.locator('b', { hasText: /^Visual Studio Code$/ }) });
+  const vsText = await vs.textContent();
+  check('Visual Studio Code is suggested as Microsoft\'s build on both systems (a command: the Microsoft repository on Debian, the AUR on Arch), and says it conflicts with Code - OSS', (vsText.match(/commande → \/usr\/bin\/code/g) ?? []).length === 2 && vsText.includes('AUR') && vsText.includes('Incompatible avec Code - OSS') && (await vs.locator('.tag:has-text("commande")').count()) === 1);
+  const oss = p.locator('.appcard', { has: p.locator('b', { hasText: /^Code - OSS$/ }) });
+  check('Code - OSS is suggested on its own, as a plain pacman package for Arch', (await oss.textContent()).includes('pacman') && !(await oss.textContent()).includes('commande') && (await oss.locator('button:has-text("Ajouter")').count()) === 1);
+  check('Zed is suggested with its logo', (await p.locator('.appcard:has-text("Zed") .appcard__icon--img img').count()) === 1 && (await p.locator('.appcard:has-text("Zed")').textContent()).includes('zed'));
+  await vs.locator('button:has-text("Ajouter")').click(); await p.waitForSelector('dialog[open]');
+  check('an application that installs with a command asks first and says it runs as root', (await p.locator('dialog[open]').textContent()).includes('root'));
+  await p.click('dialog[open] button:has-text("Annuler")');
+  check('cancelling adds nothing', (await vs.locator('button:has-text("Ajouter")').count()) === 1);
+  await vs.locator('button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
+  await vs.locator('.tag:has-text("Dans le catalogue")').waitFor();
+  await p.locator('.appcard:has-text("Zed") button:has-text("Ajouter")').click(); await p.click('dialog[open] button:has-text("Confirmer")');
+  await p.waitForSelector('.appcard:has-text("Zed") .tag:has-text("Dans le catalogue")');
+  check('once confirmed they join the catalog', true);
   await p.click('[role=tab]:has-text("Catalogue")'); await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
   await p.fill('dialog[open] input >> nth=0', 'Outils dev'); await p.fill('dialog[open] input.mono', 'git, make');
   await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Outils dev")');
@@ -245,13 +333,273 @@ check('a compliance task is created and answered by the agent', await p.locator(
   const before = await theme(), bg0 = await bg();
   await th.click('.themebtn'); await th.waitForTimeout(150);
   check('the theme switch flips light and dark', (await theme()) !== before && (await bg()) !== bg0, `${before} -> ${await theme()}`);
+  const shownLogo = () => th.$$eval('.sidebar__brand img', (a) => a.filter((i) => getComputedStyle(i).display !== 'none').map((i) => i.getAttribute('src')));
+  const logos = { [await theme()]: await shownLogo() };
+  await th.screenshot({ path: `${HERE}/.run/logo-${await theme()}.png`, clip: { x: 0, y: 0, width: 420, height: 140 } });
   await th.reload(); await th.waitForSelector('.stat');
   check('the chosen theme is remembered', (await theme()) !== before);
+  await th.click('.themebtn'); await th.waitForTimeout(150);
+  logos[await theme()] = await shownLogo();
+  await th.screenshot({ path: `${HERE}/.run/logo-${await theme()}.png`, clip: { x: 0, y: 0, width: 420, height: 140 } });
+  check('one crab per theme: brick on light, cream on dark', JSON.stringify(logos.light) === JSON.stringify(['/brand/crab-logo.svg']) && JSON.stringify(logos.dark) === JSON.stringify(['/brand/crab-logo-dark.svg']), JSON.stringify(logos));
   await th.context().close();
   const sys = await (await browser.newContext({ ignoreHTTPSErrors: true, colorScheme: 'dark' })).newPage();
   await sys.goto(`${BASE}/login/`); await sys.waitForSelector('form');
   check('with no choice saved, the system dark preference applies', (await sys.evaluate(() => document.documentElement.dataset.theme)) === 'dark');
   await sys.context().close();
+}
+
+// ---- 0.7: Docker menu, app icons
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`update hosts set modules = modules || '{"docker": true}' where id='${h}'`);
+  sql(`delete from host_packages where host_id='${h}' and source='docker'`);
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:site-web','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27","project":"site","service":"web","state":"running","health":"healthy","latest":{"tag":"1.29.0","major":false,"same_major":null}}'), ('${h}','docker:site-db','docker','postgres:17 @cccc',null,'{"image":"postgres:17","project":"site","service":"db","state":"running"}')`);
+
+  // Docker menu
+  await p.goto(`${BASE}/`); await p.waitForSelector('.sidebar');
+  await p.click('.sidebar a.navitem:has-text("Docker")'); await p.waitForSelector('.tbl tbody tr');
+  check('the Docker menu lists every container with its image', (await p.locator('.tbl tbody tr').count()) === 2 && (await p.locator('.tbl').textContent()).includes('nginx:1.27'));
+  check('and counts the images that can be updated', (await p.locator('.stat:has-text("Images à mettre à jour")').textContent()).includes('1'));
+  await p.click('.chips button:has-text("Mises à jour seulement"), button.chip:has-text("Mises à jour seulement")'); await p.waitForTimeout(500);
+  check('only the containers with a newer image can be shown', (await p.locator('.tbl tbody tr').count()) === 1);
+  await p.click('button.chip:has-text("Mises à jour seulement")'); await p.fill('input[type=search]', 'postgres'); await p.waitForTimeout(600);
+  check('a search matches the image as well as the container name', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.tbl tbody tr').textContent()).includes('postgres:17'));
+  await p.fill('input[type=search]', ''); await p.waitForSelector('.tbl tbody tr:has-text("site-web")');
+  const webRow = (await p.locator('.tbl tbody tr:has-text("site-web")').textContent());
+  check('a newer version is suggested as an update, with what to write in the compose file', webRow.includes('Mise à jour suggérée') && webRow.includes('1.27 → 1.29.0') && webRow.includes('nginx:1.29.0') && !(await p.locator('.tbl tbody tr:has-text("site-db")').textContent()).includes('suggérée'));
+  await p.click('button.chip:has-text("Mises à jour suggérées")'); await p.waitForTimeout(600);
+  check('and the containers with a new version can be listed on their own', (await p.locator('.tbl tbody tr').count()) === 1 && (await p.locator('.stat:has-text("Mises à jour suggérées")').textContent()).includes('1'));
+  await p.click('button.chip:has-text("Mises à jour suggérées")'); await p.fill('input[type=search]', '');
+  await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tbody tr');
+  check('each host has its own Docker tab', (await p.locator('.tbl tbody tr').count()) === 2);
+
+  // app icons
+  await p.goto(`${BASE}/portal/`); await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("Firefox")');
+  check('suggested apps show their real logo', (await p.locator('.appcard:has-text("Firefox") .appcard__icon--img img').count()) === 1);
+  check('and keep a generic icon when they have none', (await p.locator('.appcard:has-text("jq") .appcard__icon--img').count()) === 0 && (await p.locator('.appcard:has-text("jq") .appcard__icon svg').count()) === 1);
+  await p.click('[role=tab]:has-text("Catalogue")'); await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
+  await p.fill('dialog[open] input >> nth=0', 'Git perso'); await p.fill('dialog[open] input.mono', 'git');
+  await p.click('dialog[open] [role=tab]:has-text("Logo")'); await p.fill('dialog[open] input[type=search]', 'git'); await p.waitForTimeout(300);
+  await p.click('dialog[open] .iconpick__item[aria-label="Git"]');
+  check('a logo is chosen from the gallery and previewed', (await p.locator('dialog[open] .appcard__icon--img img').count()) === 1 && (await p.locator('dialog[open] .iconpick__item[aria-pressed=true]').count()) === 1);
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Git perso")');
+  await p.click('.tbl tr:has-text("Git perso") button:has-text("Modifier")'); await p.waitForSelector('dialog[open]');
+  await p.click('dialog[open] [role=tab]:has-text("Mon image")');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGM4YaPxHxkzkC4AAJdYIrFAMbGxAAAAAElFTkSuQmCC', 'base64');
+  await p.setInputFiles('#icon-file', { name: 'logo.png', mimeType: 'image/png', buffer: png });
+  await p.waitForSelector('dialog[open] .appcard__icon--img img');
+  await p.setInputFiles('#icon-file', { name: 'logo.gif', mimeType: 'image/gif', buffer: Buffer.from('GIF89a') });
+  await p.waitForSelector('dialog[open] [role=alert]');
+  check('only PNG, JPEG, WebP and SVG images are accepted', (await p.locator('dialog[open] [role=alert]').textContent()).includes('Format non pris en charge'));
+  await p.click('dialog[open] button[type=submit]'); await p.waitForTimeout(800);
+  const apps = await p.evaluate(async () => await (await fetch('/api/v1/portal/apps')).json());
+  const mine = apps.find((a) => a.name === 'Git perso');
+  check('an uploaded image is stored with the app (scaled down, as a data image)', mine?.icon?.startsWith('data:image/png;base64,') && mine.icon.length < 2000, String(mine?.icon).slice(0, 40));
+  await p.click('[role=tab]:has-text("Applications")'); await p.waitForSelector('.appcard:has-text("Git perso")');
+  check('the app shows its image in the app center', (await p.locator('.appcard:has-text("Git perso") .appcard__icon--img img').count()) === 1);
+}
+
+// ---- 0.7.1: pager on the packages views, logos in the catalog
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`delete from host_packages where host_id='${h}' and name like 'zz-fill-%'`);
+  sql(`insert into host_packages (host_id,name,source,version) select '${h}', 'zz-fill-' || lpad(i::text, 3, '0'), 'system', '1.0' from generate_series(1, 70) i`);
+  await p.evaluate(() => { try { localStorage.removeItem('cp.pagesize'); } catch {} });
+
+  // fleet packages page: 25 a page by default, 50 on request, every package reachable
+  await p.goto(`${BASE}/packages/`); await p.waitForSelector('.tbl'); await p.fill('input[type=search]', 'zz-fill'); await p.waitForSelector('.pager');
+  const rowsNow = () => p.locator('.tbl tbody tr').count();
+  const range = async () => (await p.locator('.pager .muted').first().textContent()).trim();
+  await p.waitForFunction(() => document.querySelector('.pager .muted')?.textContent?.includes('sur 70'), null, { timeout: 8000 });
+  check('the packages page shows 25 packages a page and the range', (await rowsNow()) === 25 && (await range()).includes('1–25 sur 70'), await range());
+  check('the first page cannot go back', await p.locator('.pager button:has-text("Précédent")').isDisabled());
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelector('.tbl tbody tr td')?.textContent?.includes('zz-fill-026'), null, { timeout: 8000 });
+  check('next shows the following 25', (await rowsNow()) === 25 && (await p.locator('.pager').textContent()).includes('Page 2 sur 3'));
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 20, null, { timeout: 8000 });
+  check('the last page holds the rest and cannot go further', (await rowsNow()) === 20 && (await p.locator('.pager button:has-text("Suivant")').isDisabled()));
+  await p.selectOption('.pager select', '50'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 50, null, { timeout: 8000 });
+  check('50 a page is offered and starts again from the first page', (await rowsNow()) === 50 && (await range()).includes('1–50 sur 70'));
+  check('the choice is kept for next time', await p.evaluate(() => localStorage.getItem('cp.pagesize')) === '50');
+  await p.reload(); await p.waitForSelector('.tbl'); await p.fill('input[type=search]', 'zz-fill'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 50, null, { timeout: 8000 });
+  check('and used again after a reload', (await rowsNow()) === 50);
+  await p.fill('input[type=search]', 'zz-fill-07'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 1, null, { timeout: 8000 });
+  check('a new search goes back to the first page', (await rowsNow()) === 1 && (await p.locator('.pager').textContent()).includes('1–1 sur 1'));
+  await p.fill('input[type=search]', '');
+  await p.waitForFunction(() => !document.querySelector('.pager .muted')?.textContent?.includes('sur 1'), null, { timeout: 8000 });
+  check('with no search, every package of the fleet is counted (no 1000 ceiling)', Number((await range()).split(' sur ')[1]) >= 70, await range());
+
+  // the same pager on a host's packages
+  await p.evaluate(() => localStorage.setItem('cp.pagesize', '25'));
+  await p.goto(`${BASE}/host/?id=${h}&tab=packages`); await p.waitForSelector('.pager');
+  await p.click('button.chip[aria-pressed=true]:has-text("Mises à jour seulement")'); await p.waitForFunction(() => document.querySelectorAll('.tbl tbody tr').length === 25, null, { timeout: 8000 });
+  check('a host\'s packages are paged the same way', (await rowsNow()) === 25 && (await p.locator('.pager select').inputValue()) === '25');
+  await p.click('.pager button:has-text("Suivant")'); await p.waitForFunction(() => document.querySelector('.pager .muted')?.textContent?.includes('26–50'), null, { timeout: 8000 });
+  check('and turns pages', (await rowsNow()) === 25);
+  sql(`delete from host_packages where host_id='${h}' and name like 'zz-fill-%'`);
+
+  // logos in the catalog: the table, and a hand-written entry named like a known application
+  await p.goto(`${BASE}/portal/`); await p.click('[role=tab]:has-text("Catalogue")'); await p.waitForSelector('.tbl tr:has-text("Git perso")');
+  check('the catalog table shows each application\'s icon', (await p.locator('.tbl tr:has-text("Git perso") .appcard__icon--img img').count()) === 1 && (await p.locator('.tbl tr:has-text("Outils dev") .appcard__icon svg').count()) === 1 && (await p.locator('.tbl tr:has-text("htop") .appcard__icon--img img').count()) === 1);
+  await p.click('button:has-text("Nouvelle application")'); await p.waitForSelector('dialog[open]');
+  await p.fill('dialog[open] input >> nth=0', 'Firefox'); await p.fill('dialog[open] input.mono', 'firefox');
+  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Firefox")');
+  check('an application named like a known one gets its logo without choosing it', (await p.locator('.tbl tr:has-text("Firefox") .appcard__icon--img img').count()) === 1);
+  check('the editors are in the catalog: Zed with its logo, VS Code with the generic glyph and its command shown', (await p.locator('.tbl tr:has-text("Zed") .appcard__icon--img img').count()) === 1 && (await p.locator('.tbl tr:has-text("Visual Studio Code") .appcard__icon svg').count()) === 1 && (await p.locator('.tbl tr:has-text("Visual Studio Code")').textContent()).includes('commande → /usr/bin/code'));
+  // the tile of a logo is white whatever the theme, so dark logos stay readable
+  await p.click('[role=tab]:has-text("Applications")'); await p.waitForSelector('.appcard:has-text("Firefox")');
+  const tileBg = await p.locator('.appcard:has-text("Firefox") .appcard__icon--img').first().evaluate((e) => getComputedStyle(e).backgroundColor);
+  check('a logo sits on a white tile', tileBg === 'rgb(255, 255, 255)', tileBg);
+  await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("Rust")');
+  await p.screenshot({ path: `${HERE}/.run/logos-light.png`, clip: { x: 260, y: 100, width: 1100, height: 560 } });
+  await p.evaluate(() => { document.documentElement.dataset.theme = 'dark'; }); await p.waitForTimeout(200);
+  await p.screenshot({ path: `${HERE}/.run/logos-dark.png`, clip: { x: 260, y: 100, width: 1100, height: 560 } });
+  await p.evaluate(() => { document.documentElement.dataset.theme = 'light'; });
+}
+
+// ---- 0.7.2: update the system, Docker, or both
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  const count = (kind) => Number(sql(`select count(*) from tasks where host_id='${h}' and kind='${kind}'`));
+  sql(`update hosts set status='online' where id='${h}'`);
+  // a container update of its own: since 0.9 a catalog change pushes the settings, and the agent's fresh inventory
+  // replaces the container rows the 0.7 section wrote by hand
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-upd'`);
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:zz-upd','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27"}')`);
+  await p.goto(`${BASE}/host/?id=${h}`); await p.waitForSelector('.tabs');
+  const nSystem = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source <> 'docker'`));
+  const nDocker = Number(sql(`select count(*) from host_packages where host_id='${h}' and candidate is not null and source = 'docker'`));
+  await p.click('button[aria-label="Mettre à jour"]');
+  const items = (await p.locator('[role=menuitem]').allTextContents()).map((x) => x.trim());
+  check('with system and Docker updates pending, the host offers a choice with the count of each', items.length === 3 && items[0] === `Système · ${nSystem}` && items[1] === `Docker · ${nDocker}` && items[2] === `Système et Docker · ${nSystem + nDocker}`, JSON.stringify(items));
+  const before = { docker: count('docker'), patch: count('patch') };
+  await p.click('[role=menuitem]:has-text("Docker ·")');
+  check('choosing Docker explains that containers are recreated', (await p.locator('dialog[open]').textContent()).includes('recréés'));
+  await p.click('dialog[open] button:has-text("Confirmer")'); await p.waitForSelector('.toast');
+  check('Docker only creates a container task and no system patch', count('docker') === before.docker + 1 && count('patch') === before.patch, JSON.stringify({ before, now: { docker: count('docker'), patch: count('patch') } }));
+  // the same request again is refused while that task is open, and says why
+  await p.click('button[aria-label="Mettre à jour"]'); await p.click('[role=menuitem]:has-text("Docker ·")'); await p.click('dialog[open] button:has-text("Confirmer")');
+  await p.waitForSelector('.alert--error, .toast--error', { timeout: 8000 }).then(() => check('a second Docker request is refused while the first is open', true), () => check('a second Docker request is refused while the first is open', false));
+  await p.keyboard.press('Escape');
+
+  // the bulk bar of the hosts list
+  await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl tbody tr');
+  await p.locator('.tbl tbody tr', { has: p.locator(`a[href*="${h}"]`) }).locator('input[type=checkbox]').check();
+  check('the bulk bar offers the same choice for the selected hosts', (await p.locator('.alert button[aria-label="Mettre à jour"]').count()) === 1);
+  await p.click('.alert button[aria-label="Mettre à jour"]');
+  check('with the counts of the selection', (await p.locator('[role=menuitem]').allTextContents()).map((x) => x.trim()).join('|').includes(`Docker · ${nDocker}`));
+  await p.keyboard.press('Escape');
+}
+
+// ---- 0.7.4: apply the suggested Docker version
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`update hosts set status='online', modules = modules || '{"docker": true}' where id='${h}'`);
+  sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
+  const meta = (image, latest) => JSON.stringify({ image, state: 'running', latest }).replace(/'/g, "''");
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values
+    ('${h}','docker:zz-apply','docker','nginx:1.27 @aaaa',null,'${meta('nginx:1.27', { tag: '1.29.0', major: false, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
+    ('${h}','docker:zz-major','docker','grafana/grafana:10.4 @bbbb',null,'${meta('grafana/grafana:10.4', { tag: '11.0', major: true, same_major: null, apply: { mode: 'file', file: '/opt/stacks/zz/compose.yaml' } })}'),
+    ('${h}','docker:zz-manual','docker','redis:7 @cccc',null,'${meta('redis:7', { tag: '7.4', major: false, same_major: null, apply: { mode: 'manual', reason: 'l’étiquette vient d’une variable' } })}')`);
+  const openTasks = () => sql(`update tasks set status='failed' where host_id='${h}' and kind='docker' and status in ('queued','pending_approval','running')`);
+  const retagOf = () => sql(`select exec->'retag' from tasks where host_id='${h}' and kind='docker' and exec ? 'retag' order by created_at desc limit 1`);
+  openTasks();
+  await p.goto(`${BASE}/docker/`); await p.waitForSelector('.tbl tbody tr'); await p.fill('input[type=search]', 'zz-'); await p.waitForSelector('.tbl tbody tr:has-text("zz-apply")');
+  const row = (n) => p.locator(`.tbl tbody tr:has-text("${n}")`);
+  check('a suggestion the agent can apply has a button that names the version', (await row('zz-apply').locator('button:has-text("Passer à 1.29.0")').count()) === 1);
+  const manual = await row('zz-manual').textContent();
+  check('one it cannot apply says why and what to write by hand, with no button', manual.includes('À faire à la main : l’étiquette vient d’une variable') && manual.includes('redis:7.4') && (await row('zz-manual').locator('button:has-text("Passer à")').count()) === 0);
+  await row('zz-apply').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  const dlg = await p.locator('dialog[open]').textContent();
+  check('the confirmation shows the change, the file that will be edited and what happens next', dlg.includes('nginx:1.27 → nginx:1.29.0') && dlg.includes('/opt/stacks/zz/compose.yaml') && dlg.includes('recréé') && dlg.includes('point de restauration') && !dlg.includes('majeure'));
+  await p.click('dialog[open] button:has-text("Annuler")');
+  check('cancelling creates nothing', retagOf() === '');
+  await row('zz-apply').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  await p.click('dialog[open] button:has-text("Appliquer 1.29.0")'); await p.waitForSelector('.toast');
+  check('applying creates a container task that carries the new image, built from what the agent reported', retagOf() === '{"docker:zz-apply": "nginx:1.29.0"}', retagOf());
+  openTasks();
+
+  // a major version stays locked until it is acknowledged
+  await p.goto(`${BASE}/docker/`); await p.fill('input[type=search]', 'zz-'); await p.waitForSelector('.tbl tbody tr:has-text("zz-major")');
+  await row('zz-major').locator('button:has-text("Passer à")').click(); await p.waitForSelector('dialog[open]');
+  check('a major version change warns about migrations and keeps the button off until it is acknowledged', (await p.locator('dialog[open]').textContent()).includes('Changement de version majeure') && await p.locator('dialog[open] button:has-text("Appliquer 11.0")').isDisabled());
+  await p.check('dialog[open] input[type=checkbox]');
+  check('acknowledging enables it', await p.locator('dialog[open] button:has-text("Appliquer 11.0")').isEnabled());
+  await p.click('dialog[open] button:has-text("Appliquer 11.0")'); await p.waitForSelector('.toast');
+  check('and the major change goes through, with the confirmation recorded', retagOf() === '{"docker:zz-major": "grafana/grafana:11.0"}' && sql(`select details->>'allow_major' from audit_log where action='task.patch_requested' order by seq desc limit 1`) === 'true');
+  openTasks();
+  sql(`delete from host_packages where host_id='${h}' and name like 'docker:zz-%'`);
+}
+
+// ---- 0.9: Administration > Logs
+await p.goto(`${BASE}/`); await p.waitForSelector('.sidebar');
+await p.click('.sidebar a.navitem:has-text("Journaux")'); await p.waitForSelector('.tbl tbody tr');
+check('the Logs page lists what the server did, tasks included', (await p.locator('.tbl tbody tr:has-text("Tâches")').count()) >= 1);
+await p.click('button.chip:has-text("Serveur")'); await p.waitForTimeout(800);
+check('the server\'s own messages can be shown alone', (await p.locator('.tbl tbody tr').count()) >= 1 && (await p.locator('.tbl tbody tr:has-text("Tâches")').count()) === 0);
+await p.click('button.chip:has-text("Tâches")'); await p.selectOption('select', 'error'); await p.waitForTimeout(800);
+check('and filtered to errors', (await p.locator('.tbl tbody tr').count()) === 0 || (await p.locator('.tbl tbody tr:not(:has-text("erreur"))').count()) === 0);
+
+// ---- Docker migration console
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`update hosts set status='online', modules = modules || '{"docker": true}' where id='${h}'`);
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-pg'`);
+  const meta = JSON.stringify({ image: 'postgres:17-alpine', project: 'zz', service: 'db', compose: { dir: '/opt/stacks/zz', files: ['/opt/stacks/zz/compose.yaml'] }, latest: { tag: '18-alpine', major: true, same_major: null, apply: { mode: 'manual', reason: 'base de données' } } }).replace(/'/g, "''");
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:zz-pg','docker','postgres:17-alpine @aaaa',null,'${meta}')`);
+  await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tr:has-text("zz-pg")');
+  await p.click('.tbl tr:has-text("zz-pg") button:has-text("Console de migration")'); await p.waitForSelector('dialog[open] select');
+  check('the console offers the PostgreSQL template for a database', (await p.locator('dialog[open] select option:has-text("Migrate PostgreSQL to 18-alpine")').count()) === 1);
+  check('there is no AI button without a provider', (await p.locator('dialog[open] button:has-text("Faire avec l’IA")').count()) === 0);
+  await p.click('dialog[open] button:has-text("Charger ces lignes")');
+  check('loading it fills the editor, backup first', (await p.locator('dialog[open] textarea').count()) === 9 && (await p.locator('dialog[open] textarea').nth(1).inputValue()).includes('pg_dumpall'));
+  await p.fill('dialog[open] input[placeholder="18-alpine"]', '19-alpine');
+  await p.waitForSelector('dialog[open] select option:has-text("19-alpine")', { state: 'attached', timeout: 8000 }).then(() => check('another tag rebuilds the templates', true), () => check('another tag rebuilds the templates', false));
+  await p.locator('dialog[open] textarea').nth(0).fill('echo edited by a person');
+  await p.click('dialog[open] button:has-text("Lancer 9 étape(s)")'); await p.waitForSelector('button:has-text("Confirmer")');
+  await p.click('button:has-text("Confirmer")');
+  await p.waitForSelector('dialog[open] .logbox:has-text("dry-run")', { timeout: 45000 }).then(() => check('the run is followed in the window, step by step', true), () => check('the run is followed in the window, step by step', false));
+  const first = sql(`select details->'steps'->0->>'command' from audit_log where action='docker.shell_requested' order by seq desc limit 1`);
+  check('the exact commands, as edited, are in the audit log', first === 'echo edited by a person', first);
+  await p.keyboard.press('Escape');
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-pg'`);
+}
+
+// ---- Docker registries and the offline rule
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  sql(`delete from settings where key in ('docker_registries')`);
+  sql(`update hosts set modules = modules || '{"docker": true}' where id = (select id from hosts order by enrolled_at limit 1)`);
+  await p.goto(`${BASE}/settings/`); await p.waitForSelector('section.panel:has-text("Registres Docker")');
+  const conn = 'section.panel:has(h2:has-text("Connectivité"))';
+  await p.selectOption(`${conn} select`, 'air_gapped'); await p.click(`${conn} button:has-text("Enregistrer")`);
+  await p.waitForSelector('.alert--error:has-text("local Docker registry")', { timeout: 6000 }).then(() => check('offline mode is refused with the Docker module on and no local registry, and says how to fix it', true), () => check('offline mode is refused with the Docker module on and no local registry, and says how to fix it', false));
+  // add a local registry
+  const card = 'section.panel:has(h2:has-text("Registres Docker"))';
+  await p.click(`${card} button:has-text("Ajouter un registre")`);
+  await p.fill(`${card} input[placeholder="Harbor"]`, 'Harbor labo'); await p.fill(`${card} input[placeholder="registry.lan:5000"]`, 'registry.lan:5000');
+  await p.fill(`${card} input[placeholder="docker.io, ghcr.io"]`, 'docker.io, ghcr.io');
+  await p.fill(`${card} input[autocomplete=off]`, 'robot'); await p.fill(`${card} input[type=password]`, 'p4ss-secret');
+  await p.click(`${card} button:has-text("Enregistrer")`); await p.waitForSelector('.toast');
+  const saved = sql(`select value->'registries'->0->>'host' || '|' || (value->'registries'->0->>'kind') || '|' || (value->'registries'->0->'mirror_of')::text from settings where key='docker_registries'`);
+  check('a local registry is saved with its mirrored registries', saved === 'registry.lan:5000|local|["docker.io", "ghcr.io"]', saved);
+  const leak = sql(`select count(*) from settings where key='docker_registries' and value::text like '%p4ss-secret%'`);
+  check('its password is stored encrypted, not in clear', leak === '0', leak);
+  await p.reload(); await p.waitForSelector(`${card} input[placeholder="••••••••"]`);
+  check('and the page shows that a password is stored without showing it', (await p.locator(`${card} input[type=password]`).inputValue()) === '');
+  // now offline is allowed
+  await p.selectOption(`${conn} select`, 'air_gapped'); await p.click(`${conn} button:has-text("Enregistrer")`); await p.waitForSelector('.toast');
+  check('offline mode is accepted once a local registry exists', sql(`select value->>'mode' from settings where key='connectivity'`) === 'air_gapped');
+  check('and the registries card says only local registries are used', (await p.locator(`${card} .alert--info:has-text("seuls les registres locaux")`).count()) === 1);
+  // the Docker page explains when a local registry is missing (state set directly: the server refuses to create it)
+  sql(`delete from settings where key='docker_registries'`);
+  await p.goto(`${BASE}/docker/`); await p.waitForSelector('.alert--error:has-text("Mode hors ligne sans registre local")', { timeout: 8000 }).then(() => check('the Docker page says why the features are off, and where to configure a registry', true), () => check('the Docker page says why the features are off, and where to configure a registry', false));
+  sql(`update settings set value = '{"mode": "connected"}' where key='connectivity'`);
 }
 
 // ---- language + logout

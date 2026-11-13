@@ -14,7 +14,7 @@ cargo test --workspace
 | `server` | `engine_*`, `crypto`, `auth`, `audit`, `planner`, `scheduler` | Rule language, risk and decision logic, maintenance windows, permission patterns, CSRF host detection |
 | `server` | `db_planner`, `db_audit_and_auth` | **Against real PostgreSQL**: planner, waivers, audit chain and tamper detection, concurrent appends, bootstrap and lock-out guard, command dispatch |
 | `server` | `http_api` | **Real HTTP stack on a real database**: login, lockout, forced password change, CSRF over HTTP/2-style requests, RBAC and privilege escalation, enrolment, agent JWT replay |
-| `agent` | `pkg_*`, `exec`, `isolate`, `health`, … | Package-manager output parsers (apt, pacman, pkg), sandboxed execution, firewall rule generation |
+| `agent` | `pkg_*`, `exec`, `isolate`, `health`, … | Package-manager output parsers (apt, pacman), sandboxed execution, firewall rule generation |
 | `server` | `http_fleet` | **Add agent** distribution (installer targets the right address and rejects hostile `Host` headers; binaries listed, served, checksummed, no path escape), fleet-wide package aggregation and dashboard aggregates |
 | `agent` | `pipeline`, `link` | The real task runner end to end with a simulated service: patch, soak, automatic rollback, double failure (quarantine and evidence), replay, manual rollback; command verification on the wire |
 
@@ -35,8 +35,8 @@ Two bugs were only visible end to end, and each has a test that fails without th
 
 ## Not covered
 
-The apt, pacman and FreeBSD `pkg` command paths are tested through their output parsers and the mock backend,
-not on those systems; `nft` and `pf` rules are generated and checked but not applied. The web UI is covered by the browser suite
+The apt and pacman command paths are tested through their output parsers and the mock backend,
+not on those systems; `nft` rules are generated and checked but not applied. The web UI is covered by the browser suite
 below, which is not part of `cargo test`.
 
 ## Browser tests
@@ -48,6 +48,16 @@ end to end (a real agent enrols with the wizard's token and the wizard must noti
 cd frontend && npx playwright install chromium && npm run build && npm run e2e
 ```
 
+Two tests are ignored by default because they need the outside world; run them on a machine where throw-away
+containers are fine:
+
+```sh
+# applying a new Docker version against a real Docker daemon with compose (pulls two small nginx images)
+cargo test -p croustypatch-agent --test docker_live -- --ignored --nocapture --test-threads=1
+# the newest versions of real images, against the real registries
+cargo test -p croustypatch-agent --test registry_live -- --ignored --nocapture
+```
+
 The generated installer script was also run for real in a clean Debian container (strict POSIX `sh`): missing token
 refused, checksum verified and a forced mismatch refused, install and enrolment, idempotent re-run, agent connected.
-The systemd unit it writes was validated with `systemd-analyze`; the FreeBSD branch and a real systemd restart were not exercised.
+The systemd unit it writes was validated with `systemd-analyze`; a real systemd restart was not exercised.

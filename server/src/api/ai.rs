@@ -44,7 +44,7 @@ pub async fn review_task(state: web::Data<AppState>, user: AuthUser, path: web::
             Ok((t, h))
         })
         .await?;
-    if task.kind != "patch" {
+    if !matches!(task.kind.as_str(), "patch" | "docker") {
         return Err(ApiError::bad("only patch tasks can be reviewed"));
     }
     let baseline = task.decision.as_ref().and_then(|d| d.get("assessment")).cloned().unwrap_or(Value::Null);

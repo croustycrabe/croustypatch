@@ -2,7 +2,7 @@
 # Enrol first:  CROUSTYPATCH_ENROLL_TOKEN=... croustypatch-agent enroll --server https://patch.example.com
 [Unit]
 Description=CroustyPatch agent
-Documentation=https://croustylab.example/croustypatch
+Documentation=https://github.com/croustycrabe/croustypatch
 After=network-online.target
 Wants=network-online.target
 

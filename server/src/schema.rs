@@ -85,6 +85,9 @@ diesel::table! {
         last_inventory_at -> Nullable<Timestamptz>,
         enrolled_at -> Timestamptz,
         created_at -> Timestamptz,
+        modules -> Jsonb,
+        metrics -> Jsonb,
+        metrics_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -109,6 +112,7 @@ diesel::table! {
         revoked -> Bool,
         created_by -> Text,
         created_at -> Timestamptz,
+        modules -> Nullable<Jsonb>,
     }
 }
 
@@ -121,6 +125,7 @@ diesel::table! {
         candidate -> Nullable<Text>,
         is_security -> Bool,
         cves -> Jsonb,
+        meta -> Jsonb,
     }
 }
 
@@ -180,6 +185,7 @@ diesel::table! {
         batch_key -> Nullable<Text>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        deadline_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -300,25 +306,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    compliance_reports (id) {
-        id -> Uuid,
-        host_id -> Uuid,
-        task_id -> Nullable<Uuid>,
-        profile -> Text,
-        datastream -> Text,
-        passed -> Int4,
-        failed -> Int4,
-        not_applicable -> Int4,
-        other -> Int4,
-        score -> Float8,
-        failed_rules -> Jsonb,
-        results_sha256 -> Text,
-        collected_at -> Timestamptz,
-        created_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
     portal_apps (id) {
         id -> Uuid,
         name -> Text,
@@ -326,15 +313,14 @@ diesel::table! {
         category -> Text,
         description -> Text,
         icon -> Text,
-        packages -> Jsonb,
         group_ids -> Jsonb,
         enabled -> Bool,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        recipes -> Jsonb,
     }
 }
 
-diesel::joinable!(compliance_reports -> hosts (host_id));
 diesel::joinable!(api_tokens -> users (user_id));
 diesel::joinable!(policy_groups -> policies (policy_id));
 diesel::joinable!(policy_groups -> host_groups (group_id));
@@ -344,5 +330,60 @@ diesel::joinable!(task_events -> tasks (task_id));
 diesel::allow_tables_to_appear_in_same_query!(
     roles, users, dashboard_layouts, settings, host_groups, hosts, host_group_members,
     enrollment_tokens, host_packages, vulnerabilities, policies, policy_groups, tasks,
-    task_events, waivers, audit_log, notification_channels, notification_rules, notifications, api_tokens, compliance_reports, portal_apps,
+    task_events, waivers, audit_log, notification_channels, notification_rules, notifications, api_tokens, portal_apps,
 );
+
+diesel::table! {
+    reports (id) {
+        id -> Uuid,
+        name -> Text,
+        enabled -> Bool,
+        frequency -> Text,
+        weekday -> Int4,
+        day_of_month -> Int4,
+        send_at -> Text,
+        timezone -> Text,
+        language -> Text,
+        sections -> Jsonb,
+        group_ids -> Jsonb,
+        emails -> Jsonb,
+        channel_ids -> Jsonb,
+        skip_if_empty -> Bool,
+        last_run_at -> Nullable<Timestamptz>,
+        last_slot_at -> Nullable<Timestamptz>,
+        attempts -> Int4,
+        last_status -> Text,
+        last_error -> Text,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    report_runs (id) {
+        id -> Uuid,
+        report_id -> Uuid,
+        at -> Timestamptz,
+        trigger -> Text,
+        status -> Text,
+        error -> Text,
+        recipients -> Jsonb,
+        title -> Text,
+    }
+}
+
+diesel::joinable!(report_runs -> reports (report_id));
+diesel::allow_tables_to_appear_in_same_query!(reports, report_runs);
+
+diesel::table! {
+    host_metrics (host_id, at) {
+        host_id -> Uuid,
+        at -> Timestamptz,
+        cpu_pct -> Nullable<Float4>,
+        mem_pct -> Nullable<Float4>,
+        load_1m -> Nullable<Float4>,
+    }
+}
+
+diesel::joinable!(host_metrics -> hosts (host_id));
+diesel::allow_tables_to_appear_in_same_query!(host_metrics, hosts);

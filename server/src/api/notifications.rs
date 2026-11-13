@@ -40,10 +40,7 @@ fn http_url(v: &str, what: &str) -> ApiResult<()> {
     if ok { Ok(()) } else { Err(ApiError::bad(format!("{what} must be an http(s) URL"))) }
 }
 
-fn email_ok(v: &str) -> bool {
-    let v = v.trim();
-    v.len() <= 254 && v.contains('@') && !v.starts_with('@') && !v.ends_with('@') && !v.chars().any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
-}
+use super::email_ok;
 
 /// Keep only the known settings of each kind, validated.
 pub fn clean_config(kind: &str, cfg: &Value) -> ApiResult<Value> {
@@ -85,6 +82,8 @@ pub fn clean_config(kind: &str, cfg: &Value) -> ApiResult<Value> {
             if let Some(bad) = to.iter().find(|t| !email_ok(t)) {
                 return Err(ApiError::bad(format!("not an e-mail address: {bad}")));
             }
+            // `to` is no longer asked for (recipients belong to the rules and reports that use the channel); an
+            // address stored by an older version is kept as a last-resort fallback.
             Ok(json!({ "host": host, "port": port, "tls": tls, "username": s("username"), "from": s("from"), "to": to }))
         }
         _ => Err(ApiError::bad(format!("kind must be one of: {}", CHANNEL_KINDS.join(", ")))),
@@ -149,12 +148,19 @@ pub async fn update_channel(state: web::Data<AppState>, user: AuthUser, path: we
     let id = path.into_inner();
     let b = body.into_inner();
     name_ok("name", &b.name)?;
-    let config = clean_config(&b.kind, &b.config)?;
+    let mut config = clean_config(&b.kind, &b.config)?;
     let sealed: Option<String> = b.secret.map(|s| if s.is_empty() { String::new() } else { state.master.encrypt(s.as_bytes()) });
     let row: ChannelRow = state
         .db(move |c| {
             c.transaction(|c| {
                 let target = notification_channels::table.find(id);
+                // The form does not send `to` any more: keep what an older version stored.
+                if b.config.get("to").is_none() {
+                    let old: Option<Value> = target.select(notification_channels::config).first(c).optional()?;
+                    if let Some(to) = old.as_ref().and_then(|o| o.get("to")).filter(|t| t.as_array().is_some_and(|a| !a.is_empty())) {
+                        config["to"] = to.clone();
+                    }
+                }
                 let n = diesel::update(target).set((notification_channels::name.eq(b.name.trim()), notification_channels::kind.eq(&b.kind), notification_channels::config.eq(&config), notification_channels::enabled.eq(b.enabled), notification_channels::updated_at.eq(Utc::now()))).execute(c)?;
                 if n == 0 {
                     return Err(ApiError::NotFound("channel"));
@@ -187,15 +193,37 @@ pub async fn delete_channel(state: web::Data<AppState>, user: AuthUser, path: we
 }
 
 /// Send a test message now and report the outcome (the error text helps fix a wrong host or token).
-pub async fn test_channel(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
+#[derive(Deserialize, Default)]
+pub struct TestBody {
+    /// Who to send the test to (e-mail channels). Defaults to the caller's profile address.
+    #[serde(default)]
+    to: String,
+}
+
+pub async fn test_channel(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, body: Option<web::Json<TestBody>>) -> ApiResult<HttpResponse> {
     user.require("settings:write")?;
     let id = path.into_inner();
+    let asked = body.map(|b| b.into_inner().to.trim().to_string()).unwrap_or_default();
+    if !asked.is_empty() && !email_ok(&asked) {
+        return Err(ApiError::bad(format!("not an e-mail address: {asked}")));
+    }
     let st = state.clone();
     let ch: Channel = state.db(move |c| Channel::load(c, &st.master, id).map_err(|_| ApiError::NotFound("channel"))).await?;
     let kind = notify::catalog_entry("notification.test").expect("catalog");
     let (title, body) = notify::render(kind, None, &json!({ "message": format!("Sent by {} from the notification settings.", user.username) }));
-    let to = if ch.kind == "smtp" { user_email(&state, &user.username).await?.into_iter().collect() } else { vec![] };
-    let m = Message { id: Uuid::new_v4(), event: "notification.test".into(), severity: "info".into(), title, body, payload: json!({ "test": true }), recipients: to };
+    let to: Vec<String> = if ch.kind == "smtp" {
+        // The address asked for, else the caller's profile, else (old channels) the address stored with the channel.
+        let from_profile = if asked.is_empty() { user_email(&state, &user.username).await? } else { None };
+        let legacy = ch.config.get("to").and_then(|v| v.as_array()).and_then(|a| a.first()).and_then(|v| v.as_str()).map(str::to_owned);
+        let one = (!asked.is_empty()).then(|| asked.clone()).or(from_profile).or(legacy);
+        match one {
+            Some(a) => vec![a],
+            None => return Err(ApiError::bad("tell me who to send the test to: enter an address, or set your e-mail in your account")),
+        }
+    } else {
+        vec![]
+    };
+    let m = Message { id: Uuid::new_v4(), event: "notification.test".into(), severity: "info".into(), title, body, payload: json!({ "test": true }), recipients: to, html: None };
     let res = notify::send(&ch, &m).await;
     let ok = res.is_ok();
     let err = res.err().map(|e| format!("{e:#}"));

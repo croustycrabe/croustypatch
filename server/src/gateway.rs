@@ -92,7 +92,7 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
             c.transaction::<_, ApiError, _>(|c| {
                 let now = Utc::now();
                 // Atomic claim: only succeeds while the token is valid and has uses left.
-                let claimed: Option<(Uuid, Option<Uuid>, String, String)> = diesel::update(
+                let claimed: Option<(Uuid, Option<Uuid>, String, String, Option<Value>)> = diesel::update(
                     enrollment_tokens::table
                         .filter(enrollment_tokens::token_hash.eq(&hash))
                         .filter(enrollment_tokens::revoked.eq(false))
@@ -100,16 +100,25 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                         .filter(enrollment_tokens::used_count.lt(enrollment_tokens::max_uses)),
                 )
                 .set(enrollment_tokens::used_count.eq(enrollment_tokens::used_count + 1))
-                .returning((enrollment_tokens::id, enrollment_tokens::group_id, enrollment_tokens::environment, enrollment_tokens::comm_mode))
+                .returning((enrollment_tokens::id, enrollment_tokens::group_id, enrollment_tokens::environment, enrollment_tokens::comm_mode, enrollment_tokens::modules))
                 .get_result(c)
                 .optional()?;
-                let Some((token_id, group_id, environment, comm_mode)) = claimed else {
+                let Some((token_id, group_id, environment, comm_mode, token_modules)) = claimed else {
                     // Returned as Ok(None), not Err: an Err would roll the transaction back and erase this audit entry.
                     audit::record(c, Event::new("agent", "agent.enroll_rejected").details(json!({"hostname": b.facts.hostname})).ip(&ip))?;
                     return Ok(None);
                 };
                 let f = &b.facts;
-                let asset_type = if f.is_laptop { "laptop" } else { "server" };
+                // Detected at enrolment only: administrators may change it afterwards.
+                let asset_type = if f.is_laptop { "laptop" } else if f.is_desktop { "workstation" } else { "server" };
+                // Modules chosen when the token was made, else today's defaults.
+                // Not decided by the person who made the token: left to the machine type.
+                let token_modules_unset = token_modules.as_ref().is_none_or(|m| m.get("portal_updates").is_none());
+                let mut modules = token_modules.map(|m| crate::modules::parse(&m)).unwrap_or_else(|| crate::modules::defaults(c));
+                // People sit at laptops and workstations: they may update them from the app center. Servers: no.
+                if token_modules_unset && matches!(asset_type, "laptop" | "workstation") {
+                    modules.portal_updates = true;
+                }
                 let host_id: Uuid = diesel::insert_into(hosts::table)
                     .values((
                         hosts::hostname.eq(&f.hostname),
@@ -124,6 +133,7 @@ pub async fn enroll(req: HttpRequest, state: web::Data<AppState>, body: web::Jso
                         hosts::comm_mode.eq(comm_mode),
                         hosts::last_seen_at.eq(now),
                         hosts::heartbeat_secs.eq(heartbeat as i32),
+                        hosts::modules.eq(serde_json::to_value(modules).unwrap_or_default()),
                     ))
                     .returning(hosts::id)
                     .get_result(c)?;
@@ -193,6 +203,7 @@ struct NewPkg<'a> {
     candidate: Option<&'a str>,
     is_security: bool,
     cves: Value,
+    meta: Value,
 }
 
 #[derive(Insertable)]
@@ -240,16 +251,47 @@ fn touch(c: &mut PgConnection, host_id: Uuid, eco: Option<bool>, now: DateTime<U
     Ok(())
 }
 
+/// Keep the latest resource reading of a host, and one point of history every five minutes.
+fn store_metrics(c: &mut PgConnection, host_id: Uuid, h: &Heartbeat, now: DateTime<Utc>) -> ApiResult<()> {
+    use crate::schema::host_metrics;
+    let Some(m) = &h.metrics else { return Ok(()) };
+    let pct = |used: u64, total: u64| (total > 0).then(|| (used as f64 / total as f64 * 100.0) as f32);
+    let mem_pct = pct(m.mem_used_mb, m.mem_total_mb);
+    let reading = json!({
+        "cpu_pct": m.cpu_pct, "mem_total_mb": m.mem_total_mb, "mem_used_mb": m.mem_used_mb, "mem_pct": mem_pct,
+        "swap_total_mb": m.swap_total_mb, "swap_used_mb": m.swap_used_mb,
+        "load_1m": h.load_1m, "load_5m": m.load_5m, "load_15m": m.load_15m, "uptime_secs": h.uptime_secs, "disks": m.disks,
+    });
+    diesel::update(hosts::table.find(host_id)).set((hosts::metrics.eq(reading), hosts::metrics_at.eq(Some(now)))).execute(c)?;
+    let last: Option<DateTime<Utc>> = host_metrics::table.filter(host_metrics::host_id.eq(host_id)).select(diesel::dsl::max(host_metrics::at)).first(c)?;
+    if last.is_none_or(|l| now - l >= Duration::minutes(5)) {
+        diesel::insert_into(host_metrics::table)
+            .values((host_metrics::host_id.eq(host_id), host_metrics::at.eq(now), host_metrics::cpu_pct.eq(m.cpu_pct), host_metrics::mem_pct.eq(mem_pct), host_metrics::load_1m.eq(Some(h.load_1m))))
+            .on_conflict_do_nothing()
+            .execute(c)?;
+    }
+    Ok(())
+}
+
 fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: DateTime<Utc>) -> ApiResult<()> {
     c.transaction::<_, ApiError, _>(|c| {
         apply_facts(c, host_id, &inv.facts)?;
+        // AUR-built apps with a newer version (agents 0.9+), kept with the facts for the app center pages
+        if !inv.app_updates.is_empty() {
+            let mut f = serde_json::to_value(&inv.facts).unwrap_or_default();
+            f["app_updates"] = serde_json::to_value(&inv.app_updates).unwrap_or_default();
+            diesel::update(hosts::table.find(host_id)).set(hosts::facts.eq(f)).execute(c)?;
+        }
         // The inventory is complete each time: replace every source. Module data (containers, helper scripts) is
-        // kept only while its module is switched on in Settings > Modules.
+        // kept only while its module is switched on for this host.
+        // What was pending before this inventory, to tell what is new (one alert per new update, not one per inventory).
+        let first_inventory = hosts::table.find(host_id).select(hosts::last_inventory_at).first::<Option<DateTime<Utc>>>(c)?.is_none();
+        let before: Vec<(String, String, Option<String>, Value)> = host_packages::table.filter(host_packages::host_id.eq(host_id)).select((host_packages::name, host_packages::source, host_packages::candidate, host_packages::meta)).load(c)?;
         diesel::delete(host_packages::table.filter(host_packages::host_id.eq(host_id))).execute(c)?;
-        let modules = crate::compliance::modules(c);
+        let modules = crate::modules::for_host(c, host_id)?;
         let keep = |src: &str| match src {
-            "docker" => crate::compliance::module_on(&modules, "docker"),
-            "helper-script" => crate::compliance::module_on(&modules, "helper_script"),
+            "docker" => modules.docker,
+            "helper-script" => modules.helper_script,
             _ => true,
         };
         // (name, source) is the key: the last entry wins on duplicates (e.g. multi-arch).
@@ -268,6 +310,7 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
                 candidate: p.candidate.as_deref().filter(|cand| *cand != p.version),
                 is_security: p.is_security && p.candidate.is_some(),
                 cves: json!(p.cves.iter().filter(|x| cve_re().is_match(x)).collect::<Vec<_>>()),
+                meta: if p.meta.is_object() { p.meta.clone() } else { json!({}) },
             })
             .collect();
         for chunk in rows.chunks(2000) {
@@ -279,8 +322,54 @@ fn store_inventory(c: &mut PgConnection, host_id: Uuid, inv: &Inventory, now: Da
             diesel::insert_into(vulnerabilities::table).values(chunk).on_conflict_do_nothing().execute(c)?;
         }
         diesel::update(hosts::table.find(host_id)).set((hosts::reboot_required.eq(inv.reboot_required), hosts::last_inventory_at.eq(now))).execute(c)?;
+        if !first_inventory {
+            let after: Vec<(String, String, Option<String>, Value)> = host_packages::table.filter(host_packages::host_id.eq(host_id)).select((host_packages::name, host_packages::source, host_packages::candidate, host_packages::meta)).load(c)?;
+            alert_new_updates(c, host_id, &before, &after)?;
+        }
         Ok(())
     })
+}
+
+/// What an inventory row offers: a newer package or image (`candidate`), or for a container a newer version tag.
+fn offers(row: &(String, String, Option<String>, Value)) -> Vec<String> {
+    let mut v = vec![];
+    if let Some(c) = &row.2 {
+        v.push(c.clone());
+    }
+    if row.1 == "docker" {
+        if let Some(t) = row.3.pointer("/latest/tag").and_then(|t| t.as_str()) {
+            v.push(format!("tag {t}"));
+        }
+    }
+    v
+}
+
+/// Separate alerts for new system updates and new container updates: only what was not pending before.
+pub fn alert_new_updates(c: &mut PgConnection, host_id: Uuid, before: &[(String, String, Option<String>, Value)], after: &[(String, String, Option<String>, Value)]) -> ApiResult<()> {
+    let known: HashSet<(String, String)> = before.iter().flat_map(|r| offers(r).into_iter().map(move |o| (r.0.clone(), o))).collect();
+    let (mut system, mut docker, mut security) = (vec![], vec![], 0);
+    for r in after {
+        let new: Vec<String> = offers(r).into_iter().filter(|o| !known.contains(&(r.0.clone(), o.clone()))).collect();
+        if new.is_empty() {
+            continue;
+        }
+        if r.1 == "docker" {
+            docker.push(format!("{} ({})", r.0.trim_start_matches("docker:"), new.join(", ").replace(" @", " ")));
+        } else {
+            security += host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::name.eq(&r.0)).filter(host_packages::is_security.eq(true)).count().get_result::<i64>(c)?;
+            system.push(r.0.clone());
+        }
+    }
+    let list = |v: &[String]| { let mut s = v.iter().take(10).cloned().collect::<Vec<_>>().join(", "); if v.len() > 10 { s.push_str(&format!(" and {} more", v.len() - 10)); } s };
+    if !system.is_empty() {
+        let msg = format!("{} new system update(s){}: {}", system.len(), if security > 0 { format!(" ({security} security)") } else { String::new() }, list(&system));
+        audit::record(c, Event::new("agent", "updates.system_available").target("host", &host_id.to_string()).host(host_id).details(json!({ "count": system.len(), "security": security, "packages": system, "message": msg })))?;
+    }
+    if !docker.is_empty() {
+        let msg = format!("{} new container update(s): {}", docker.len(), list(&docker));
+        audit::record(c, Event::new("agent", "updates.docker_available").target("host", &host_id.to_string()).host(host_id).details(json!({ "count": docker.len(), "containers": docker, "message": msg })))?;
+    }
+    Ok(())
 }
 
 fn can_agent_set(s: TaskStatus) -> bool {
@@ -359,7 +448,10 @@ pub async fn handle_messages(state: &web::Data<AppState>, host_id: Uuid, msgs: V
                     apply_facts(c, host_id, &facts)?;
                     touch(c, host_id, Some(facts.on_battery && facts.is_laptop), now)
                 }
-                AgentMessage::Heartbeat(h) => touch(c, host_id, Some(h.eco), now),
+                AgentMessage::Heartbeat(h) => {
+                    store_metrics(c, host_id, &h, now)?;
+                    touch(c, host_id, Some(h.eco), now)
+                }
                 AgentMessage::Inventory(inv) => {
                     store_inventory(c, host_id, &inv, now)?;
                     touch(c, host_id, Some(inv.facts.on_battery && inv.facts.is_laptop), now)
@@ -368,7 +460,6 @@ pub async fn handle_messages(state: &web::Data<AppState>, host_id: Uuid, msgs: V
                     store_task_update(c, host_id, &u, now)?;
                     touch(c, host_id, None, now)
                 }
-                AgentMessage::Compliance { task_id, report } => crate::compliance::store(c, host_id, task_id, &report),
             })
             .await;
         if let Err(e) = res {
@@ -388,6 +479,7 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
         .filter(tasks::host_id.eq(host_id))
         .filter(tasks::status.eq("queued"))
         .filter(tasks::scheduled_for.le(now))
+        .filter(tasks::deadline_at.is_null().or(tasks::deadline_at.gt(now)))
         .order(tasks::created_at.asc())
         .select((tasks::id, tasks::kind, tasks::packages, tasks::exec, tasks::parent_task_id))
         .limit(10)
@@ -396,8 +488,11 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
     for (id, kind, packages, exec, parent) in due {
         let action = match TaskKind::parse(&kind) {
             Some(TaskKind::Scan) => CommandAction::Scan,
-            Some(TaskKind::Patch) => CommandAction::ApplyUpdates {
+            // Container image updates are applied by the same agent routine, as a task of their own.
+            Some(TaskKind::Patch) | Some(TaskKind::Docker) => CommandAction::ApplyUpdates {
                 packages: packages.as_array().map(|a| a.iter().filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect()).unwrap_or_default(),
+                // a new version of containers: the image to move each one to (set only by the server, for a container task)
+                retag: if kind == "docker" { exec.as_ref().and_then(|e| e.get("retag")).and_then(|r| r.as_object()).map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect()).unwrap_or_default() } else { Default::default() },
                 exec: exec.and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
             },
             Some(TaskKind::Rollback) => match parent {
@@ -414,15 +509,30 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
                 CommandAction::App {
                     install: e.get("install").and_then(|v| v.as_bool()).unwrap_or(true),
                     packages: e.get("packages").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                    command: e.get("command").filter(|v| v.is_object()).and_then(|v| serde_json::from_value(v.clone()).ok()),
+                    user: e.get("user").and_then(|v| v.as_str()).map(str::to_owned),
                 }
             }
-            Some(TaskKind::Compliance) => CommandAction::ComplianceScan { profile: exec.as_ref().and_then(|e| e.get("profile")).and_then(|v| v.as_str()).unwrap_or("").to_string() },
+            Some(TaskKind::AgentUpdate) => {
+                let e = exec.clone().unwrap_or_default();
+                let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version"), gui_sha256: e.get("gui_sha256").and_then(|v| v.as_str()).map(str::to_owned) }
+            }
             Some(TaskKind::Reboot) => {
                 let e = exec.unwrap_or_default();
                 CommandAction::Reboot {
                     delay_minutes: e.get("delay_minutes").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                     message: e.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 }
+            }
+            Some(TaskKind::DockerShell) => {
+                let e = exec.unwrap_or_default();
+                let steps: Vec<croustypatch_common::protocol::ShellStep> = e.get("steps").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                if croustypatch_common::protocol::check_shell_steps(&steps).is_err() {
+                    mark_failed(c, id, "the migration steps are not valid", now)?;
+                    continue;
+                }
+                CommandAction::DockerShell { container: e.get("container").and_then(|v| v.as_str()).unwrap_or("").to_string(), steps, source: e.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string() }
             }
             None => {
                 mark_failed(c, id, "unknown task kind", now)?;
@@ -470,14 +580,14 @@ pub async fn telemetry(state: web::Data<AppState>, agent: AgentAuth, body: web::
     let msgs = body.into_inner().messages;
     handle_messages(&state, host_id, msgs).await;
     let st = state.clone();
-    let (commands, hb) = state
+    let (commands, hb, settings) = state
         .db(move |c| {
             let cmds = claim_due_commands(c, &st, host_id)?;
             let hb: i32 = hosts::table.find(host_id).select(hosts::heartbeat_secs).first(c)?;
-            Ok((cmds, hb))
+            Ok((cmds, hb, crate::docker_registry::agent_settings(c, &st, host_id)?))
         })
         .await?;
-    Ok(HttpResponse::Ok().json(TelemetryResponse { commands, heartbeat_secs: hb.max(10) as u64 }))
+    Ok(HttpResponse::Ok().json(TelemetryResponse { commands, heartbeat_secs: hb.max(10) as u64, settings }))
 }
 
 // ---------------------------------------------------------------- websocket tunnel
@@ -510,8 +620,11 @@ pub async fn ws_tunnel(req: HttpRequest, body: web::Payload, state: web::Data<Ap
                 incoming = stream.next() => match incoming {
                     Some(Ok(actix_ws::AggregatedMessage::Text(text))) => match serde_json::from_str::<AgentMessage>(&text) {
                         Ok(m) => {
-                            let had_update = matches!(m, AgentMessage::TaskUpdate(_) | AgentMessage::Hello { .. });
+                            let hello = matches!(m, AgentMessage::Hello { .. });
+                            let had_update = hello || matches!(m, AgentMessage::TaskUpdate(_));
                             handle_messages(&st, host_id, vec![m]).await;
+                            // The hello carries the agent's capabilities: only then do we know it reads its settings.
+                            if hello { crate::modules::push_settings(&st, host_id).await; }
                             if had_update { push_pending(&st, host_id).await; }
                         }
                         Err(e) => tracing::warn!(%host_id, error = %e, "bad agent message"),

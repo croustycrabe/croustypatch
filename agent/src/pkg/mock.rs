@@ -52,7 +52,7 @@ impl Mock {
     }
 
     pub async fn inventory(&self) -> Result<Vec<PackageEntry>> {
-        Ok(self.load()?.installed.into_iter().map(|p| PackageEntry { name: p.name, version: p.version, candidate: p.candidate, is_security: p.is_security, cves: p.cves, source: "system".into() }).collect())
+        Ok(self.load()?.installed.into_iter().map(|p| PackageEntry { name: p.name, version: p.version, candidate: p.candidate, is_security: p.is_security, cves: p.cves, source: "system".into(), meta: Default::default() }).collect())
     }
 
     pub fn snapshot(&self, task: Uuid, names: &[String], installed: &HashMap<String, String>) -> Result<RestorePoint> {

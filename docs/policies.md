@@ -4,8 +4,17 @@ A policy says which hosts it covers (through groups), how risky an update is, wh
 how to watch the result. Policies are edited in the UI (**politiques**) or through the API; the stored
 form is JSON.
 
-Hosts are matched by group: **a policy with no group applies to no host**. When several policies match a
-host, the one with the lowest `priority` number whose `target_scope` is true wins.
+Hosts are matched by group: **a policy with no group applies to no host**, and a host in no group is patched by no
+policy (the host page says so). When several policies match a host, they are tried in `priority` order (lowest
+number first, then by name) and the first one that is in scope, **has something to do and can act now** decides:
+
+- a policy that takes nothing from the pending updates (for example "security only" while only ordinary updates are
+  waiting) does not hold back the ones after it;
+- a policy that is automatic but waiting for its patch day does not either, so two policies with different patch days
+  each patch the host on their own day.
+
+The host page (**Correctifs automatiques**) shows which policy applies, what each considered policy would take, and the
+next patch days; the policy list shows how many hosts each policy covers and its next patch day.
 
 ## Reference
 
@@ -24,7 +33,7 @@ host, the one with the lowest `priority` number whose `target_scope` is true win
     { "conditions": { "contextual_risk_min": "High", "stability_risk_max": "Medium" }, "action": "REQUIRE_APPROVAL" }
   ],
   "default_action": "REQUIRE_APPROVAL",
-  "maintenance_window": { "days": [5, 6], "start": "02:00", "end": "05:00", "utc_offset_minutes": 60 },
+  "maintenance_window": { "repeat": "monthly_weekday", "nth": 1, "days": [0], "start": "02:00", "end": "05:00", "timezone": "Europe/Paris" },
   "rings": { "delay_minutes": 60 },
   "rollback": {
     "soak_minutes": 30, "auto_rollback": true, "snapshot_required": true,
@@ -37,16 +46,57 @@ host, the one with the lowest `priority` number whose `target_scope` is true win
 
 `fallback_contextual_risk` (the name used in the spec) is accepted as an alias of `contextual_risk`.
 
+### Containers (`docker`)
+
+`"docker": "include" | "exclude" | "only"` says what the policy does with **container image updates** (hosts with the
+Docker module on):
+
+- `include` (default, and what policies saved before the option mean): container images are taken with the system
+  updates, under the same window, approval and probes.
+- `exclude`: the policy leaves containers alone; another policy (or a manual update from the **Docker** page) handles them.
+- `only`: a dedicated Docker policy; it takes nothing but container images, so containers can follow their own window
+  and approval rules.
+
+Whatever the mode, system updates and container images are planned as two tasks (kinds `patch` and `docker`): see
+`modules.md`, *Docker menu*.
+
 ## How a decision is made
 
 1. **Candidates**: pending updates of the host (security only when `security_only`), minus anything covered by an approved, unexpired waiver.
 2. **Contextual risk**: the first matching rule sets it. With no match it derives from the highest CVSS (≥9 Critical, ≥7 High, ≥4 Medium), raises it to at least High for a known-exploited CVE, and one level for an internet-exposed host. A security update with no scored CVE is assumed CVSS 5.0 and says so.
 3. **Stability risk** (will the patch break the machine?): points for kernel updates, sensitive packages (libc, systemd, openssl, databases, Docker, proxies…), business criticality, production, missing staging twin, large batches; −1 with a staging twin. 0–1 Low, 2–3 Medium, 4–5 High, 6+ Critical.
 4. **Decision**: the first decision whose conditions match `(contextual, stability)`; otherwise `default_action`. `contextual_risk`/`stability_risk` match exactly; `contextual_risk_min` and `stability_risk_max` are inclusive bounds.
-5. **Task**: `AUTO_DEPLOY` queues a task (scheduled at the next maintenance window, plus `ring × delay_minutes`); `REQUIRE_APPROVAL` waits for an operator; `BLOCK` records a blocked task. The same batch (same packages and versions) is never planned twice, so a rejected, blocked, failed or rolled-back batch does not loop; a newer version is a new batch.
+5. **Task**: `AUTO_DEPLOY` queues a task (plus `ring × delay_minutes`) **while the patch day is open**, with the updates that
+   are pending at that moment; outside it nothing is planned, so nothing goes stale. `REQUIRE_APPROVAL` is planned right
+   away so it can be approved ahead of time, and runs at the next patch day once approved; `BLOCK` records a blocked task. The same batch (same packages and versions) is never planned twice, so a rejected, blocked, failed or rolled-back batch does not loop; a newer version is a new batch.
 
 Every task keeps the full reasoning, visible in the UI under the task's detail. `ai_mode_enabled` is
 accepted and stored, but until the AI provider exists the deterministic engine is used and the task says so.
+
+## Patch days (`maintenance_window`)
+
+A patch day says **when** updates may run. In the policy editor, *Quand les mises à jour sont-elles appliquées ?* has two
+independent choices: what happens to a new update (wait for approval, or apply automatically) and when (as soon as
+possible, or only on a patch day). Presets: every Saturday, the first Monday of the month, the 15th of each month.
+
+| field | meaning |
+|---|---|
+| `repeat` | `weekly` (default), `monthly_weekday` ("the first Monday") or `monthly_day` ("the 15th") |
+| `days` | weekdays, 0 = Monday … 6 = Sunday (weekly: empty = every day; monthly_weekday: the weekday) |
+| `nth` | monthly_weekday: 1 to 4, or 5 for the **last** one of the month |
+| `day_of_month` | monthly_day: 1 to 28 |
+| `start`, `end` | local times; an `end` before `start` runs overnight |
+| `timezone` | IANA zone such as `Europe/Paris`, daylight saving included (replaces `utc_offset_minutes`) |
+
+A local time that does not exist (the clocks go forward) opens at the first moment after the gap; one that happens twice
+(the clocks go back) opens at the first. Windows saved before 0.6 (`days`, `start`, `end`, `utc_offset_minutes`) load
+unchanged as weekly windows; to follow daylight saving time, pick a time zone and save.
+
+A task planned for a patch day carries a **deadline** (the end of the window): a host that was offline all day does not
+start it later; the task ends as *expired*, the audit log records `task.missed_window` (a notification event, "Jour de
+patch manqué"), and the planner plans it again for the next patch day. A queued task is judged stale 7 days after it was
+**due**, not after it was created, so an approved update waiting for next month's patch day is not dropped. The reboot
+after a patch ("auto") also waits for the next patch-day slot.
 
 ## Rule language
 

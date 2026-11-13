@@ -155,6 +155,7 @@ async fn a_quarantine_reaches_a_signed_webhook_and_failures_are_retried() {
     let queued: i64 = notifications::table.count().get_result(&mut db.conn()).unwrap();
     assert_eq!(queued, 2, "one event x two channels; the high-severity failure is below the rule's threshold");
 
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await; // a remote test database may run a moment ahead of this machine
     notify::run_once(&state).await.unwrap();
     let got = recv(&mut rx).await;
     let body: Value = serde_json::from_slice(&got.body).unwrap();
@@ -209,7 +210,7 @@ async fn rules_scoped_to_a_group_ignore_other_hosts_and_digests_bundle_events() 
 
 #[tokio::test]
 async fn ntfy_gotify_and_smtp_messages_are_formed_correctly() {
-    let m = Message { id: Uuid::new_v4(), event: "reboot.overdue".into(), severity: "critical".into(), title: "[CroustyPatch] Critical · Hôte · web-01".into(), body: "line 1\nline 2".into(), payload: json!({}), recipients: vec![] };
+    let m = Message { id: Uuid::new_v4(), event: "reboot.overdue".into(), severity: "critical".into(), title: "[CroustyPatch] Critical · Hôte · web-01".into(), body: "line 1\nline 2".into(), payload: json!({}), recipients: vec![], html: None };
 
     let (url, mut rx) = http_sink(200).await;
     let ntfy = Channel { kind: "ntfy".into(), config: json!({"url": url, "topic": "ops"}), secret: zeroize::Zeroizing::new("tk".into()) };

@@ -5,13 +5,14 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
+import { PatchWhen, safeZone, useWindowText } from '@/components/PatchSchedule';
 import type { Assessment, HostGroup, HostSummary, Policy, PolicyAction, PolicyDef, Probe, Risk } from '@/lib/types';
 
 const RISKS: Risk[] = ['Low', 'Medium', 'High', 'Critical'];
 const ACTIONS: PolicyAction[] = ['AUTO_DEPLOY', 'REQUIRE_APPROVAL', 'BLOCK'];
 
 const blankDef = (): PolicyDef => ({
-  ai_mode_enabled: false, target_scope: '', security_only: true, rules: [], decisions: [], default_action: 'REQUIRE_APPROVAL', maintenance_window: null,
+  docker: 'exclude', ai_mode_enabled: false, target_scope: '', security_only: true, rules: [], decisions: [], default_action: 'REQUIRE_APPROVAL', maintenance_window: null,
   rollback: { soak_minutes: 30, probes: [], auto_rollback: true, snapshot_required: true }, reboot: { mode: '' }, rings: { delay_minutes: 0 },
 });
 
@@ -36,7 +37,6 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
   const simAct = useAction();
 
   const runSim = () => simAct.run(async () => setSim(await api('POST', '/policies/simulate', { host_id: simHost, definition: d })));
-  const w = d.maintenance_window;
 
   return (
     <div className="stack stack--lg">
@@ -48,6 +48,12 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
           <Check checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })}>{t('pol.enabled')}</Check>
           <Check checked={d.security_only} onChange={(v) => edit((n) => { n.security_only = v; })}>{t('pol.security_only')}</Check>
         </div>
+        <div className="span-all"><Field label={t('pol.docker')} hint={t('pol.docker.hint')}>{(i) => (
+          <Select id={i} value={d.docker ?? 'include'} onChange={(e) => edit((n) => { n.docker = e.target.value as 'include' | 'exclude' | 'only'; })}>
+            <option value="include">{t('pol.docker.include')}</option>
+            <option value="exclude">{t('pol.docker.exclude')}</option>
+            <option value="only">{t('pol.docker.only')}</option>
+          </Select>)}</Field></div>
         <fieldset className="fieldset span-all">
           <legend>{t('pol.groups')}</legend>
           <div className="chips">{groups.map((g) => <GroupTag key={g.id} group={g} active={form.group_ids.includes(g.id)} onClick={() => setForm({ ...form, group_ids: form.group_ids.includes(g.id) ? form.group_ids.filter((x) => x !== g.id) : [...form.group_ids, g.id] })} />)}</div>
@@ -56,7 +62,12 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
         <div className="span-all"><Field label={t('pol.scope')} hint={t('pol.scope.hint')}>{(i) => <TextInput id={i} className="input--code" value={d.target_scope} onChange={(e) => edit((n) => { n.target_scope = e.target.value; })} spellCheck={false} />}</Field></div>
       </div>
 
-      <Section defaultOpen title={t('pol.section.risk')}>
+      <section className="panel" style={{ padding: 16 }}>
+        <h3 className="label" style={{ marginBottom: 12 }}>{t('pol.section.when')}</h3>
+        <PatchWhen d={d} edit={edit} />
+      </section>
+
+      <Section title={t('pol.section.risk')}>
         <div className="stack">
           <Check checked={d.ai_mode_enabled} onChange={(v) => edit((n) => { n.ai_mode_enabled = v; })}>{t('pol.ai_mode')}</Check>
           <p className="field__hint">{t('pol.ai_mode.hint')}</p>
@@ -94,26 +105,8 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
         </div>
       </Section>
 
-      <Section title={t('pol.section.window')}>
-        <div className="stack">
-          <Check checked={!!w} onChange={(v) => edit((n) => { n.maintenance_window = v ? { days: [], start: '02:00', end: '05:00', utc_offset_minutes: 0 } : null; })}>{t('pol.window.enabled')}</Check>
-          {w && (
-            <>
-              <fieldset className="fieldset"><legend>{t('pol.window.days')}</legend>
-                <div className="chips">
-                  {[0, 1, 2, 3, 4, 5, 6].map((day) => <Chip key={day} active={w.days.includes(day)} onClick={() => edit((n) => { const dd = n.maintenance_window!.days; n.maintenance_window!.days = dd.includes(day) ? dd.filter((x) => x !== day) : [...dd, day].sort(); })}>{tr('day', String(day))}</Chip>)}
-                </div>
-                {w.days.length === 0 && <p className="field__hint" style={{ marginTop: 8 }}>{t('pol.window.every_day')}</p>}
-              </fieldset>
-              <div className="form-grid">
-                <Field label={t('pol.window.start')}>{(id) => <TextInput id={id} type="time" value={w.start} onChange={(e) => edit((n) => { n.maintenance_window!.start = e.target.value; })} />}</Field>
-                <Field label={t('pol.window.end')}>{(id) => <TextInput id={id} type="time" value={w.end} onChange={(e) => edit((n) => { n.maintenance_window!.end = e.target.value; })} />}</Field>
-                <Field label={t('pol.window.offset')}>{(id) => <TextInput id={id} type="number" step={30} value={w.utc_offset_minutes} onChange={(e) => edit((n) => { n.maintenance_window!.utc_offset_minutes = Number(e.target.value); })} />}</Field>
-              </div>
-            </>
-          )}
-          <Field label={t('pol.ring_delay')}>{(id) => <TextInput id={id} type="number" min={0} value={d.rings.delay_minutes} onChange={(e) => edit((n) => { n.rings.delay_minutes = Number(e.target.value); })} />}</Field>
-        </div>
+      <Section title={t('pol.section.rings')}>
+        <Field label={t('pol.ring_delay')}>{(id) => <TextInput id={id} type="number" min={0} value={d.rings.delay_minutes} onChange={(e) => edit((n) => { n.rings.delay_minutes = Number(e.target.value); })} />}</Field>
       </Section>
 
       <Section title={t('pol.section.reboot')}>
@@ -175,6 +168,22 @@ function Editor({ form, setForm, groups, hosts }: { form: Form; setForm: (f: For
   );
 }
 
+/** Table cell: how and when the policy applies updates, and the next patch day. */
+function When({ p }: { p: Policy }) {
+  const { t, tr, date } = useI18n();
+  const text = useWindowText();
+  const w = p.definition.maintenance_window;
+  const next = p.next_runs?.[0];
+  return (
+    <>
+      {tr('action', p.definition.default_action)}
+      {w ? <span className="sub">{text(w)} · {w.start}–{w.end}{w.timezone ? ` ${w.timezone}` : ` UTC${w.utc_offset_minutes ? (w.utc_offset_minutes > 0 ? '+' : '') + w.utc_offset_minutes / 60 : ''}`}</span> : <span className="sub">{t('pol.when.anytime')}</span>}
+      {w && next && <span className="sub">{p.in_window ? t('pol.in_window') : t('pol.next_run', { d: date(next.start, { timeZone: safeZone(w.timezone), weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })}</span>}
+      <span className="sub">{t('pol.col.hosts', { n: p.hosts ?? 0 })}</span>
+    </>
+  );
+}
+
 function Policies() {
   const { t, tr } = useI18n();
   const { can } = useAuth();
@@ -202,13 +211,13 @@ function Policies() {
         actions={can('policies:create') && <Button variant="primary" onClick={() => open()}>{t('pol.new')}</Button>} />
       {list.error && <Notice kind="error">{list.error.message}</Notice>}
       {!list.data ? <Spinner /> : (
-        <Table head={[t('pol.priority'), t('pol.name'), t('pol.groups'), t('pol.default_action'), t('common.status'), t('common.actions')]} empty={list.data.length === 0 && <Empty>{t('pol.none')}</Empty>}>
+        <Table head={[t('pol.priority'), t('pol.name'), t('pol.groups'), t('pol.col.when'), t('common.status'), t('common.actions')]} empty={list.data.length === 0 && <Empty>{t('pol.none')}</Empty>}>
           {list.data.map((p) => (
             <tr key={p.id}>
               <td className="num">{p.priority}</td>
               <td className="wrap">{p.name}<span className="sub">{p.description}</span></td>
               <td className="wrap">{p.group_ids.length ? <div className="pkgs">{p.group_ids.map((g) => <GroupTag key={g} group={groupObj(g)} />)}</div> : <span className="muted">—</span>}</td>
-              <td>{tr('action', p.definition.default_action)}{p.definition.maintenance_window && <span className="sub">{p.definition.maintenance_window.start}–{p.definition.maintenance_window.end} UTC</span>}</td>
+              <td className="wrap"><When p={p} /></td>
               <td><Tag tone={p.enabled ? 'ok' : 'neutral'}>{p.enabled ? t('pol.enabled') : t('users.disabled')}</Tag></td>
               <td><div className="row row--tight">
                 {can('policies:write') && <Button small onClick={() => open(p)}>{t('common.edit')}</Button>}

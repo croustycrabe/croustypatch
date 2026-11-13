@@ -27,14 +27,10 @@ fn pending_file(cfg: &Config) -> std::path::PathBuf {
 
 /// Identifier of the current boot: changes on every restart.
 pub fn boot_id() -> String {
-    if let Ok(s) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
-        return s.trim().to_string();
-    }
-    // FreeBSD and others: the boot time is just as good.
-    std::process::Command::new("/sbin/sysctl").args(["-n", "kern.boottime"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_default()
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
-/// Arguments for shutdown(8): Linux and FreeBSD both take `-r +N message` (`now` for no delay).
+/// Arguments for shutdown(8): shutdown takes `-r +N message` (`now` for no delay).
 pub fn shutdown_args(delay_minutes: u32, message: &str) -> Vec<String> {
     let when = if delay_minutes == 0 { "now".to_string() } else { format!("+{delay_minutes}") };
     let msg = if message.trim().is_empty() { "CroustyPatch: this machine restarts to finish installing updates. Save your work.".to_string() } else { message.chars().filter(|c| !c.is_control()).take(200).collect() };

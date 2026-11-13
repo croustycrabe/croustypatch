@@ -8,6 +8,7 @@ import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import type { MessageKey } from '@/lib/messages';
 import { useToast } from '@/lib/toast';
+import { Reports } from '@/components/Reports';
 import type { HostGroup, Role } from '@/lib/types';
 
 type Kind = 'smtp' | 'webhook' | 'ntfy' | 'gotify';
@@ -20,8 +21,8 @@ const SEV_TONE: Record<string, Tone> = { info: 'info', medium: 'neutral', high: 
 const ST_TONE: Record<Delivery['status'], Tone> = { pending: 'neutral', digest: 'info', sent: 'ok', failed: 'danger' };
 const KINDS: Kind[] = ['smtp', 'webhook', 'ntfy', 'gotify'];
 
-interface ChannelForm { id?: string; name: string; kind: Kind; url: string; topic: string; host: string; port: number; tls: string; username: string; from: string; to: string; secret: string; has_secret: boolean; enabled: boolean }
-const blankChannel = (): ChannelForm => ({ name: '', kind: 'webhook', url: '', topic: '', host: '', port: 587, tls: 'starttls', username: '', from: '', to: '', secret: '', has_secret: false, enabled: true });
+interface ChannelForm { id?: string; name: string; kind: Kind; url: string; topic: string; host: string; port: number; tls: string; username: string; from: string; secret: string; has_secret: boolean; enabled: boolean }
+const blankChannel = (): ChannelForm => ({ name: '', kind: 'webhook', url: '', topic: '', host: '', port: 587, tls: 'starttls', username: '', from: '', secret: '', has_secret: false, enabled: true });
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 const list = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
@@ -42,11 +43,11 @@ function Channels({ channels, reload }: { channels: ChannelRow[]; reload: () => 
 
   const open = (c?: ChannelRow) => {
     act.clearError();
-    setForm(c ? { ...blankChannel(), id: c.id, name: c.name, kind: c.kind, enabled: c.enabled, has_secret: c.has_secret, url: str(c.config.url), topic: str(c.config.topic), host: str(c.config.host), port: Number(c.config.port ?? 587), tls: str(c.config.tls) || 'starttls', username: str(c.config.username), from: str(c.config.from), to: Array.isArray(c.config.to) ? (c.config.to as string[]).join(', ') : '' } : blankChannel());
+    setForm(c ? { ...blankChannel(), id: c.id, name: c.name, kind: c.kind, enabled: c.enabled, has_secret: c.has_secret, url: str(c.config.url), topic: str(c.config.topic), host: str(c.config.host), port: Number(c.config.port ?? 587), tls: str(c.config.tls) || 'starttls', username: str(c.config.username), from: str(c.config.from) } : blankChannel());
   };
   const save = () => act.run(async () => {
     const f = form!;
-    const config = f.kind === 'smtp' ? { host: f.host, port: f.port, tls: f.tls, username: f.username, from: f.from, to: list(f.to) } : f.kind === 'ntfy' ? { url: f.url, topic: f.topic } : { url: f.url };
+    const config = f.kind === 'smtp' ? { host: f.host, port: f.port, tls: f.tls, username: f.username, from: f.from } : f.kind === 'ntfy' ? { url: f.url, topic: f.topic } : { url: f.url };
     const body: Record<string, unknown> = { name: f.name, kind: f.kind, config, enabled: f.enabled };
     if (f.secret || !f.id) body.secret = f.secret;
     await api(f.id ? 'PUT' : 'POST', f.id ? `/notifications/channels/${f.id}` : '/notifications/channels', body);
@@ -54,8 +55,12 @@ function Channels({ channels, reload }: { channels: ChannelRow[]; reload: () => 
     reload();
     toast.success(t('common.saved'));
   });
-  const test = (c: ChannelRow) => act.run(async () => {
-    const r = await api<{ ok: boolean; error: string | null }>('POST', `/notifications/channels/${c.id}/test`);
+  const { me } = useAuth();
+  // An e-mail test asks who to send to (the profile address is suggested); the other channels need nothing.
+  const [testing, setTesting] = useState<{ c: ChannelRow; to: string } | null>(null);
+  const test = (c: ChannelRow, to?: string) => act.run(async () => {
+    const r = await api<{ ok: boolean; error: string | null }>('POST', `/notifications/channels/${c.id}/test`, to ? { to } : undefined);
+    setTesting(null);
     if (r.ok) toast.success(t('notif.channel.test_ok'));
     else toast.error(t('notif.channel.test_fail', { e: r.error ?? '' }));
   });
@@ -74,7 +79,7 @@ function Channels({ channels, reload }: { channels: ChannelRow[]; reload: () => 
             <td>
               {can('settings:write') && (
                 <div className="row row--tight">
-                  <Button small icon={<PaperPlaneTilt size={16} weight="bold" />} disabled={act.pending} onClick={() => void test(c)}>{t('notif.channel.test')}</Button>
+                  <Button small icon={<PaperPlaneTilt size={16} weight="bold" />} disabled={act.pending} onClick={() => (c.kind === 'smtp' ? setTesting({ c, to: me?.email ?? '' }) : void test(c))}>{t('notif.channel.test')}</Button>
                   <Button small onClick={() => open(c)}>{t('common.edit')}</Button>
                   <Button small onClick={() => setDeleting(c)}>{t('common.delete')}</Button>
                 </div>
@@ -108,7 +113,7 @@ function Channels({ channels, reload }: { channels: ChannelRow[]; reload: () => 
                   <Field label={t('notif.f.username')}>{(i) => <TextInput id={i} value={form.username} onChange={(e) => set('username', e.target.value)} autoComplete="off" />}</Field>
                   <Field label={t('notif.f.from')}>{(i) => <TextInput id={i} type="email" value={form.from} onChange={(e) => set('from', e.target.value)} placeholder="patch@example.org" required />}</Field>
                 </div>
-                <Field label={t('notif.f.to')}>{(i) => <TextInput id={i} value={form.to} onChange={(e) => set('to', e.target.value)} placeholder="ops@example.org" />}</Field>
+                <p className="field__hint">{t('notif.f.no_recipient')}</p>
               </>
             ) : (
               <div className="form-grid">
@@ -121,6 +126,15 @@ function Channels({ channels, reload }: { channels: ChannelRow[]; reload: () => 
             <Check checked={form.enabled} onChange={(v) => set('enabled', v)}>{t('notif.channel.enabled')}</Check>
             {act.error && <Notice kind="error">{act.error}</Notice>}
             <div className="row"><Button variant="primary" type="submit" disabled={act.pending}>{t('common.save')}</Button><Button onClick={() => setForm(null)}>{t('common.cancel')}</Button></div>
+          </form>
+        )}
+      </Dialog>
+      <Dialog open={!!testing} title={t('notif.channel.test')} onClose={() => setTesting(null)}>
+        {testing && (
+          <form className="stack" onSubmit={(e) => { e.preventDefault(); void test(testing.c, testing.to.trim()); }}>
+            <Field label={t('notif.test.to')} hint={t('notif.test.to_hint')}>{(i) => <TextInput id={i} type="email" value={testing.to} onChange={(e) => setTesting({ ...testing, to: e.target.value })} placeholder="me@example.org" required autoFocus />}</Field>
+            {act.error && <Notice kind="error">{act.error}</Notice>}
+            <div className="row"><Button variant="primary" type="submit" icon={<PaperPlaneTilt size={16} weight="bold" />} disabled={act.pending}>{t('notif.channel.test')}</Button><Button onClick={() => setTesting(null)}>{t('common.cancel')}</Button></div>
           </form>
         )}
       </Dialog>
@@ -210,6 +224,7 @@ function Rules({ rules, channels, catalog, reload }: { rules: RuleRow[]; channel
                   <option value="instant">{t('notif.rule.instant')}</option>
                   <option value="digest">{t('notif.rule.digest')}</option>
                 </Select>)}</Field>
+              {form.frequency === 'digest' && <p className="field__hint span-all">{t('notif.rule.digest_hint')}</p>}
               {form.frequency === 'digest' && <Field label={t('notif.rule.digest_hour')}>{(i) => <TextInput id={i} type="number" min={0} max={23} value={form.digest_hour} onChange={(e) => set('digest_hour', Number(e.target.value))} />}</Field>}
             </div>
             <fieldset className="fieldset">
@@ -270,12 +285,14 @@ export default function Page() {
       {err && <Notice kind="error">{err.message}</Notice>}
       <Tabs value={tab} onChange={setTab} tabs={[
         { id: 'channels', label: t('notif.tab.channels'), count: channels.data?.length || undefined },
+        { id: 'reports', label: t('notif.tab.reports') },
         { id: 'rules', label: t('notif.tab.rules'), count: rules.data?.length || undefined },
         { id: 'history', label: t('notif.tab.history') },
       ]} />
       {!channels.data || !rules.data || !catalog.data ? <Spinner /> : (
         <>
           {tab === 'channels' && <Channels channels={channels.data} reload={channels.reload} />}
+          {tab === 'reports' && <Reports channels={channels.data} />}
           {tab === 'rules' && <Rules rules={rules.data} channels={channels.data} catalog={catalog.data} reload={rules.reload} />}
           {tab === 'history' && <History channels={channels.data} />}
         </>

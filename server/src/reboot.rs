@@ -64,16 +64,10 @@ pub fn overdue(c: &mut PgConnection, host_id: Uuid, now: DateTime<Utc>) -> ApiRe
 
 /// First moment at or after `now` inside the policy's maintenance window (now when there is no window).
 pub fn next_slot(def: &PolicyDef, now: DateTime<Utc>) -> DateTime<Utc> {
-    let Some(w) = &def.maintenance_window else { return now };
-    let mut t = now;
-    // 5-minute steps over eight days cover any weekly window.
-    for _ in 0..(8 * 24 * 12) {
-        if w.contains(t) {
-            return t;
-        }
-        t += Duration::minutes(5);
+    match &def.maintenance_window {
+        Some(w) => w.next_start(now),
+        None => now,
     }
-    now
 }
 
 /// A patch finished and the host needs a restart: schedule it if the policy says so ("auto", or "user_prompt",

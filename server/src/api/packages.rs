@@ -31,16 +31,35 @@ pub struct PackageQuery {
     q: Option<String>,
     /// Only packages with at least one host needing an update.
     updates: Option<bool>,
+    /// 1-based page, and how many rows to a page (default 50, at most 100).
+    page: Option<i64>,
+    per_page: Option<i64>,
 }
 
+#[derive(QueryableByName)]
+struct Total {
+    #[diesel(sql_type = BigInt)]
+    n: i64,
+}
+
+/// GET /packages: `{ items, total, page, per_page }`. The most urgent first (outdated, security, spread), then by name.
 pub async fn list_packages(state: web::Data<AppState>, user: AuthUser, q: web::Query<PackageQuery>) -> ApiResult<HttpResponse> {
     user.require("hosts:read")?;
     let q = q.into_inner();
     let pattern = format!("%{}%", q.q.as_deref().unwrap_or("").trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
     let only = q.updates.unwrap_or(false);
-    let rows: Vec<PackageRow> = state
+    let per_page = q.per_page.unwrap_or(50).clamp(1, 100);
+    let page = q.page.unwrap_or(1).clamp(1, 1_000_000);
+    let (rows, total): (Vec<PackageRow>, i64) = state
         .db(move |c| {
-            Ok(diesel::sql_query(
+            let total: Total = diesel::sql_query(
+                "SELECT COUNT(*)::bigint AS n FROM (SELECT 1 FROM host_packages WHERE name ILIKE $1 GROUP BY name, source \
+                 HAVING ($2 = false OR COUNT(*) FILTER (WHERE candidate IS NOT NULL) > 0)) x",
+            )
+            .bind::<Text, _>(pattern.clone())
+            .bind::<Bool, _>(only)
+            .get_result(c)?;
+            let rows = diesel::sql_query(
                 "SELECT name, source, COUNT(*)::bigint AS hosts, \
                         (COUNT(*) FILTER (WHERE candidate IS NOT NULL))::bigint AS outdated, \
                         COALESCE(bool_or(is_security) FILTER (WHERE candidate IS NOT NULL), false) AS security, \
@@ -48,14 +67,17 @@ pub async fn list_packages(state: web::Data<AppState>, user: AuthUser, q: web::Q
                  FROM host_packages WHERE name ILIKE $1 \
                  GROUP BY name, source \
                  HAVING ($2 = false OR COUNT(*) FILTER (WHERE candidate IS NOT NULL) > 0) \
-                 ORDER BY outdated DESC, security DESC, hosts DESC, name ASC LIMIT 500",
+                 ORDER BY outdated DESC, security DESC, hosts DESC, name ASC, source ASC LIMIT $3 OFFSET $4",
             )
             .bind::<Text, _>(pattern)
             .bind::<Bool, _>(only)
-            .load(c)?)
+            .bind::<BigInt, _>(per_page)
+            .bind::<BigInt, _>((page - 1) * per_page)
+            .load(c)?;
+            Ok((rows, total.n))
         })
         .await?;
-    Ok(HttpResponse::Ok().json(rows))
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "items": rows, "total": total, "page": page, "per_page": per_page })))
 }
 
 #[derive(Serialize)]

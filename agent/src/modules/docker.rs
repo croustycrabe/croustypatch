@@ -6,7 +6,7 @@
 //! restore point is the previous image ID; rollback re-tags it and runs `up -d` again. Containers started by hand
 //! are reported (with their available update) but never recreated: the agent cannot know which of their settings
 //! are intentional.
-use super::registry;
+use super::{registry, retag};
 use crate::exec::{Cmd, Runner};
 use crate::runner::TaskLog;
 use anyhow::{anyhow, bail, Result};
@@ -29,6 +29,18 @@ pub struct Container {
     pub image_id: String,
     pub repo_digests: Vec<String>,
     pub compose: Option<Compose>,
+    /// (host source, path inside the container) of its mounts: used to find the compose files of stacks deployed
+    /// by a manager running in a container (Arcane, Dockge, Komodo…), whose labels hold the manager's own paths.
+    #[serde(default)]
+    pub mounts: Vec<(String, String)>,
+    /// running, restarting, exited…
+    #[serde(default)]
+    pub state: String,
+    /// healthy / unhealthy / starting, empty without a health check.
+    #[serde(default)]
+    pub health: String,
+    #[serde(default)]
+    pub started_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,7 +61,45 @@ pub fn container_from_inspect(v: &Value, repo_digests: Vec<String>) -> Option<Co
         (Some(project), Some(service), Some(working_dir)) => Some(Compose { project, service, working_dir, config_files: label("com.docker.compose.project.config_files").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default() }),
         _ => None,
     };
-    Some(Container { name, image_ref, image_id, repo_digests, compose })
+    let mounts = v
+        .get("Mounts")
+        .and_then(|m| m.as_array())
+        .map(|a| a.iter().filter_map(|m| Some((m.get("Source")?.as_str()?.to_string(), m.get("Destination")?.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    let state = v.pointer("/State/Status").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let health = v.pointer("/State/Health/Status").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let started_at = v.pointer("/State/StartedAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    Some(Container { name, image_ref, image_id, repo_digests, compose, mounts, state, health, started_at })
+}
+
+/// A path from a compose label, as it exists on the host. If it does not exist as written, it may be a path inside a
+/// manager's container: map it through that container's mounts (the longest matching mount first) and keep the
+/// first translation that exists. None when nothing on the host matches.
+pub fn host_path(path: &str, mounts: &[(String, String)], exists: impl Fn(&std::path::Path) -> bool) -> Option<String> {
+    use std::path::Path;
+    if exists(Path::new(path)) {
+        return Some(path.to_string());
+    }
+    let mut ordered: Vec<&(String, String)> = mounts.iter().filter(|(src, dst)| !src.is_empty() && dst.starts_with('/') && dst != "/").collect();
+    ordered.sort_by_key(|(_, d)| std::cmp::Reverse(d.len()));
+    ordered.into_iter().find_map(|(src, dst)| {
+        let rest = Path::new(path).strip_prefix(dst).ok()?;
+        let cand = Path::new(src).join(rest);
+        (!cand.components().any(|c| matches!(c, std::path::Component::ParentDir)) && exists(&cand)).then(|| cand.to_string_lossy().into_owned())
+    })
+}
+
+/// The compose project with host paths, or a clear reason why the agent cannot drive it.
+pub fn resolve_compose(c: &Compose, all_mounts: &[(String, String)], exists: impl Fn(&std::path::Path) -> bool + Copy) -> Result<Compose> {
+    let files = if c.config_files.is_empty() { vec![format!("{}/compose.yaml", c.working_dir.trim_end_matches('/'))] } else { c.config_files.clone() };
+    let mut out = c.clone();
+    out.config_files = vec![];
+    for f in &files {
+        let h = host_path(f, all_mounts, exists).ok_or_else(|| anyhow!("compose file {f} is not on this host (the stack was probably deployed by a tool running in a container whose files are not mounted from the host): update it from that tool; nothing was changed"))?;
+        out.config_files.push(h);
+    }
+    out.working_dir = host_path(&c.working_dir, all_mounts, exists).ok_or_else(|| anyhow!("compose project directory {} is not on this host; nothing was changed", c.working_dir))?;
+    Ok(out)
 }
 
 fn short(d: &str) -> String {
@@ -62,9 +112,152 @@ pub fn is_current(c: &Container, remote: &str) -> bool {
 }
 
 pub fn entry(c: &Container, remote: Option<&str>) -> PackageEntry {
+    entry_with(c, remote, None, None)
+}
+
+/// The inventory entry of a container. `newer` is a newer version tag the registry offers for the image (the running
+/// tag's own digest is what `candidate` tracks): it is informative, because moving to another tag means changing the
+/// compose file, which CroustyPatch does not do.
+pub fn entry_with(c: &Container, remote: Option<&str>, newer: Option<&registry::Newer>, apply: Option<Value>) -> PackageEntry {
     let local = c.repo_digests.first().map(|d| short(d.split('@').nth(1).unwrap_or(d))).unwrap_or_else(|| short(&c.image_id));
     let candidate = remote.filter(|r| !is_current(c, r)).map(|r| format!("{} @{}", c.image_ref, short(r)));
-    PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into() }
+    let mut meta = serde_json::json!({
+        "image": c.image_ref, "project": c.compose.as_ref().map(|x| x.project.as_str()), "service": c.compose.as_ref().map(|x| x.service.as_str()),
+        "state": c.state, "health": c.health, "started_at": c.started_at,
+    });
+    if let Some(cp) = &c.compose {
+        // where the stack's files are (as the labels say), for the migration console's command lines
+        meta["compose"] = serde_json::json!({ "dir": cp.working_dir, "files": cp.config_files });
+    }
+    if let Some(n) = newer {
+        meta["latest"] = serde_json::json!({ "tag": n.tag, "major": n.major, "same_major": n.same_major });
+        if let Some(a) = apply {
+            meta["latest"]["apply"] = a;
+        }
+    }
+    PackageEntry { name: format!("{PREFIX}{}", c.name), version: format!("{} @{local}", c.image_ref), candidate, is_security: false, cves: vec![], source: "docker".into(), meta }
+}
+
+/// What a version change needs for each pinned container that has one: (service, image it runs, image to move to,
+/// compose files), in the order of `names`. A request for a container that is not among the pins is an error.
+pub fn retag_requests(pins: &[Container], retag: &std::collections::BTreeMap<String, String>) -> Result<Vec<(String, String, String, Vec<String>)>> {
+    for k in retag.keys() {
+        if !pins.iter().any(|p| &format!("{PREFIX}{}", p.name) == k) {
+            bail!("a new version was asked for {k}, which is not part of this update");
+        }
+    }
+    pins.iter()
+        .filter_map(|p| retag.get(&format!("{PREFIX}{}", p.name)).map(|new| (p, new)))
+        .map(|(p, new)| {
+            let cp = p.compose.as_ref().ok_or_else(|| anyhow!("{} is not a compose service", p.name))?;
+            Ok((cp.service.clone(), p.image_ref.clone(), new.clone(), cp.config_files.clone()))
+        })
+        .collect()
+}
+
+/// For the inventory: can the suggested version be applied to this container, and by changing which file? Planned
+/// on the real files without writing anything.
+pub fn retag_hint(c: &Container, all_mounts: &[(String, String)], new_ref: &str, major: bool) -> Value {
+    let manual = |reason: String| serde_json::json!({ "mode": "manual", "reason": reason });
+    if major && croustypatch_common::model::is_database_image(&c.image_ref) {
+        return manual(croustypatch_common::model::DATABASE_MAJOR_REASON.to_string());
+    }
+    let Some(cp) = &c.compose else { return manual("the container was not started by Docker Compose".into()) };
+    let resolved = match resolve_compose(cp, all_mounts, |p| p.exists()) {
+        Ok(r) => r,
+        Err(e) => return manual(format!("{e:#}")),
+    };
+    match retag::plan_all(&[(resolved.service.clone(), c.image_ref.clone(), new_ref.to_string(), resolved.config_files.clone())], &retag::read_files) {
+        Ok((_, outcomes)) => match outcomes.first() {
+            Some(retag::Outcome::AlreadyThere { path }) => serde_json::json!({ "mode": "file", "file": path, "already": true }),
+            Some(retag::Outcome::Changed { path }) => serde_json::json!({ "mode": "file", "file": path }),
+            None => manual("nothing to plan".into()),
+        },
+        Err(reason) => manual(reason),
+    }
+}
+
+/// What the registry lookup for newer versions of one image found, and how: why there is (or is not) a suggestion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagCheck {
+    pub newer: Option<registry::Newer>,
+    /// `listed` (every tag read), `probed` (the list was too long: the versions after the running one were asked
+    /// for one by one), `not_version` (the tag is `latest` or a name: only its digest is followed), `pinned`, `offline`,
+    /// or `error: …`.
+    pub how: String,
+}
+
+type NewerCache = std::sync::Mutex<std::collections::HashMap<(String, String, String), (std::time::Instant, TagCheck)>>;
+
+fn newer_cache() -> &'static NewerCache {
+    static CACHE: std::sync::OnceLock<NewerCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Forget what was found: the next inventory asks the registries again (a manual scan does this).
+pub fn forget_cache() {
+    if let Ok(mut c) = newer_cache().lock() {
+        c.clear();
+    }
+}
+
+/// The newer version of `img`'s tag. Asked at most every 6 hours per image (a failed lookup again after 20 minutes):
+/// versions do not appear by the minute, and a registry should not be queried for every inventory. No request at all
+/// when the tag is not a version (`latest`, `release`). A repository whose tag list is too long to read is followed
+/// version by version instead of being trusted as "nothing newer".
+pub async fn newer_version_checked(img: &registry::ImageRef) -> TagCheck {
+    if registry::tag_shape(&img.tag).is_none() {
+        return TagCheck { newer: None, how: "not_version".into() };
+    }
+    let key = (img.registry.clone(), img.repository.clone(), img.tag.clone());
+    if let Some((at, found)) = newer_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        if at.elapsed() < Duration::from_secs(if found.how.starts_with("error") { 20 * 60 } else { 6 * 3600 }) {
+            return found;
+        }
+    }
+    let found = match registry::list_tags_checked(img).await {
+        Ok(l) if l.complete => TagCheck { newer: registry::newer_version(&img.tag, &l.tags), how: "listed".into() },
+        listing => {
+            // partial (or no) list: start from the best the partial list showed, and follow the versions from there
+            let mut tags = listing.as_ref().map(|l| l.tags.clone()).unwrap_or_default();
+            let from = registry::newer_version(&img.tag, &tags).map(|n| n.tag).unwrap_or_else(|| img.tag.clone());
+            let probe_img = registry::ImageRef { tag: from, ..img.clone() };
+            match registry::probe_registry(&probe_img).await {
+                Ok(p) => {
+                    tags.push(img.tag.clone());
+                    if let Some(p) = p {
+                        tags.push(p.tag);
+                        tags.extend(p.same_major);
+                    }
+                    TagCheck { newer: registry::newer_version(&img.tag, &tags), how: "probed".into() }
+                }
+                Err(e) => {
+                    tracing::debug!(image = %format!("{}:{}", img.repository, img.tag), "newer version lookup: {e:#}");
+                    let why = listing.err().map(|l| format!("{l:#}")).unwrap_or_else(|| format!("{e:#}"));
+                    // the partial list may still have shown something newer
+                    TagCheck { newer: registry::newer_version(&img.tag, &tags), how: format!("error: {}", why.chars().take(160).collect::<String>()) }
+                }
+            }
+        }
+    };
+    if let Ok(mut c) = newer_cache().lock() {
+        c.insert(key, (std::time::Instant::now(), found.clone()));
+    }
+    found
+}
+
+pub async fn newer_version(img: &registry::ImageRef) -> Option<registry::Newer> {
+    newer_version_checked(img).await.newer
+}
+
+/// What the registry checks of one container found, kept in its inventory entry (`meta.check`) so the interface can
+/// say why there is no suggestion.
+pub fn with_check(mut e: PackageEntry, digest: &str, tags: &str, via: &str) -> PackageEntry {
+    e.meta["check"] = serde_json::json!({ "digest": digest, "tags": tags });
+    if !via.is_empty() {
+        e.meta["check"]["via"] = serde_json::json!(via);
+    }
+    e
 }
 
 pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
@@ -87,18 +280,87 @@ pub async fn containers(r: &Runner) -> Result<Vec<Container>> {
     Ok(out)
 }
 
-/// Inventory entries for every running container, with the registry's current digest when it can be checked.
-pub async fn inventory(r: &Runner) -> Vec<PackageEntry> {
+/// Inventory entries for every running container, with the registry's current digest and the newest version tag
+/// when they can be checked (four registry lookups at a time). Images are looked up where `regs` says: a configured
+/// local mirror first, then their own registry (never in offline mode, where only local registries are asked).
+pub async fn inventory(r: &Runner, regs: &registry::Registries) -> Vec<PackageEntry> {
     let Ok(list) = containers(r).await.inspect_err(|e| tracing::warn!("docker inventory: {e:#}")) else { return vec![] };
-    let mut out = vec![];
-    for c in &list {
-        let remote = match registry::parse(&c.image_ref) {
-            Ok(img) if img.digest.is_none() => registry::remote_digest(&img).await.inspect_err(|e| tracing::debug!(container = %c.name, "registry check: {e:#}")).ok(),
-            _ => None,
-        };
-        out.push(entry(c, remote.as_deref()));
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut jobs = tokio::task::JoinSet::new();
+    for (i, c) in list.iter().enumerate() {
+        let image = c.image_ref.clone();
+        let name = c.name.clone();
+        let gate = gate.clone();
+        let regs = regs.clone();
+        jobs.spawn(async move {
+            let _slot = gate.acquire().await;
+            match registry::parse(&image) {
+                // pinned by digest: never updated, nothing to look for
+                Ok(img) if img.digest.is_some() => (i, None, None, "pinned".to_string(), "pinned".to_string(), String::new()),
+                Ok(img) => {
+                    let targets = regs.targets(&img);
+                    if targets.is_empty() {
+                        // offline, and no local registry holds this image's registry
+                        return (i, None, None, "offline".to_string(), "offline".to_string(), String::new());
+                    }
+                    // the first place that answers; the version tags are looked up in the same place
+                    let mut last_err = String::new();
+                    for t in &targets {
+                        match registry::remote_digest(t).await {
+                            Ok(d) => {
+                                let tags = newer_version_checked(t).await;
+                                let via = if t.registry.eq_ignore_ascii_case(&img.registry) { String::new() } else { t.registry.clone() };
+                                return (i, Some(d), tags.newer, "ok".to_string(), tags.how, via);
+                            }
+                            Err(e) => {
+                                tracing::debug!(container = %name, registry = %t.registry, "registry check: {e:#}");
+                                last_err = format!("{e:#}").chars().take(160).collect();
+                            }
+                        }
+                    }
+                    // none answered the digest: the tags may still be readable (a registry that refuses HEAD)
+                    let tags = newer_version_checked(&targets[0]).await;
+                    (i, None, tags.newer, format!("error: {last_err}"), tags.how, String::new())
+                }
+                Err(e) => (i, None, None, format!("error: {e:#}"), "error".to_string(), String::new()),
+            }
+        });
     }
-    out
+    type Found = (Option<String>, Option<registry::Newer>, String, String, String);
+    let mut found: Vec<Found> = vec![(None, None, String::new(), String::new(), String::new()); list.len()];
+    while let Some(Ok((i, remote, newer, digest, tags, via))) = jobs.join_next().await {
+        found[i] = (remote, newer, digest, tags, via);
+    }
+    let all_mounts: Vec<(String, String)> = list.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
+    list.iter()
+        .zip(found)
+        .map(|(c, (remote, newer, digest, tags, via))| {
+            // can the suggested version be applied (and by changing which file)? Planned on the real compose files.
+            let apply = newer.as_ref().and_then(|n| registry::parse(&c.image_ref).ok().map(|_| n)).map(|n| retag_hint(c, &all_mounts, &format!("{}:{}", retag::split_tag(&c.image_ref).map_or(c.image_ref.as_str(), |t| t.0), n.tag), n.major));
+            with_check(entry_with(c, remote.as_deref(), newer.as_ref(), apply), &digest, &tags, &via)
+        })
+        .collect()
+}
+
+/// Log in (`docker login`) to the configured registries that hold these images and have a login, so that the pull
+/// that follows can read them. The login lands in root's Docker config, as if the administrator had typed it.
+/// Nothing is asked of a registry without credentials, or (offline) a distant one.
+pub async fn login(r: &Runner, regs: &registry::Registries, images: &[String], log: &TaskLog) -> Result<()> {
+    let mut done: Vec<String> = vec![];
+    for image in images {
+        let Ok(img) = registry::parse(image) else { continue };
+        let Some(p) = regs.profiles.iter().find(|p| p.host.eq_ignore_ascii_case(&img.registry) && !p.username.is_empty() && (!regs.offline || p.kind == "local")) else { continue };
+        if done.contains(&p.host) {
+            continue;
+        }
+        let cmd = Cmd::new("docker", &["login", &p.host, "-u", &p.username, "--password-stdin"]).stdin(p.password.clone().into_bytes()).timeout(60);
+        let out = r.mutate(cmd, log).await?;
+        if !out.ok() {
+            bail!("cannot log in to {} as {}: {}", p.host, p.username, out.stderr.trim());
+        }
+        done.push(p.host.clone());
+    }
+    Ok(())
 }
 
 fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {
@@ -112,35 +374,56 @@ fn compose_cmd(c: &Compose, tail: &[&str]) -> Cmd {
     Cmd::new("docker", &[]).args(args).timeout(900)
 }
 
-/// Restore point: the image each container runs now.
+/// Restore point: the image each container runs now. Every check happens here, before anything changes: a container
+/// that is not a compose service, or whose compose files cannot be found on the host, fails the task cleanly.
 pub async fn snapshot(r: &Runner, names: &[String], log: &TaskLog) -> Result<Vec<Container>> {
     let all = containers(r).await?;
+    let all_mounts: Vec<(String, String)> = all.iter().flat_map(|c| c.mounts.iter().cloned()).collect();
     let mut pins = vec![];
     for n in names {
         let name = n.trim_start_matches(PREFIX);
         let c = all.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("container {name} is not running"))?;
-        if c.compose.is_none() {
-            bail!("container {name} was not started by Docker Compose: update it by hand (CroustyPatch only recreates compose services, so their settings stay exactly as written)");
+        let Some(cp) = &c.compose else {
+            bail!("container {name} was not started by Docker Compose: update it by hand (CroustyPatch only recreates compose services, so their settings stay exactly as written); nothing was changed");
+        };
+        let resolved = resolve_compose(cp, &all_mounts, |p| p.exists()).map_err(|e| anyhow!("{name}: {e:#}"))?;
+        if resolved.config_files != cp.config_files {
+            log.line(format!("{name}: compose file {} found on the host as {}", cp.config_files.join(", "), resolved.config_files.join(", ")));
         }
         log.line(format!("restore point: {name} runs image {}", short(&c.image_id)));
-        pins.push(c.clone());
+        pins.push(Container { compose: Some(resolved), ..c.clone() });
     }
     Ok(pins)
 }
 
-pub async fn apply(r: &Runner, pins: &[Container], log: &TaskLog) -> Result<()> {
-    for c in pins {
+/// Pull and recreate each service. `touched` receives the index of every container that was (or may have been)
+/// recreated: a failure before that point changed nothing for it, so it needs no rollback.
+pub async fn apply(r: &Runner, pins: &[Container], log: &TaskLog, touched: &mut Vec<usize>) -> Result<()> {
+    for (i, c) in pins.iter().enumerate() {
         let cp = c.compose.as_ref().expect("checked at snapshot");
         let pull = r.mutate(compose_cmd(cp, &["pull", "--quiet", &cp.service]), log).await?;
         if !pull.ok() {
             bail!("pull of {} failed: {}", c.name, pull.stderr.trim());
         }
+        touched.push(i);
         let up = r.mutate(compose_cmd(cp, &["up", "-d", "--no-deps", &cp.service]), log).await?;
         if !up.ok() {
             bail!("restart of {} failed: {}", c.name, up.stderr.trim());
         }
     }
     Ok(())
+}
+
+/// Do these containers run their restore-point image again? Checked after a rollback whose commands reported an
+/// error: what counts is the state of the machine, not the exit code.
+pub async fn running_on_pins(r: &Runner, pins: &[Container]) -> bool {
+    for c in pins {
+        let Ok(o) = r.read(Cmd::new("docker", &["inspect", "--format", "{{.Image}} {{.State.Status}}", &c.name])).await else { return false };
+        if !o.ok() || o.stdout.trim() != format!("{} running", c.image_id) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Wait until every updated container is running (and healthy, when it has a health check).

@@ -69,13 +69,13 @@ pub struct Assessment {
 /// Packages whose update is more likely to disturb a running system.
 pub fn is_sensitive_package(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    const PREFIXES: &[&str] = &["linux", "kernel", "systemd", "glibc", "libc6", "grub", "openssl", "libssl", "postgresql", "mysql", "mariadb", "docker", "containerd", "nginx", "haproxy", "zfs", "openzfs", "freebsd-"];
+    const PREFIXES: &[&str] = &["linux", "kernel", "systemd", "glibc", "libc6", "grub", "openssl", "libssl", "postgresql", "mysql", "mariadb", "docker", "containerd", "nginx", "haproxy", "zfs", "openzfs"];
     PREFIXES.iter().any(|p| n == *p || n.starts_with(p))
 }
 
 pub fn is_kernel_package(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.starts_with("linux-image") || n.starts_with("kernel") || n == "linux" || n.starts_with("linux-lts") || n.starts_with("linux-zen") || n == "freebsd-kernel" || n == "freebsd-kernel-generic"
+    n.starts_with("linux-image") || n.starts_with("kernel") || n == "linux" || n.starts_with("linux-lts") || n.starts_with("linux-zen")
 }
 
 /// Contextual risk, deterministic path.

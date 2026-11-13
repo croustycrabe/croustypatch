@@ -1,18 +1,25 @@
 'use client';
-import { AppWindow, ChartBar, ChatCircle, Code, Cube, Database, FileText, Globe, Image, MusicNotes, Plus, ShieldCheck, Terminal, Wrench, type Icon } from '@phosphor-icons/react';
+import { Plus, Trash } from '@phosphor-icons/react';
 import { useEffect, useState } from 'react';
-import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, Notice, PageHeader, Select, Spinner, Table, Tabs, Tag, TextInput } from '@/components/ui';
+import { Button, Check, Chip, ConfirmDialog, Dialog, Empty, Field, GroupTag, Notice, PageHeader, Select, Spinner, Table, Tabs, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
+import { AppIcon, IconPicker } from '@/components/AppIcon';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { HostGroup, HostSummary } from '@/lib/types';
 
-interface App { id: string; name: string; version: string; category: string; description: string; icon: string; packages: string[]; group_ids: string[]; enabled: boolean }
-interface HostApp extends App { installed: boolean; pending: { task_id: string; status: string; install: boolean } | null }
+type SystemKey = 'apt' | 'pacman' | 'dnf' | '*';
+interface Command { install: string; uninstall: string; check: string; latest?: { aur: string } }
+type Recipe = { packages: string[] } | { command: Command };
+type Recipes = Partial<Record<SystemKey, Recipe>>;
+interface App { id: string; name: string; version: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; group_ids: string[]; enabled: boolean; has_command?: boolean }
+interface HostApp extends App { kind: 'packages' | 'command'; packages: string[]; command: Command | null; installed: boolean; pending: { task_id: string; status: string; install: boolean } | null; update?: { package: string; installed: string; latest: string } | null }
+interface Suggestion { name: string; category: string; description: string; icon: string; icon_url?: string | null; recipes: Recipes; in_catalog: boolean }
 
-const ICONS: Record<string, Icon> = { '': Cube, 'app-window': AppWindow, code: Code, terminal: Terminal, browser: Globe, 'file-text': FileText, 'chart-bar': ChartBar, 'shield-check': ShieldCheck, database: Database, image: Image, 'music-notes': MusicNotes, 'chat-circle': ChatCircle, wrench: Wrench, cube: Cube };
+const SYSTEMS: SystemKey[] = ['apt', 'pacman', 'dnf', '*'];
+
 
 function Store() {
   const { t } = useI18n();
@@ -21,9 +28,10 @@ function Store() {
   const hosts = useApi<HostSummary[]>('/hosts');
   const [host, setHost] = useState('');
   const [cat, setCat] = useState('');
+  const [filter, setFilter] = useState<'all' | 'installed' | 'updates' | 'available'>('all');
   const view = useApi<{ apps: HostApp[] }>(host ? `/portal/hosts/${host}` : null, { poll: 4000 });
   const act = useAction();
-  useEffect(() => { if (!host && hosts.data?.length) setHost(hosts.data.find((h) => h.status === 'online')?.id ?? hosts.data[0]!.id); }, [hosts.data, host]);
+  useEffect(() => { if (!host && hosts.data?.length) setHost((hosts.data.find((h) => h.status === 'online' && h.connected) ?? hosts.data.find((h) => h.status === 'online') ?? hosts.data[0]!).id); }, [hosts.data, host]);
   const go = (a: HostApp, action: 'INSTALL' | 'UNINSTALL') => act.run(async () => {
     await api('POST', '/portal/install', { host_id: host, app_id: a.id, action });
     toast.success(t('portal.requested'));
@@ -31,7 +39,10 @@ function Store() {
   });
   const apps = view.data?.apps ?? [];
   const cats = [...new Set(apps.map((a) => a.category).filter(Boolean))];
-  const shown = apps.filter((a) => !cat || a.category === cat);
+  const inCat = apps.filter((a) => !cat || a.category === cat);
+  const matches = { all: () => true, installed: (a: HostApp) => a.installed, updates: (a: HostApp) => a.installed && !!a.update, available: (a: HostApp) => !a.installed };
+  const count = (f: keyof typeof matches) => inCat.filter(matches[f]).length;
+  const shown = inCat.filter(matches[filter]);
   return (
     <div className="stack">
       <div className="row">
@@ -41,20 +52,24 @@ function Store() {
             {hosts.data?.map((h) => <option key={h.id} value={h.id}>{h.display_name || h.hostname}</option>)}
           </Select>)}</Field>
       </div>
+      {apps.length > 0 && <div className="chips" role="group" aria-label={t('portal.filter')}>
+        {(['all', 'installed', 'updates', 'available'] as const).map((f) => <Chip key={f} active={filter === f} onClick={() => setFilter(f)}>{t(`portal.filter.${f}`)} ({count(f)})</Chip>)}
+      </div>}
       {cats.length > 1 && <div className="chips"><Chip active={!cat} onClick={() => setCat('')}>{t('portal.all')}</Chip>{cats.map((c) => <Chip key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Chip>)}</div>}
       {view.error && <Notice kind="error">{view.error.message.includes('switched off') ? t('portal.off') : view.error.message}</Notice>}
       {act.error && <Notice kind="error">{act.error}</Notice>}
       {host && !view.data && !view.error ? <Spinner /> : shown.length === 0 && !view.error ? <Empty>{t('portal.none')}</Empty> : (
         <div className="appgrid">
           {shown.map((a) => {
-            const I = ICONS[a.icon] ?? Cube;
             const busy = !!a.pending;
             return (
               <div key={a.id} className="cs-card appcard">
-                <div className="appcard__head"><span className="appcard__icon"><I size={22} weight="bold" /></span><div><b>{a.name}</b><span className="sub">{[a.category, a.version].filter(Boolean).join(' · ')}</span></div></div>
+                <div className="appcard__head"><AppIcon icon={a.icon} url={a.icon_url} /><div><b>{a.name}</b><span className="sub">{[a.category, a.version].filter(Boolean).join(' · ')}</span></div></div>
                 <p className="appcard__desc">{a.description}</p>
+                {a.kind === 'command' && <p className="field__hint mono" title={a.command?.install}>{t('portal.command_badge')} · {a.command?.check}</p>}
                 <div className="row row--tight" style={{ marginTop: 'auto' }}>
-                  {busy ? <Tag tone="info">{t('portal.working')}</Tag> : a.installed ? <Tag tone="ok">{t('portal.installed')}</Tag> : null}
+                  {busy ? <Tag tone="info">{t('portal.working')}</Tag> : a.update ? <Tag tone="warn">{t('portal.update_avail', { v: a.update.latest })}</Tag> : a.installed ? <Tag tone="ok">{t('portal.installed')}</Tag> : null}
+                  {can('tasks:create') && !busy && a.update && <Button small variant="primary" disabled={act.pending} title={t('portal.update_hint', { from: a.update.installed, to: a.update.latest })} onClick={() => void go(a, 'INSTALL')}>{t('portal.update')}</Button>}
                   {can('tasks:create') && !busy && (a.installed
                     ? <Button small disabled={act.pending} onClick={() => void go(a, 'UNINSTALL')}>{t('portal.uninstall')}</Button>
                     : <Button small variant="primary" disabled={act.pending} onClick={() => void go(a, 'INSTALL')}>{t('portal.install')}</Button>)}
@@ -68,8 +83,74 @@ function Store() {
   );
 }
 
-type Form = Omit<App, 'id' | 'packages'> & { id?: string; packages: string };
-const blank = (): Form => ({ name: '', version: '', category: '', description: '', icon: 'app-window', packages: '', group_ids: [], enabled: true });
+interface Row { key: SystemKey; mode: 'packages' | 'command'; packages: string; install: string; uninstall: string; check: string; latest?: { aur: string } }
+type Form = Omit<App, 'id' | 'recipes' | 'has_command'> & { id?: string; rows: Row[] };
+
+const rowsOf = (r: Recipes): Row[] => SYSTEMS.filter((k) => r[k]).map((k) => {
+  const x = r[k]!;
+  return 'command' in x
+    ? { key: k, mode: 'command', packages: '', ...x.command }
+    : { key: k, mode: 'packages', packages: x.packages.join(', '), install: '', uninstall: '', check: '' };
+});
+const recipesOf = (rows: Row[]): Recipes => Object.fromEntries(rows.map((r) => [r.key, r.mode === 'command'
+  ? { command: { install: r.install, uninstall: r.uninstall, check: r.check.trim(), ...(r.latest ? { latest: r.latest } : {}) } }
+  : { packages: r.packages.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) }]));
+const newRow = (key: SystemKey): Row => ({ key, mode: 'packages', packages: '', install: '', uninstall: '', check: '' });
+const blank = (): Form => ({ name: '', version: '', category: '', description: '', icon: 'app-window', rows: [newRow('*')], group_ids: [], enabled: true });
+
+/** One line per system for the catalog table. */
+function RecipeSummary({ recipes }: { recipes: Recipes }) {
+  const { t } = useI18n();
+  return (
+    <div className="stack" style={{ gap: 2 }}>
+      {SYSTEMS.filter((k) => recipes[k]).map((k) => {
+        const r = recipes[k]!;
+        return <span key={k}><b>{k === '*' ? t('portal.recipe.all') : k}</b> <span className="mono">{'command' in r ? `${t('portal.command_badge')} → ${r.command.check}` : r.packages.join(', ')}</span></span>;
+      })}
+    </div>
+  );
+}
+
+function RecipeEditor({ rows, onChange }: { rows: Row[]; onChange: (rows: Row[]) => void }) {
+  const { t } = useI18n();
+  const { can } = useAuth();
+  const mayCommand = can('portal:commands');
+  const setRow = (i: number, patch: Partial<Row>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const free = SYSTEMS.filter((k) => !rows.some((r) => r.key === k));
+  return (
+    <fieldset className="fieldset">
+      <legend>{t('portal.app.recipes')}</legend>
+      <p className="field__hint" style={{ marginBottom: 12 }}>{t('portal.app.recipes_hint')}</p>
+      <div className="stack">
+        {rows.map((r, i) => (
+          <div key={r.key} className="panel stack" style={{ padding: 12, gap: 10 }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <div className="row row--tight">
+                <Select aria-label={t('portal.app.systems')} value={r.key} onChange={(e) => setRow(i, { key: e.target.value as SystemKey })}>
+                  {[r.key, ...free].map((k) => <option key={k} value={k}>{k === '*' ? t('portal.recipe.all') : k}</option>)}
+                </Select>
+                <Chip active={r.mode === 'packages'} onClick={() => setRow(i, { mode: 'packages' })}>{t('portal.recipe.packages')}</Chip>
+                <Chip active={r.mode === 'command'} onClick={() => (mayCommand || r.mode === 'command') && setRow(i, { mode: 'command' })}>{t('portal.recipe.command')}</Chip>
+              </div>
+              <Button small variant="ghost" icon={<Trash size={14} weight="bold" />} onClick={() => onChange(rows.filter((_, j) => j !== i))}>{t('portal.recipe.remove')}</Button>
+            </div>
+            {r.mode === 'packages' ? (
+              <Field label={t('portal.app.packages')}>{(id) => <TextInput id={id} className="mono" value={r.packages} placeholder="git, make" onChange={(e) => setRow(i, { packages: e.target.value })} />}</Field>
+            ) : (
+              <>
+                <Field label={t('portal.recipe.install')} hint={t('portal.recipe.env_hint')}>{(id) => <TextArea id={id} className="input--code" rows={4} spellCheck={false} value={r.install} disabled={!mayCommand} onChange={(e) => setRow(i, { install: e.target.value })} />}</Field>
+                <Field label={t('portal.recipe.uninstall')}>{(id) => <TextArea id={id} className="input--code" rows={2} spellCheck={false} value={r.uninstall} disabled={!mayCommand} onChange={(e) => setRow(i, { uninstall: e.target.value })} />}</Field>
+                <Field label={t('portal.recipe.check')} hint={t('portal.recipe.check_hint')}>{(id) => <TextInput id={id} className="mono" value={r.check} placeholder="/opt/app/bin/app" disabled={!mayCommand} onChange={(e) => setRow(i, { check: e.target.value })} />}</Field>
+              </>
+            )}
+          </div>
+        ))}
+        {!mayCommand && <p className="field__hint">{t('portal.recipe.command_perm')}</p>}
+        {free.length > 0 && <div><Button small icon={<Plus size={14} weight="bold" />} onClick={() => onChange([...rows, newRow(free[0]!)])}>{t('portal.app.add_system')}</Button></div>}
+      </div>
+    </fieldset>
+  );
+}
 
 function Catalog() {
   const { t } = useI18n();
@@ -82,8 +163,8 @@ function Catalog() {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
   const save = () => act.run(async () => {
     const f = form!;
-    const body = { ...f, packages: f.packages.split(',').map((x) => x.trim()).filter(Boolean) };
-    delete (body as { id?: string }).id;
+    const { id: _id, rows, ...rest } = f;
+    const body = { ...rest, recipes: recipesOf(rows) };
     await api(f.id ? 'PUT' : 'POST', f.id ? `/portal/apps/${f.id}` : '/portal/apps', body);
     setForm(null);
     apps.reload();
@@ -94,14 +175,14 @@ function Catalog() {
       <div><Button variant="primary" icon={<Plus size={16} weight="bold" />} onClick={() => { act.clearError(); setForm(blank()); }}>{t('portal.app.new')}</Button></div>
       {act.error && !form && <Notice kind="error">{act.error}</Notice>}
       {!apps.data ? <Spinner /> : (
-        <Table head={[t('common.name'), t('portal.app.category'), t('portal.app.packages'), t('common.status'), t('common.actions')]} empty={apps.data.length === 0 && <Empty>{t('portal.app.none')}</Empty>}>
+        <Table head={[t('common.name'), t('portal.app.category'), t('portal.app.systems'), t('common.status'), t('common.actions')]} empty={apps.data.length === 0 && <Empty>{t('portal.app.none')}</Empty>}>
           {apps.data.map((a) => (
             <tr key={a.id}>
-              <td className="strong">{a.name}{a.version && <span className="sub">{a.version}</span>}</td>
+              <td className="strong"><span className="row row--tight" style={{ flexWrap: 'nowrap' }}><AppIcon icon={a.icon} url={a.icon_url} size={16} small /><span>{a.name}{a.version && <span className="sub">{a.version}</span>}</span></span></td>
               <td>{a.category || '—'}</td>
-              <td className="mono wrap">{a.packages.join(', ')}</td>
+              <td className="wrap"><RecipeSummary recipes={a.recipes} /></td>
               <td><Tag tone={a.enabled ? 'ok' : 'neutral'}>{a.enabled ? t('notif.channel.enabled') : t('users.disabled')}</Tag></td>
-              <td><div className="row row--tight"><Button small onClick={() => { act.clearError(); setForm({ ...a, packages: a.packages.join(', ') }); }}>{t('common.edit')}</Button><Button small onClick={() => setDeleting(a)}>{t('common.delete')}</Button></div></td>
+              <td><div className="row row--tight"><Button small onClick={() => { act.clearError(); const { recipes, has_command: _hc, icon_url: _iu, ...rest } = a; setForm({ ...rest, rows: rowsOf(recipes) }); }}>{t('common.edit')}</Button><Button small onClick={() => setDeleting(a)}>{t('common.delete')}</Button></div></td>
             </tr>
           ))}
         </Table>
@@ -113,10 +194,10 @@ function Catalog() {
               <Field label={t('common.name')}>{(i) => <TextInput id={i} value={form.name} onChange={(e) => set('name', e.target.value)} required autoFocus />}</Field>
               <Field label={t('portal.app.version')}>{(i) => <TextInput id={i} value={form.version} onChange={(e) => set('version', e.target.value)} />}</Field>
               <Field label={t('portal.app.category')}>{(i) => <TextInput id={i} value={form.category} onChange={(e) => set('category', e.target.value)} placeholder="Développement" />}</Field>
-              <Field label={t('portal.app.icon')}>{(i) => <Select id={i} value={form.icon} onChange={(e) => set('icon', e.target.value)}>{Object.keys(ICONS).filter(Boolean).map((k) => <option key={k} value={k}>{k}</option>)}</Select>}</Field>
             </div>
+            <fieldset className="fieldset"><legend>{t('portal.app.icon')}</legend><IconPicker value={form.icon} onChange={(v) => set('icon', v)} /></fieldset>
             <Field label={t('common.description')}>{(i) => <TextInput id={i} value={form.description} onChange={(e) => set('description', e.target.value)} />}</Field>
-            <Field label={t('portal.app.packages')} hint={t('portal.app.packages_hint')}>{(i) => <TextInput id={i} className="mono" value={form.packages} onChange={(e) => set('packages', e.target.value)} placeholder="git, make" required />}</Field>
+            <RecipeEditor rows={form.rows} onChange={(rows) => set('rows', rows)} />
             <fieldset className="fieldset"><legend>{t('portal.app.scope')}</legend><div className="chips">{groups.data?.map((g) => <GroupTag key={g.id} group={g} active={form.group_ids.includes(g.id)} onClick={() => set('group_ids', form.group_ids.includes(g.id) ? form.group_ids.filter((x) => x !== g.id) : [...form.group_ids, g.id])} />)}</div></fieldset>
             <Check checked={form.enabled} onChange={(v) => set('enabled', v)}>{t('notif.channel.enabled')}</Check>
             {act.error && <Notice kind="error">{act.error}</Notice>}
@@ -129,6 +210,59 @@ function Catalog() {
   );
 }
 
+function Suggestions() {
+  const { t } = useI18n();
+  const toast = useToast();
+  const list = useApi<Suggestion[]>('/portal/suggestions');
+  const act = useAction();
+  const { can } = useAuth();
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState('');
+  const [confirm, setConfirm] = useState<Suggestion | null>(null);
+  /** An application that installs with a command (a repository, an archive) runs a script as root on the machines. */
+  const runsCommand = (s: Suggestion) => Object.values(s.recipes).some((r) => r && 'command' in r);
+  const add = (s: Suggestion) => act.run(async () => {
+    setConfirm(null);
+    await api('POST', '/portal/apps', { name: s.name, category: s.category, description: s.description, icon: s.icon, recipes: s.recipes, group_ids: [], enabled: true });
+    toast.success(t('portal.sugg.added', { name: s.name }));
+    list.reload();
+  });
+  if (!list.data) return list.error ? <Notice kind="error">{list.error.message}</Notice> : <Spinner />;
+  const cats = [...new Set(list.data.map((s) => s.category))].sort();
+  const needle = q.trim().toLowerCase();
+  const shown = list.data.filter((s) => (!cat || s.category === cat) && (!needle || `${s.name} ${s.description}`.toLowerCase().includes(needle)));
+  return (
+    <div className="stack">
+      <p className="muted">{t('portal.sugg.sub')}</p>
+      <div className="row">
+        <Field label={t('portal.sugg.search')}>{(i) => <TextInput id={i} value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 240 }} />}</Field>
+      </div>
+      <div className="chips"><Chip active={!cat} onClick={() => setCat('')}>{t('portal.all')}</Chip>{cats.map((c) => <Chip key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Chip>)}</div>
+      {act.error && <Notice kind="error">{act.error}</Notice>}
+      <div className="appgrid">
+        {shown.map((s) => {
+          return (
+            <div key={s.name} className="cs-card appcard">
+              <div className="appcard__head"><AppIcon icon={s.icon} url={s.icon_url} /><div><b>{s.name}</b><span className="sub">{s.category}</span></div></div>
+              <p className="appcard__desc">{s.description}</p>
+              <div className="field__hint"><RecipeSummary recipes={s.recipes} /></div>
+              <div className="row row--tight" style={{ marginTop: 'auto' }}>
+                {s.in_catalog ? <Tag tone="ok">{t('portal.sugg.in_catalog')}</Tag> : (
+                  <>
+                    <Button small variant="primary" icon={<Plus size={14} weight="bold" />} disabled={act.pending || (runsCommand(s) && !can('portal:commands'))} title={runsCommand(s) && !can('portal:commands') ? t('portal.sugg.needs_perm') : undefined} onClick={() => (runsCommand(s) ? setConfirm(s) : void add(s))}>{t('portal.sugg.add')}</Button>
+                    {runsCommand(s) && <Tag tone="warn">{t('portal.command_badge')}</Tag>}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <ConfirmDialog message={confirm ? t('portal.sugg.confirm_command', { name: confirm.name }) : null} onNo={() => setConfirm(null)} onYes={() => { if (confirm) void add(confirm); }} />
+    </div>
+  );
+}
+
 export default function Page() {
   const { t } = useI18n();
   const { can } = useAuth();
@@ -136,8 +270,8 @@ export default function Page() {
   return (
     <>
       <PageHeader title={t('portal.title')} subtitle={t('portal.subtitle')} />
-      {can('settings:write') && <Tabs value={tab} onChange={setTab} tabs={[{ id: 'apps', label: t('portal.tab.apps') }, { id: 'catalog', label: t('portal.tab.catalog') }]} />}
-      {tab === 'apps' ? <Store /> : <Catalog />}
+      {can('settings:write') && <Tabs value={tab} onChange={setTab} tabs={[{ id: 'apps', label: t('portal.tab.apps') }, { id: 'catalog', label: t('portal.tab.catalog') }, { id: 'suggestions', label: t('portal.tab.suggestions') }]} />}
+      {tab === 'apps' ? <Store /> : tab === 'catalog' ? <Catalog /> : <Suggestions />}
     </>
   );
 }

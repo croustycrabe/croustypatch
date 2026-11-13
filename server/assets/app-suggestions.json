@@ -1,0 +1,910 @@
+[
+ {
+  "name": "Git",
+  "category": "Développement",
+  "icon": "brand:git",
+  "description": "Gestion de versions distribuée.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "git"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "git"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Outils de compilation",
+  "category": "Développement",
+  "icon": "wrench",
+  "description": "Compilateur C/C++, make et outils de construction.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "build-essential"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "base-devel"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Python 3",
+  "category": "Développement",
+  "icon": "brand:python",
+  "description": "Interpréteur Python avec pip et venv.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "python3",
+     "python3-pip",
+     "python3-venv"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "python",
+     "python-pip"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Node.js",
+  "category": "Développement",
+  "icon": "brand:nodedotjs",
+  "description": "Environnement JavaScript côté serveur, avec npm.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "nodejs",
+     "npm"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "nodejs",
+     "npm"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Go",
+  "category": "Développement",
+  "icon": "brand:go",
+  "description": "Compilateur et outils du langage Go.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "golang"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "go"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Rust",
+  "category": "Développement",
+  "icon": "brand:rust",
+  "description": "Compilateur Rust et Cargo (versions de la distribution).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "rustc",
+     "cargo"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "rust"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Visual Studio Code",
+  "category": "Développement",
+  "icon": "code",
+  "description": "Éditeur de code de Microsoft. Debian et Ubuntu : installé depuis le dépôt de Microsoft, ses mises à jour arrivent avec celles du système. Arch : la version Microsoft n’est pas dans pacman mais dans l’AUR (visual-studio-code-bin) : elle est construite par un utilisateur sans droits, après vérification de ce que le paquet de l’AUR contient, puis installée avec pacman. Pas de mise à jour automatique (réinstaller pour passer à la dernière version). Incompatible avec Code - OSS.",
+  "recipes": {
+   "apt": {
+    "command": {
+     "install": "set -eu\nexport DEBIAN_FRONTEND=noninteractive\n# Microsoft's own repository: apt checks its signature and brings new versions with the system updates.\napt-get update -qq\napt-get install -y -qq ca-certificates curl gpg\ncurl -fsSL --retry 3 https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --yes -o /usr/share/keyrings/microsoft.gpg\nchmod 644 /usr/share/keyrings/microsoft.gpg\nrm -f /etc/apt/sources.list.d/vscode.list\ncat > /etc/apt/sources.list.d/vscode.sources <<'EOF'\nTypes: deb\nURIs: https://packages.microsoft.com/repos/code\nSuites: stable\nComponents: main\nArchitectures: amd64,arm64,armhf\nSigned-By: /usr/share/keyrings/microsoft.gpg\nEOF\napt-get update -qq\napt-get install -y code\n",
+     "uninstall": "set -eu\nexport DEBIAN_FRONTEND=noninteractive\napt-get remove -y code\n# The repository goes with the application.\nrm -f /etc/apt/sources.list.d/vscode.sources /etc/apt/sources.list.d/vscode.list\napt-get update -qq || true\n",
+     "check": "/usr/bin/code"
+    }
+   },
+   "pacman": {
+    "command": {
+     "install": "set -eu\n# Microsoft's build comes from the AUR (visual-studio-code-bin), which is not in pacman. It is built by an unprivileged\n# user (makepkg refuses to run as root), then installed with pacman. AUR packages are community packages that nobody at\n# Arch reviews, so the parts that matter are checked below against what was read and tested.\nif [ \"$(pacman -Q code 2>/dev/null | cut -d' ' -f1)\" = code ]; then\n  echo \"Code - OSS (the package 'code') is installed and conflicts with Microsoft's build: remove it first (pacman -R code)\" >&2\n  exit 1\nfi\npacman -S --needed --noconfirm base-devel git || { echo \"pacman could not install base-devel and git: update the system first (pacman -Syu), then install again\" >&2; exit 1; }\ntmp=$(mktemp -d /var/tmp/vscode-aur-XXXXXX)\ntrap 'rm -rf \"$tmp\"' EXIT\nchown nobody:nobody \"$tmp\"\nas_nobody() { runuser -u nobody -- env HOME=\"$tmp\" \"$@\"; }\ncd \"$tmp\"\nas_nobody git clone --depth 1 https://aur.archlinux.org/visual-studio-code-bin.git\ncd visual-studio-code-bin\nfor f in $(ls -A | grep -v '^\\.git$'); do\n  case \"$f\" in\n    PKGBUILD|.SRCINFO|.gitignore|.nvchecker.toml|visual-studio-code-bin.install|visual-studio-code-bin.sh) ;;\n    *) echo \"unexpected file in the AUR package: $f\" >&2; exit 1 ;;\n  esac\ndone\n[ \"$(sha256sum visual-studio-code-bin.install | cut -d' ' -f1)\" = c910a24270895767939b23194673d76641432aa107e6e81ca8ad6f7a8fc6e9b7 ] || { echo \"the install script of the AUR package changed: it runs as root, so it has to be reviewed first\" >&2; exit 1; }\n[ \"$(sha256sum visual-studio-code-bin.sh | cut -d' ' -f1)\" = bd0d9edf69283ebdf4e73e0a7b168d2fcf50acbd01f63674cad93ed4fe42fdad ] || { echo \"the launcher of the AUR package changed: it has to be reviewed first\" >&2; exit 1; }\nhosts=$(grep -E '^source' PKGBUILD | grep -oE 'https?://[^/) ]+' | sort -u)\n[ \"$hosts\" = \"https://update.code.visualstudio.com\" ] || { echo \"the AUR package downloads from somewhere other than Microsoft: $hosts\" >&2; exit 1; }\nif grep -nE 'curl|wget|eval|base64|/dev/tcp|git clone' PKGBUILD >&2; then echo \"the PKGBUILD changed in a way that has to be reviewed first\" >&2; exit 1; fi\n# --nodeps: makepkg would refuse to build until the runtime libraries are installed; pacman -U below installs them.\nas_nobody makepkg --noconfirm --nodeps\nset -- ./visual-studio-code-bin-*.pkg.tar.*\n[ \"$#\" = 1 ] && [ -e \"$1\" ] || { echo \"makepkg did not produce exactly one package\" >&2; exit 1; }\npacman -U --noconfirm \"$1\" || { echo \"pacman could not install the package: update the system first (pacman -Syu), then install again\" >&2; exit 1; }\n",
+     "uninstall": "set -eu\npacman -Rns --noconfirm visual-studio-code-bin\n",
+     "check": "/usr/bin/code",
+     "latest": {
+      "aur": "visual-studio-code-bin"
+     }
+    }
+   }
+  }
+ },
+ {
+  "name": "Code - OSS",
+  "category": "Développement",
+  "icon": "code",
+  "description": "La version libre de l’éditeur de Microsoft, sans la marque ni la boutique d’extensions de Microsoft (elle utilise Open VSX). Arch uniquement, depuis le dépôt officiel ; Debian et Ubuntu n’ont pas de paquet. Incompatible avec Visual Studio Code (Microsoft) : installez l’un ou l’autre.",
+  "recipes": {
+   "pacman": {
+    "packages": [
+     "code"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Zed",
+  "category": "Développement",
+  "icon": "brand:zedindustries",
+  "description": "Éditeur de code rapide et collaboratif, écrit en Rust. Debian et Ubuntu : archive officielle installée dans /opt (pas de mise à jour automatique : réinstaller pour passer à la dernière version). Arch : dépôt officiel. Demande un bureau graphique et un processeur graphique compatible Vulkan.",
+  "recipes": {
+   "apt": {
+    "command": {
+     "install": "set -eu\ncase \"$(uname -m)\" in\n  x86_64|amd64) arch=x86_64 ;;\n  aarch64|arm64) arch=aarch64 ;;\n  *) echo \"Zed is not published for $(uname -m)\" >&2; exit 1 ;;\nesac\nif ! command -v curl >/dev/null 2>&1; then\n  export DEBIAN_FRONTEND=noninteractive\n  apt-get update -qq\n  apt-get install -y -qq ca-certificates curl\nfi\ntmp=$(mktemp -d /tmp/zed-XXXXXX)\ntrap 'rm -rf \"$tmp\"' EXIT\n# Zed's official release archive (the one its own installer uses), read completely before anything is replaced.\ncurl -fsSL --retry 3 -o \"$tmp/zed.tar.gz\" \"https://cloud.zed.dev/releases/stable/latest/download?asset=zed&arch=$arch&os=linux&source=install.sh\"\ntar -tzf \"$tmp/zed.tar.gz\" >/dev/null\nmkdir \"$tmp/x\"\ntar -xzf \"$tmp/zed.tar.gz\" -C \"$tmp/x\" --no-same-owner\ntest -x \"$tmp/x/zed.app/bin/zed\"\nchown -R root:root \"$tmp/x/zed.app\"\nrm -rf /opt/zed.app\nmv \"$tmp/x/zed.app\" /opt/zed.app\nln -sf /opt/zed.app/bin/zed /usr/local/bin/zed\ninstall -D -m 644 /opt/zed.app/share/applications/dev.zed.Zed.desktop /usr/share/applications/dev.zed.Zed.desktop\ninstall -D -m 644 /opt/zed.app/share/icons/hicolor/512x512/apps/zed.png /usr/share/icons/hicolor/512x512/apps/zed.png\nif command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi\nif command -v gtk-update-icon-cache >/dev/null 2>&1; then gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true; fi\n",
+     "uninstall": "set -eu\nif [ \"$(readlink /usr/local/bin/zed 2>/dev/null)\" = /opt/zed.app/bin/zed ]; then rm -f /usr/local/bin/zed; fi\nrm -rf /opt/zed.app\nrm -f /usr/share/applications/dev.zed.Zed.desktop /usr/share/icons/hicolor/512x512/apps/zed.png\nif command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi\n",
+     "check": "/usr/local/bin/zed"
+    }
+   },
+   "pacman": {
+    "packages": [
+     "zed"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Neovim",
+  "category": "Développement",
+  "icon": "brand:neovim",
+  "description": "Éditeur de texte modal, successeur de Vim.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "neovim"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "neovim"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Vim",
+  "category": "Développement",
+  "icon": "brand:vim",
+  "description": "Éditeur de texte modal.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "vim"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "vim"
+    ]
+   }
+  }
+ },
+ {
+  "name": "jq",
+  "category": "Développement",
+  "icon": "terminal",
+  "description": "Lire et transformer du JSON en ligne de commande.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "jq"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "jq"
+    ]
+   }
+  }
+ },
+ {
+  "name": "SQLite",
+  "category": "Développement",
+  "icon": "brand:sqlite",
+  "description": "Base de données SQL dans un fichier, avec son client.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "sqlite3"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "sqlite"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Client PostgreSQL",
+  "category": "Développement",
+  "icon": "brand:postgresql",
+  "description": "psql et outils clients PostgreSQL.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "postgresql-client"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "postgresql-libs"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Client MariaDB",
+  "category": "Développement",
+  "icon": "brand:mariadb",
+  "description": "Client en ligne de commande MariaDB / MySQL.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "mariadb-client"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "mariadb-clients"
+    ]
+   }
+  }
+ },
+ {
+  "name": "htop",
+  "category": "Système",
+  "icon": "brand:htop",
+  "description": "Moniteur de processus interactif.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "htop"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "htop"
+    ]
+   }
+  }
+ },
+ {
+  "name": "btop",
+  "category": "Système",
+  "icon": "chart-bar",
+  "description": "Moniteur de ressources (CPU, mémoire, disques, réseau).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "btop"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "btop"
+    ]
+   }
+  }
+ },
+ {
+  "name": "tmux",
+  "category": "Système",
+  "icon": "brand:tmux",
+  "description": "Multiplexeur de terminal : sessions qui survivent à la déconnexion.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "tmux"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "tmux"
+    ]
+   }
+  }
+ },
+ {
+  "name": "ncdu",
+  "category": "Système",
+  "icon": "chart-bar",
+  "description": "Voir ce qui occupe le disque.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ncdu"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ncdu"
+    ]
+   }
+  }
+ },
+ {
+  "name": "tree",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Afficher une arborescence de dossiers.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "tree"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "tree"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Zsh",
+  "category": "Système",
+  "icon": "brand:zsh",
+  "description": "Shell interactif.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "zsh"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "zsh"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Fastfetch",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "Résumé du système dans le terminal. Sur Debian : version 13 ou plus.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "fastfetch"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "fastfetch"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Recherche en terminal",
+  "category": "Système",
+  "icon": "terminal",
+  "description": "ripgrep, fd, fzf et bat : chercher et lire des fichiers vite.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ripgrep",
+     "fd-find",
+     "fzf",
+     "bat"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ripgrep",
+     "fd",
+     "fzf",
+     "bat"
+    ]
+   }
+  }
+ },
+ {
+  "name": "rsync",
+  "category": "Système",
+  "icon": "wrench",
+  "description": "Copie et synchronisation de fichiers.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "rsync"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "rsync"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Restic",
+  "category": "Sauvegarde",
+  "icon": "database",
+  "description": "Sauvegardes chiffrées et dédupliquées.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "restic"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "restic"
+    ]
+   }
+  }
+ },
+ {
+  "name": "BorgBackup",
+  "category": "Sauvegarde",
+  "icon": "brand:borgbackup",
+  "description": "Sauvegardes dédupliquées et chiffrées.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "borgbackup"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "borg"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Outils réseau",
+  "category": "Réseau",
+  "icon": "wrench",
+  "description": "dig, mtr, iperf3, tcpdump et nmap pour diagnostiquer le réseau.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "bind9-dnsutils",
+     "mtr-tiny",
+     "iperf3",
+     "tcpdump",
+     "nmap"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "bind",
+     "mtr",
+     "iperf3",
+     "tcpdump",
+     "nmap"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Wireshark",
+  "category": "Réseau",
+  "icon": "brand:wireshark",
+  "description": "Analyse de trafic réseau (interface graphique).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "wireshark"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "wireshark-qt"
+    ]
+   }
+  }
+ },
+ {
+  "name": "WireGuard",
+  "category": "Réseau",
+  "icon": "brand:wireguard",
+  "description": "Outils du VPN WireGuard (wg, wg-quick).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "wireguard-tools"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "wireguard-tools"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Docker",
+  "category": "Conteneurs",
+  "icon": "brand:docker",
+  "description": "Moteur de conteneurs Docker et Compose (paquets de la distribution).",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "docker.io",
+     "docker-compose"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "docker",
+     "docker-compose"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Podman",
+  "category": "Conteneurs",
+  "icon": "brand:podman",
+  "description": "Conteneurs sans démon, compatibles Docker.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "podman"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "podman"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Ansible",
+  "category": "Administration",
+  "icon": "brand:ansible",
+  "description": "Automatisation de configuration par SSH.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "ansible"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "ansible"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Lynis",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Audit de durcissement du système.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "lynis"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "lynis"
+    ]
+   }
+  }
+ },
+ {
+  "name": "ClamAV",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Antivirus en ligne de commande.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "clamav"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "clamav"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Fail2ban",
+  "category": "Sécurité",
+  "icon": "shield-check",
+  "description": "Bannir les adresses qui échouent à se connecter.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "fail2ban"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "fail2ban"
+    ]
+   }
+  }
+ },
+ {
+  "name": "KeePassXC",
+  "category": "Sécurité",
+  "icon": "brand:keepassxc",
+  "description": "Gestionnaire de mots de passe hors ligne.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "keepassxc"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "keepassxc"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Firefox",
+  "category": "Internet",
+  "icon": "brand:firefox",
+  "description": "Navigateur web.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "firefox-esr"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "firefox"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Chromium",
+  "category": "Internet",
+  "icon": "browser",
+  "description": "Navigateur web libre à la base de Chrome.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "chromium"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "chromium"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Thunderbird",
+  "category": "Internet",
+  "icon": "brand:thunderbird",
+  "description": "Courriel, agenda et contacts.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "thunderbird"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "thunderbird"
+    ]
+   }
+  }
+ },
+ {
+  "name": "FileZilla",
+  "category": "Internet",
+  "icon": "brand:filezilla",
+  "description": "Client FTP et SFTP.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "filezilla"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "filezilla"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Remmina",
+  "category": "Internet",
+  "icon": "app-window",
+  "description": "Bureau à distance RDP, VNC et SSH.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "remmina"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "remmina"
+    ]
+   }
+  }
+ },
+ {
+  "name": "LibreOffice",
+  "category": "Bureautique",
+  "icon": "brand:libreoffice",
+  "description": "Traitement de texte, tableur et présentations.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "libreoffice"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "libreoffice-fresh"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Okular",
+  "category": "Bureautique",
+  "icon": "brand:kde",
+  "description": "Lecteur de PDF et de documents.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "okular"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "okular"
+    ]
+   }
+  }
+ },
+ {
+  "name": "GIMP",
+  "category": "Graphisme",
+  "icon": "brand:gimp",
+  "description": "Retouche d’images.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "gimp"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "gimp"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Inkscape",
+  "category": "Graphisme",
+  "icon": "brand:inkscape",
+  "description": "Dessin vectoriel.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "inkscape"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "inkscape"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Krita",
+  "category": "Graphisme",
+  "icon": "brand:krita",
+  "description": "Peinture numérique.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "krita"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "krita"
+    ]
+   }
+  }
+ },
+ {
+  "name": "VLC",
+  "category": "Multimédia",
+  "icon": "brand:vlcmediaplayer",
+  "description": "Lecteur audio et vidéo.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "vlc"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "vlc"
+    ]
+   }
+  }
+ },
+ {
+  "name": "Audacity",
+  "category": "Multimédia",
+  "icon": "brand:audacity",
+  "description": "Enregistrement et montage audio.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "audacity"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "audacity"
+    ]
+   }
+  }
+ },
+ {
+  "name": "OBS Studio",
+  "category": "Multimédia",
+  "icon": "brand:obsstudio",
+  "description": "Enregistrement d’écran et diffusion en direct.",
+  "recipes": {
+   "apt": {
+    "packages": [
+     "obs-studio"
+    ]
+   },
+   "pacman": {
+    "packages": [
+     "obs-studio"
+    ]
+   }
+  }
+ }
+]

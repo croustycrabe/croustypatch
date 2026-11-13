@@ -15,9 +15,11 @@ pub struct Config {
     /// Heartbeat interval used on battery (economy profile).
     pub eco_heartbeat_secs: u64,
     pub eco_enabled: bool,
+    /// Seconds without any frame from the server (it pings every 30 s) before the tunnel is taken for dead and reopened.
+    pub link_silence_secs: u64,
     /// Log what would be changed but never modify the system.
     pub dry_run: bool,
-    /// auto | apt | pacman | pkg | mock
+    /// auto | apt | pacman | mock
     pub package_manager: String,
     /// Test backend only: JSON file describing a fake package set.
     pub mock_file: String,
@@ -39,6 +41,7 @@ impl Default for Config {
             heartbeat_secs: 60,
             eco_heartbeat_secs: 900,
             eco_enabled: true,
+            link_silence_secs: 90,
             dry_run: false,
             package_manager: "auto".into(),
             mock_file: String::new(),

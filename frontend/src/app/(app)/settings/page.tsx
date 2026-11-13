@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Card, Field, Notice, PageHeader, Select, Spinner, Switch, Tag, TextInput } from '@/components/ui';
+import { DockerRegistries } from '@/components/DockerRegistries';
+import { Button, Card, Field, LinkButton, Notice, PageHeader, Select, Spinner, Switch, Tag, TextArea, TextInput } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
@@ -9,7 +10,7 @@ import type { MessageKey } from '@/lib/messages';
 import { useToast } from '@/lib/toast';
 import type { Modules, Settings as SettingsT } from '@/lib/types';
 
-const MODULES: (keyof Modules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'notifications', 'eco'];
+const MODULES: (keyof Modules)[] = ['docker', 'helper_script', 'portal', 'notifications', 'eco'];
 
 function Settings() {
   const { t } = useI18n();
@@ -19,6 +20,8 @@ function Settings() {
   const [s, setS] = useState<SettingsT | null>(null);
   const act = useAction();
   const writable = can('settings:write');
+  // The SSH sources are edited as text (one network per line) and parsed on save.
+  const [sources, setSources] = useState<string | null>(null);
 
   useEffect(() => { if (data.data) setS(data.data); }, [data.data]);
   if (!s) return data.error ? <Notice kind="error">{data.error.message}</Notice> : <Spinner />;
@@ -52,15 +55,6 @@ function Settings() {
           </div>
         </Card>
 
-        {s.compliance && (
-          <Card title={t('settings.compliance')} actions={<SaveBtn k="compliance" />}>
-            <div className="form-grid">
-              <Field label={t('settings.compliance.threshold')}>{(i) => <TextInput id={i} type="number" min={0} max={100} value={s.compliance.threshold} disabled={!writable} onChange={(e) => setS({ ...s, compliance: { ...s.compliance, threshold: Number(e.target.value) } })} />}</Field>
-              <Field label={t('settings.compliance.profile')}>{(i) => <TextInput id={i} className="mono" value={s.compliance.profile} placeholder="xccdf_org.ssgproject.content_profile_cis_level1_server" disabled={!writable} onChange={(e) => setS({ ...s, compliance: { ...s.compliance, profile: e.target.value } })} />}</Field>
-            </div>
-          </Card>
-        )}
-
         <Card title={t('settings.ai')} actions={<SaveBtn k="ai" />}>
           <div className="form-grid">
             <div className="span-all"><Switch checked={s.ai.enabled} disabled={!writable} onChange={(v) => setS({ ...s, ai: { ...s.ai, enabled: v } })}>{t('settings.ai.enabled')}</Switch></div>
@@ -72,9 +66,18 @@ function Settings() {
           {writable && <AiTest />}
         </Card>
 
+        <Card title={t('settings.isolation')} actions={writable ? <Button variant="primary" small disabled={act.pending} onClick={() => void save('isolation', { ...s.isolation, ssh_port: Number(s.isolation.ssh_port), ssh_sources: (sources ?? s.isolation.ssh_sources.join('\n')).split(/[\s,]+/).map((x) => x.trim()).filter(Boolean) }).then(() => setSources(null))}>{t('common.save')}</Button> : null}>
+          <p className="muted" style={{ marginBottom: 16 }}>{t('settings.isolation.hint')}</p>
+          <div className="form-grid">
+            <div className="span-all"><Switch checked={s.isolation.keep_ssh} disabled={!writable} onChange={(v) => setS({ ...s, isolation: { ...s.isolation, keep_ssh: v } })}>{t('settings.isolation.keep_ssh')}</Switch></div>
+            <Field label={t('settings.isolation.port')}>{(i) => <TextInput id={i} type="number" min={1} max={65535} value={s.isolation.ssh_port} disabled={!writable || !s.isolation.keep_ssh} onChange={(e) => setS({ ...s, isolation: { ...s.isolation, ssh_port: Number(e.target.value) } })} />}</Field>
+            <Field label={t('settings.isolation.sources')} hint={t('settings.isolation.sources_hint')}>{(i) => <TextArea id={i} className="input--code" rows={3} spellCheck={false} placeholder="10.0.10.0/24" value={sources ?? s.isolation.ssh_sources.join('\n')} disabled={!writable || !s.isolation.keep_ssh} onChange={(e) => setSources(e.target.value)} />}</Field>
+          </div>
+        </Card>
+
         <div className="grid grid--2">
           <Card title={t('settings.conn')} actions={<SaveBtn k="connectivity" />}>
-            <Field label={t('settings.conn.mode')}>{(i) => (
+            <Field label={t('settings.conn.mode')} hint={t('settings.conn.hint')}>{(i) => (
               <Select id={i} value={s.connectivity.mode} disabled={!writable} onChange={(e) => setS({ ...s, connectivity: { mode: e.target.value as 'connected' | 'air_gapped' } })}>
                 <option value="connected">{t('settings.conn.connected')}</option>
                 <option value="air_gapped">{t('settings.conn.air_gapped')}</option>
@@ -84,6 +87,8 @@ function Settings() {
             <Field label={t('settings.agent.heartbeat')}>{(i) => <TextInput id={i} type="number" min={10} max={3600} value={s.agent.heartbeat_secs} disabled={!writable} onChange={(e) => setS({ ...s, agent: { heartbeat_secs: Number(e.target.value) } })} />}</Field>
           </Card>
         </div>
+
+        <DockerRegistries mode={data.data?.connectivity.mode} />
       </div>
     </>
   );

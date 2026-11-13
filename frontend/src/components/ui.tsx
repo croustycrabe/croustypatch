@@ -328,7 +328,7 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: 
 }
 
 /** Dropdown menu closed by Escape or a click outside. */
-export function Menu({ label, trigger, children, up }: { label: string; trigger: ReactNode; children: (close: () => void) => ReactNode; up?: boolean }) {
+export function Menu({ label, trigger, children, up, triggerClass }: { label: string; trigger: ReactNode; children: (close: () => void) => ReactNode; up?: boolean; triggerClass?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -344,7 +344,7 @@ export function Menu({ label, trigger, children, up }: { label: string; trigger:
   }, [open]);
   return (
     <div className="menu" ref={ref} style={up ? { display: 'block' } : undefined}>
-      <button type="button" className={up ? 'usercard' : 'btn btn--outline btn--icon'} aria-haspopup="menu" aria-expanded={open} aria-label={label} onClick={() => setOpen((o) => !o)}>
+      <button type="button" className={up ? 'usercard' : triggerClass ?? 'btn btn--outline btn--icon'} aria-haspopup="menu" aria-expanded={open} aria-label={label} onClick={() => setOpen((o) => !o)}>
         {trigger}
       </button>
       {open && (

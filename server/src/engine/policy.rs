@@ -1,11 +1,39 @@
 //! Policy definition (stored as JSONB) and maintenance-window arithmetic.
 use super::expr;
-use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use croustypatch_common::model::{HealthProbe, PolicyAction, RiskLevel};
 use serde::{Deserialize, Serialize};
 
+/// What a policy does with container image updates (`docker:<name>` entries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerMode {
+    /// Together with the system updates (the behaviour of policies saved before 0.6).
+    #[default]
+    Include,
+    /// Leave containers alone: another policy (or nobody) updates them.
+    Exclude,
+    /// Only containers: a dedicated Docker policy, with its own schedule.
+    Only,
+}
+
+impl DockerMode {
+    /// Does an update from this source belong to a policy in this mode?
+    pub fn takes(&self, source: &str) -> bool {
+        match self {
+            DockerMode::Include => true,
+            DockerMode::Exclude => source != "docker",
+            DockerMode::Only => source == "docker",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyDef {
+    /// Container image updates: with the system updates (default for existing policies), left out, or the only
+    /// thing this policy updates.
+    #[serde(default)]
+    pub docker: DockerMode,
     /// When true the contextual risk comes from the AI provider (falls back to the rules on error).
     #[serde(default)]
     pub ai_mode_enabled: bool,
@@ -114,17 +142,87 @@ pub struct RingCfg {
     pub delay_minutes: u32,
 }
 
-/// Weekly recurring window in a fixed UTC offset.
+/// How a patch day repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Repeat {
+    /// On the listed weekdays (every day when none are listed), every week.
+    #[default]
+    Weekly,
+    /// The Nth listed weekday of each month ("first Monday"): `nth` 1..=4, or 5 for the last one.
+    MonthlyWeekday,
+    /// The same day of each month (`day_of_month` 1..=28).
+    MonthlyDay,
+}
+
+/// A recurring patch window: when updates may run. Existing weekly windows (days, start, end, UTC offset) load
+/// unchanged; `repeat`, `nth`, `day_of_month` and `timezone` are additions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaintenanceWindow {
-    /// 0 = Monday … 6 = Sunday. Empty = every day.
+    /// 0 = Monday … 6 = Sunday. Empty = every day (weekly repeat only).
     #[serde(default)]
     pub days: Vec<u32>,
-    /// "HH:MM"
+    /// "HH:MM", local time in the window's zone. `end` earlier than `start` means the window ends the next day.
     pub start: String,
     pub end: String,
+    /// Fixed offset from UTC; ignored when `timezone` is set.
     #[serde(default)]
     pub utc_offset_minutes: i32,
+    /// IANA zone such as "Europe/Paris": daylight saving time is followed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub repeat: Repeat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nth: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_of_month: Option<u32>,
+}
+
+impl Default for MaintenanceWindow {
+    fn default() -> Self {
+        Self { days: vec![], start: "02:00".into(), end: "04:00".into(), utc_offset_minutes: 0, timezone: None, repeat: Repeat::Weekly, nth: None, day_of_month: None }
+    }
+}
+
+/// One concrete occurrence of a window, in UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Occurrence {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+enum Zone {
+    Fixed(Duration),
+    Named(chrono_tz::Tz),
+}
+
+struct ParsedWindow {
+    start: NaiveTime,
+    end: NaiveTime,
+    zone: Zone,
+}
+
+impl ParsedWindow {
+    fn local(&self, utc: DateTime<Utc>) -> NaiveDateTime {
+        match &self.zone {
+            Zone::Fixed(o) => (utc + *o).naive_utc(),
+            Zone::Named(tz) => utc.with_timezone(tz).naive_local(),
+        }
+    }
+
+    /// Local wall-clock time to UTC. An ambiguous time (clocks go back) takes its first occurrence; a time that does
+    /// not exist (clocks go forward) moves to the first moment after the gap.
+    fn utc(&self, local: NaiveDateTime) -> DateTime<Utc> {
+        match &self.zone {
+            Zone::Fixed(o) => Utc.from_utc_datetime(&(local - *o)),
+            Zone::Named(tz) => match tz.from_local_datetime(&local) {
+                LocalResult::Single(t) => t.with_timezone(&Utc),
+                LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc),
+                LocalResult::None => tz.from_local_datetime(&(local + Duration::hours(1))).earliest().map(|t| t.with_timezone(&Utc)).unwrap_or_else(|| Utc.from_utc_datetime(&local)),
+            },
+        }
+    }
 }
 
 impl PolicyDef {
@@ -146,13 +244,6 @@ impl PolicyDef {
     }
 }
 
-struct ParsedWindow {
-    days: Vec<u32>,
-    start: NaiveTime,
-    end: NaiveTime,
-    offset: Duration,
-}
-
 impl MaintenanceWindow {
     fn parse(&self) -> Result<ParsedWindow, String> {
         let t = |s: &str| NaiveTime::parse_from_str(s, "%H:%M").map_err(|_| format!("bad time '{s}', expected HH:MM"));
@@ -163,22 +254,90 @@ impl MaintenanceWindow {
         if start == end {
             return Err("start and end must differ".into());
         }
-        Ok(ParsedWindow { days: self.days.clone(), start, end, offset: Duration::minutes(self.utc_offset_minutes as i64) })
+        let zone = match self.timezone.as_deref().map(str::trim).filter(|z| !z.is_empty()) {
+            Some(z) => Zone::Named(z.parse::<chrono_tz::Tz>().map_err(|_| format!("unknown timezone '{z}' (e.g. Europe/Paris)"))?),
+            None => Zone::Fixed(Duration::minutes(self.utc_offset_minutes as i64)),
+        };
+        match self.repeat {
+            Repeat::Weekly => {}
+            Repeat::MonthlyWeekday => {
+                if self.days.is_empty() {
+                    return Err("choose the weekday of the patch day".into());
+                }
+                if !self.nth.is_some_and(|n| (1..=5).contains(&n)) {
+                    return Err("nth must be 1 to 4, or 5 for the last".into());
+                }
+            }
+            Repeat::MonthlyDay => {
+                if !self.day_of_month.is_some_and(|d| (1..=28).contains(&d)) {
+                    return Err("day_of_month must be 1 to 28".into());
+                }
+            }
+        }
+        Ok(ParsedWindow { start, end, zone })
     }
 
-    /// Is `now` inside the window?
-    pub fn contains(&self, now: DateTime<Utc>) -> bool {
-        let Ok(w) = self.parse() else { return true };
-        let local = now + w.offset;
-        let day_ok = |d: u32| w.days.is_empty() || w.days.contains(&d);
-        let t = local.time();
-        let today = local.weekday().num_days_from_monday();
-        if w.start < w.end {
-            day_ok(today) && t >= w.start && t < w.end
-        } else {
-            // overnight: evening part belongs to today, morning part to yesterday's window
-            (day_ok(today) && t >= w.start) || (day_ok((today + 6) % 7) && t < w.end)
+    /// Does the window open on this calendar date (local to its zone)?
+    fn opens_on(&self, d: NaiveDate) -> bool {
+        match self.repeat {
+            Repeat::Weekly => self.days.is_empty() || self.days.contains(&d.weekday().num_days_from_monday()),
+            Repeat::MonthlyWeekday => {
+                if !self.days.contains(&d.weekday().num_days_from_monday()) {
+                    return false;
+                }
+                match self.nth {
+                    Some(5) => (d + Duration::days(7)).month() != d.month(),
+                    Some(n) => (d.day() - 1) / 7 + 1 == n,
+                    None => false,
+                }
+            }
+            Repeat::MonthlyDay => self.day_of_month == Some(d.day()),
         }
+    }
+
+    fn occurrence_on(&self, w: &ParsedWindow, d: NaiveDate) -> Occurrence {
+        let start = w.utc(d.and_time(w.start));
+        let end_day = if w.start < w.end { d } else { d + Duration::days(1) };
+        Occurrence { start, end: w.utc(end_day.and_time(w.end)) }
+    }
+
+    /// The occurrence `now` is inside, if any.
+    pub fn current(&self, now: DateTime<Utc>) -> Option<Occurrence> {
+        let w = self.parse().ok()?;
+        let today = w.local(now).date();
+        // A window is shorter than a day: only yesterday's or today's occurrence can contain `now`.
+        [today - Duration::days(1), today].into_iter().filter(|d| self.opens_on(*d)).map(|d| self.occurrence_on(&w, d)).find(|o| o.start <= now && now < o.end)
+    }
+
+    /// Is `now` inside the window? An invalid window never blocks anything.
+    pub fn contains(&self, now: DateTime<Utc>) -> bool {
+        self.parse().is_err() || self.current(now).is_some()
+    }
+
+    /// The next `n` occurrences that start after `now` (the current one is not included).
+    pub fn upcoming(&self, now: DateTime<Utc>, n: usize) -> Vec<Occurrence> {
+        let Ok(w) = self.parse() else { return vec![] };
+        let today = w.local(now).date();
+        let mut out = vec![];
+        // The sparsest pattern (the last weekday of a month) repeats within 5 weeks; scan well beyond that.
+        for add in 0..(n as i64 * 35 + 70) {
+            let d = today + Duration::days(add);
+            if self.opens_on(d) {
+                let o = self.occurrence_on(&w, d);
+                if o.start > now {
+                    out.push(o);
+                    if out.len() == n {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The window to use for a task: the current occurrence when inside one, else the next.
+    pub fn occurrence(&self, now: DateTime<Utc>) -> Option<Occurrence> {
+        self.current(now).or_else(|| self.upcoming(now, 1).into_iter().next())
     }
 
     /// Start of the window to use: `now` if already inside, otherwise the next opening.
@@ -186,19 +345,6 @@ impl MaintenanceWindow {
         if self.contains(now) {
             return now;
         }
-        let Ok(w) = self.parse() else { return now };
-        let local = now + w.offset;
-        for add in 0..8 {
-            let day = local.date_naive() + Duration::days(add);
-            if !(w.days.is_empty() || w.days.contains(&day.weekday().num_days_from_monday())) {
-                continue;
-            }
-            let cand = day.and_time(w.start);
-            let cand_utc = Utc.from_utc_datetime(&(cand - w.offset));
-            if cand_utc > now {
-                return cand_utc;
-            }
-        }
-        now
+        self.upcoming(now, 1).first().map(|o| o.start).unwrap_or(now)
     }
 }

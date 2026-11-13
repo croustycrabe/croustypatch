@@ -21,19 +21,43 @@ pub fn detect_package_manager(configured: &str) -> PackageManager {
     match configured {
         "apt" => PackageManager::Apt,
         "pacman" => PackageManager::Pacman,
-        "pkg" => PackageManager::Pkg,
         "dnf" => PackageManager::Dnf,
         _ => {
             if exec::has_program("apt-get") && exec::has_program("dpkg-query") {
                 PackageManager::Apt
             } else if exec::has_program("pacman") {
                 PackageManager::Pacman
-            } else if exec::has_program("pkg") && cfg!(target_os = "freebsd") {
-                PackageManager::Pkg
             } else {
                 PackageManager::Unknown
             }
         }
+    }
+}
+
+/// Where the desktop app center is installed.
+pub const PORTAL_GUI: &str = "/usr/local/bin/croustypatch-portal-gui";
+
+/// Is a graphical desktop installed? A display manager service, or desktop sessions offered at login
+/// (`xsessions` / `wayland-sessions`). The systemd default target is not used: distributions ship
+/// `graphical.target` as the default even on servers. `root` is "/" except in tests.
+pub fn desktop_detected_in(root: &std::path::Path) -> bool {
+    let non_empty = |p: &str| std::fs::read_dir(root.join(p)).map(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".desktop")))).unwrap_or(false);
+    root.join("etc/systemd/system/display-manager.service").exists()
+        || ["usr/share/xsessions", "usr/share/wayland-sessions"].iter().any(|p| non_empty(p))
+}
+
+pub fn desktop_detected() -> bool {
+    desktop_detected_in(std::path::Path::new("/"))
+}
+
+/// laptop (system battery) > workstation (graphical desktop) > server.
+pub fn machine_type(is_laptop: bool, is_desktop: bool) -> &'static str {
+    if is_laptop {
+        "laptop"
+    } else if is_desktop {
+        "workstation"
+    } else {
+        "server"
     }
 }
 
@@ -64,14 +88,7 @@ pub async fn power_state() -> (bool, bool) {
         }
         (has_battery, has_battery && (discharging || ac_online == Some(false)))
     }
-    #[cfg(target_os = "freebsd")]
-    {
-        let acline = exec::run(&Cmd::new("sysctl", &["-n", "hw.acpi.acline"])).await.ok().filter(|o| o.ok()).map(|o| o.stdout.trim().to_string());
-        let life = exec::run(&Cmd::new("sysctl", &["-n", "hw.acpi.battery.life"])).await.ok().filter(|o| o.ok());
-        let laptop = life.is_some();
-        (laptop, laptop && acline.as_deref() == Some("0"))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    #[cfg(not(target_os = "linux"))]
     {
         (false, false)
     }
@@ -98,10 +115,7 @@ pub async fn local_ip(server_url: &str) -> Vec<String> {
 
 pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>) -> HostFacts {
     let (is_laptop, on_battery) = power_state().await;
-    let (os_family, distro, os_version) = if cfg!(target_os = "freebsd") {
-        let v = exec::run(&Cmd::new("freebsd-version", &[])).await.ok().map(|o| o.stdout.trim().to_string()).unwrap_or_default();
-        ("freebsd".to_string(), "FreeBSD".to_string(), v)
-    } else {
+    let (os_family, distro, os_version) = {
         let rel = parse_os_release(&std::fs::read_to_string("/etc/os-release").or_else(|_| std::fs::read_to_string("/usr/lib/os-release")).unwrap_or_default());
         ("linux".to_string(), rel.get("NAME").cloned().unwrap_or_else(|| "Linux".into()), rel.get("VERSION_ID").or(rel.get("BUILD_ID")).cloned().unwrap_or_default())
     };
@@ -117,6 +131,7 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         .or_else(|| std::env::var("HOSTNAME").ok())
         .unwrap_or_default();
     let hostname = if hostname.is_empty() { exec::run(&Cmd::new("hostname", &[])).await.ok().map(|o| o.stdout.trim().to_string()).unwrap_or_else(|| "unknown".into()) } else { hostname };
+    let is_desktop = desktop_detected();
     HostFacts {
         hostname,
         os_family,
@@ -126,10 +141,14 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         arch: std::env::consts::ARCH.to_string(),
         package_manager: Some(pm),
         is_laptop,
+        is_desktop,
+        portal_gui: std::path::Path::new(PORTAL_GUI).is_file(),
         on_battery,
-        virtualization: None,
+        virtualization: crate::sysinfo::virtualization(),
         ip_addresses: local_ip(server_url).await,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         modules,
+        capabilities: croustypatch_common::protocol::capability::ALL.iter().map(|s| s.to_string()).collect(),
+        hardware: crate::sysinfo::hardware(),
     }
 }

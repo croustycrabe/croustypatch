@@ -6,14 +6,17 @@ const BIG_JSON: usize = 16 * 1024 * 1024;
 
 pub(crate) mod admin;
 mod ai;
-pub(crate) mod compliance_api;
 mod mcp;
-mod agent_dist;
-mod notifications;
+pub mod agent_dist;
+pub(crate) mod notifications;
+mod docker;
+mod docker_registries;
+mod docker_shell;
+mod reports;
 mod packages;
-mod portal;
+pub mod portal;
 mod fleet;
-mod patching;
+pub mod patching;
 mod system;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
@@ -27,6 +30,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/agent/ws", web::get().to(gateway::ws_tunnel))
             .route("/agent/portal", web::get().to(portal::agent_view))
             .route("/agent/portal/install", web::post().to(portal::agent_request))
+            .route("/agent/portal/updates", web::get().to(portal::agent_updates))
+            .route("/agent/portal/update", web::post().to(portal::agent_update))
             // --- "Add agent": installer script and binaries (public, no secrets)
             .route("/agent/install.sh", web::get().to(agent_dist::install_script))
             .route("/agent/platforms", web::get().to(agent_dist::platforms))
@@ -37,6 +42,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/auth/me", web::get().to(auth::me))
             .route("/auth/password", web::post().to(auth::change_password))
             .route("/auth/language", web::put().to(auth::set_language))
+            .route("/auth/profile", web::patch().to(auth::update_profile))
             .route("/dashboard/layout", web::get().to(auth::get_layout))
             .route("/dashboard/layout", web::put().to(auth::put_layout))
             .route("/dashboard", web::get().to(system::dashboard))
@@ -59,9 +65,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/portal/apps/{id}", web::delete().to(portal::delete))
             .route("/portal/hosts/{id}", web::get().to(portal::host_view))
             .route("/portal/install", web::post().to(portal::request))
-            .route("/compliance", web::get().to(compliance_api::fleet))
-            .route("/hosts/{id}/compliance", web::get().to(compliance_api::host))
-            .route("/hosts/{id}/compliance-scan", web::post().to(compliance_api::scan))
+            .route("/portal/suggestions", web::get().to(portal::suggestions))
+            .route("/portal/brand-icons", web::get().to(portal::brand_icons))
             .route("/mcp", web::post().to(mcp::endpoint))
             .route("/mcp", web::get().to(mcp::no_stream))
             .route("/auth/tokens", web::get().to(mcp::list_tokens))
@@ -80,6 +85,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/notifications/rules/{id}", web::delete().to(notifications::delete_rule))
             .route("/notifications/rules/{id}/digest", web::post().to(notifications::send_digest_now))
             .route("/notifications/history", web::get().to(notifications::history))
+            .route("/reports", web::get().to(reports::list))
+            .route("/reports", web::post().to(reports::create))
+            .route("/reports/preview", web::post().to(reports::preview))
+            .route("/reports/{id}", web::put().to(reports::update))
+            .route("/reports/{id}", web::delete().to(reports::delete))
+            .route("/reports/{id}/send", web::post().to(reports::send_now))
+            .route("/reports/{id}/runs", web::get().to(reports::runs))
             // --- fleet
             .route("/hosts", web::get().to(fleet::list_hosts))
             .route("/hosts/{id}", web::get().to(fleet::get_host))
@@ -89,6 +101,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/hosts/{id}/quarantine", web::post().to(fleet::quarantine_host))
             .route("/hosts/{id}/release", web::post().to(fleet::release_host))
             .route("/hosts/{id}/reboot", web::post().to(fleet::reboot_host))
+            .route("/hosts/{id}/agent-update", web::post().to(fleet::update_agent))
+            .route("/docker", web::get().to(docker::list))
+            .route("/docker/migration", web::get().to(docker_shell::migration))
+            .route("/docker/shell", web::post().to(docker_shell::run))
+            .route("/docker/migration-plan", web::post().to(docker_shell::plan))
+            .route("/docker/registries", web::get().to(docker_registries::list))
+            .route("/docker/registries", web::put().to(docker_registries::put))
             .route("/packages", web::get().to(packages::list_packages))
             .route("/packages/{name}/hosts", web::get().to(packages::package_hosts))
             .route("/groups", web::get().to(fleet::list_groups))
@@ -102,6 +121,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/policies", web::get().to(patching::list_policies))
             .route("/policies", web::post().to(patching::create_policy))
             .route("/policies/simulate", web::post().to(patching::simulate))
+            .route("/policies/preview-schedule", web::post().to(patching::preview_schedule))
+            .route("/hosts/{id}/patching", web::get().to(patching::host_patching))
+            .route("/hosts/{id}/metrics", web::get().to(fleet::host_metrics))
             .route("/policies/{id}", web::put().to(patching::update_policy))
             .route("/policies/{id}", web::delete().to(patching::delete_policy))
             .route("/tasks", web::get().to(patching::list_tasks))
@@ -119,8 +141,16 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/waivers/{id}/revoke", web::post().to(patching::revoke_waiver))
             // --- audit
             .route("/audit", web::get().to(system::list_audit))
-            .route("/audit/verify", web::get().to(system::verify_audit)),
+            .route("/audit/verify", web::get().to(system::verify_audit))
+            .route("/logs", web::get().to(system::list_logs)),
     );
+}
+
+/// A plausible e-mail address: one `@`, no spaces, control characters or angle brackets (used for recipients and
+/// profiles; the SMTP server is the real judge).
+pub(crate) fn email_ok(v: &str) -> bool {
+    let v = v.trim();
+    v.len() <= 254 && v.matches('@').count() == 1 && !v.starts_with('@') && !v.ends_with('@') && !v.chars().any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
 }
 
 /// Shared input validation helpers.

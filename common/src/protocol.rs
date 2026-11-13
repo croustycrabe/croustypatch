@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HostFacts {
     pub hostname: String,
-    /// "linux" or "freebsd".
+    /// "linux".
     pub os_family: String,
     pub distro: String,
     pub os_version: String,
@@ -21,12 +21,182 @@ pub struct HostFacts {
     pub package_manager: Option<PackageManager>,
     pub is_laptop: bool,
     pub on_battery: bool,
+    /// A graphical desktop is installed (display manager or desktop sessions): a workstation unless it is a laptop.
+    #[serde(default)]
+    pub is_desktop: bool,
+    /// The desktop app center (`croustypatch-portal-gui`) is installed.
+    #[serde(default)]
+    pub portal_gui: bool,
     pub virtualization: Option<String>,
     pub ip_addresses: Vec<String>,
     pub agent_version: String,
-    /// Optional modules loaded in the agent (docker, openscap, ...).
+    /// Optional modules loaded in the agent (docker, helper scripts, ...).
     #[serde(default)]
     pub modules: Vec<String>,
+    /// Protocol features this agent understands (see `capability`); empty on agents before 0.4.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// What the machine is made of (empty on agents before 0.6).
+    #[serde(default)]
+    pub hardware: Hardware,
+}
+
+/// Static description of the machine: CPU, memory and what the firmware says it is. No serial numbers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hardware {
+    pub cpu_model: String,
+    /// Logical processors.
+    pub cpu_cores: u32,
+    pub mem_total_mb: u64,
+    pub swap_total_mb: u64,
+    /// Manufacturer and model as the firmware reports them (a laptop, a server, "QEMU Standard PC"...).
+    pub vendor: String,
+    pub product: String,
+    pub bios: String,
+}
+
+/// How busy the machine is right now (sent with the heartbeat).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Metrics {
+    /// CPU use since the previous sample, 0-100 (None on the first sample or where it cannot be measured).
+    pub cpu_pct: Option<f32>,
+    pub mem_total_mb: u64,
+    pub mem_used_mb: u64,
+    pub swap_total_mb: u64,
+    pub swap_used_mb: u64,
+    pub load_5m: f32,
+    pub load_15m: f32,
+    pub disks: Vec<DiskUsage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DiskUsage {
+    pub mount: String,
+    pub fs: String,
+    pub total_mb: u64,
+    pub used_mb: u64,
+}
+
+/// Feature flags an agent advertises in its facts, so the server never sends an order an older agent would misread.
+pub mod capability {
+    /// Understands `ServerMessage::Settings` / `TelemetryResponse::settings` (per-host modules).
+    pub const SETTINGS: &str = "settings";
+    /// Runs app-center command recipes (`CommandAction::App { command, .. }`).
+    pub const APP_COMMAND: &str = "app_command";
+    /// Replaces its own binary on `CommandAction::UpdateAgent`.
+    pub const SELF_UPDATE: &str = "self_update";
+    /// Changes the tag of a container's image in its compose file (`ApplyUpdates::retag`). An agent without it would
+    /// ignore the field and pull the tag it already has, so the server never sends it one.
+    pub const DOCKER_RETAG: &str = "docker_retag";
+    /// Runs the migration console's steps (`CommandAction::DockerShell`).
+    pub const DOCKER_SHELL: &str = "docker_shell";
+    pub const ALL: &[&str] = &[SETTINGS, APP_COMMAND, SELF_UPDATE, DOCKER_RETAG, DOCKER_SHELL];
+}
+
+/// Optional features switched on per host by the server (Hosts > host > Modules).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostModules {
+    pub docker: bool,
+    pub helper_script: bool,
+    pub portal: bool,
+    pub eco: bool,
+    /// Users of this machine may start its pending system updates from the app center, without approval.
+    pub portal_updates: bool,
+}
+
+impl HostModules {
+    pub const NAMES: &[&str] = &["docker", "helper_script", "portal", "portal_updates", "eco"];
+    pub fn get(&self, name: &str) -> bool {
+        match name {
+            "docker" => self.docker,
+            "helper_script" | "helper-script" => self.helper_script,
+            "portal" => self.portal,
+            "portal_updates" => self.portal_updates,
+            "eco" => self.eco,
+            _ => false,
+        }
+    }
+}
+
+/// Server-side settings pushed to an agent (on connection and whenever they change).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentSettings {
+    pub modules: HostModules,
+    #[serde(default)]
+    pub isolation: IsolationSettings,
+    /// Air-gapped installation (Settings > Connectivity): no lookup on the internet (container registries, the AUR).
+    /// The agent then reports what is installed, and what its own package manager offers through local mirrors.
+    #[serde(default)]
+    pub offline: bool,
+    /// AUR packages that app center applications install (`latest.aur` of their recipe): the agent checks them for a
+    /// newer version with each inventory, so the web interface can show app updates too (agents 0.9+).
+    #[serde(default)]
+    pub watch_aur: Vec<String>,
+    /// Docker registries the administrator configured (Settings > Docker registries), for hosts with the Docker
+    /// module on: the agent looks images up there (and logs in with what is given), and in offline mode only through
+    /// the local ones. Agents before 0.10 ignore the field.
+    #[serde(default)]
+    pub registries: Vec<RegistryProfile>,
+}
+
+/// A Docker registry the agent may use: a distant one (Docker Hub, GHCR, a private one) or one on the local network.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegistryProfile {
+    pub name: String,
+    /// `local` (on the local network: usable in offline mode) or `distant`.
+    pub kind: String,
+    /// `host[:port]` as written in image references (`registry.lan:5000`).
+    pub host: String,
+    /// Upstream registries this one mirrors (`docker.io`, `ghcr.io`): their images are looked up here first.
+    pub mirror_of: Vec<String>,
+    /// Path before the repository on this registry (a Harbor proxy project: `dockerhub-proxy/`).
+    pub path_prefix: String,
+    pub username: String,
+    pub password: String,
+    /// Plain HTTP (a registry on the local network without TLS).
+    pub insecure: bool,
+}
+
+/// An application installed outside the package manager's own update check (built from the AUR) that has a newer
+/// version: what the inventory says next to the packages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppUpdate {
+    pub package: String,
+    pub installed: String,
+    pub latest: String,
+}
+
+/// What stays reachable while a host is isolated (double failure or manual quarantine), besides the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IsolationSettings {
+    /// Keep inbound SSH open, so an administrator can still log in and repair the host.
+    pub keep_ssh: bool,
+    pub ssh_port: u16,
+    /// Networks allowed to reach SSH (CIDR or address); empty = any source.
+    pub ssh_sources: Vec<String>,
+}
+
+impl Default for IsolationSettings {
+    fn default() -> Self {
+        Self { keep_ssh: true, ssh_port: 22, ssh_sources: vec![] }
+    }
+}
+
+/// `192.0.2.0/24`, `2001:db8::/32` or a single address, normalised; None when malformed (never reaches a firewall).
+pub fn parse_cidr(s: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (ip, len) = match s.trim().split_once('/') {
+        Some((ip, len)) => (ip.parse::<std::net::IpAddr>().ok()?, len.parse::<u8>().ok()?),
+        None => {
+            let ip = s.trim().parse::<std::net::IpAddr>().ok()?;
+            (ip, if ip.is_ipv4() { 32 } else { 128 })
+        }
+    };
+    (len <= if ip.is_ipv4() { 32 } else { 128 }).then_some((ip, len))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +212,9 @@ pub struct PackageEntry {
     /// "system" for OS packages; later "docker", "helper-script".
     #[serde(default = "system")]
     pub source: String,
+    /// Extra facts about the entry (containers: image, stack, service, state, health, start time).
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub meta: serde_json::Value,
 }
 
 fn system() -> String {
@@ -54,6 +227,9 @@ pub struct Inventory {
     pub packages: Vec<PackageEntry>,
     pub reboot_required: bool,
     pub collected_at: DateTime<Utc>,
+    /// Watched AUR packages ([`AgentSettings::watch_aur`]) that have a newer version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_updates: Vec<AppUpdate>,
 }
 
 // ------------------------------------------------------------------ enrolment
@@ -83,31 +259,6 @@ pub enum AgentMessage {
     Heartbeat(Heartbeat),
     Inventory(Inventory),
     TaskUpdate(TaskUpdate),
-    /// Result of an OpenSCAP evaluation, sent before the task's final update.
-    Compliance { task_id: Uuid, report: ComplianceReport },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FailedRule {
-    pub rule_id: String,
-    pub severity: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComplianceReport {
-    pub profile: String,
-    pub datastream: String,
-    pub passed: u32,
-    pub failed: u32,
-    pub not_applicable: u32,
-    /// Errors, unknown, not checked…
-    pub other: u32,
-    /// passed / (passed + failed), in percent.
-    pub score: f64,
-    pub failed_rules: Vec<FailedRule>,
-    /// SHA-256 of the raw XCCDF result file kept on the host.
-    pub results_sha256: String,
-    pub collected_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +271,9 @@ pub struct Heartbeat {
     /// Tasks the agent currently runs; lets the server detect lost work.
     #[serde(default)]
     pub running_tasks: Vec<Uuid>,
+    /// Resource use (agents from 0.6).
+    #[serde(default)]
+    pub metrics: Option<Metrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +302,8 @@ pub struct PackageChange {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     Welcome { heartbeat_secs: u64 },
+    /// Per-host settings; only sent to agents advertising `capability::SETTINGS`.
+    Settings(AgentSettings),
     Command(SignedCommand),
     /// Ask for a fresh inventory right away.
     Ping,
@@ -180,6 +336,10 @@ pub enum CommandAction {
         packages: Vec<String>,
         #[serde(default)]
         exec: ExecPolicy,
+        /// `docker:<container>` -> the image reference to move it to (the same image with another tag). The agent
+        /// changes the tag in the service's compose file, recreates it, and puts the file back if that fails.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        retag: std::collections::BTreeMap<String, String>,
     },
     /// Revert the packages changed by a previous patch task.
     Rollback { target_task: Uuid },
@@ -193,13 +353,91 @@ pub enum CommandAction {
         #[serde(default)]
         message: String,
     },
-    /// OpenSCAP evaluation with a profile id (empty: the SSG "standard" profile).
-    ComplianceScan {
-        #[serde(default)]
-        profile: String,
+    /// App center: install or remove a catalog application, from its packages or (agents with
+    /// `capability::APP_COMMAND`) from an admin-written command recipe.
+    App {
+        install: bool,
+        packages: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<AppCommand>,
+        /// Local account that asked (TUI), so the result can be checked against its rights; None from the web UI.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
     },
-    /// App center: install or remove the packages of a catalog application.
-    App { install: bool, packages: Vec<String> },
+    /// Replace the agent binary with the server's build for this platform, then restart. When the desktop app center
+    /// is installed and the server has a build of it, `gui_sha256` refreshes it in the same operation.
+    UpdateAgent {
+        platform: String,
+        sha256: String,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gui_sha256: Option<String>,
+    },
+    /// Docker migration console (agents with `capability::DOCKER_SHELL`): run the steps one after the other as root
+    /// with `sh -c`, stop at the first one that fails. The commands were written or reviewed by a person with the
+    /// `docker:shell` permission, and are recorded in the audit log as sent.
+    DockerShell {
+        /// `docker:<container>` the migration is about (for the log).
+        container: String,
+        steps: Vec<ShellStep>,
+        /// Who wrote the steps: `manual` (templates and edits) or `ai` (a draft the person reviewed).
+        #[serde(default)]
+        source: String,
+    },
+}
+
+/// One command of the migration console.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellStep {
+    pub title: String,
+    pub command: String,
+}
+
+/// What the console accepts: 1 to 20 steps, each with a title and a command of at most 8000 characters.
+pub const SHELL_MAX_STEPS: usize = 20;
+pub const SHELL_MAX_COMMAND: usize = 8000;
+
+pub fn check_shell_steps(steps: &[ShellStep]) -> Result<(), String> {
+    if steps.is_empty() || steps.len() > SHELL_MAX_STEPS {
+        return Err(format!("a migration has 1 to {SHELL_MAX_STEPS} steps"));
+    }
+    for (i, s) in steps.iter().enumerate() {
+        let n = i + 1;
+        if s.title.trim().is_empty() || s.title.chars().count() > 120 || s.title.chars().any(|c| c.is_control()) {
+            return Err(format!("step {n}: the title is 1 to 120 characters"));
+        }
+        if s.command.trim().is_empty() || s.command.chars().count() > SHELL_MAX_COMMAND || s.command.contains('\0') {
+            return Err(format!("step {n}: the command is 1 to {SHELL_MAX_COMMAND} characters"));
+        }
+    }
+    Ok(())
+}
+
+/// Command recipe of an app-center application (run as root with `sh -c`, umask 022).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppCommand {
+    pub install: String,
+    pub uninstall: String,
+    /// Absolute path that exists once the app is installed. It must be usable by the user who asked
+    /// (or by every user when the request came from the web UI).
+    pub check: String,
+    /// Where to find out that a newer version exists. Software installed by a command is not in the package manager's
+    /// update list, so without this the app center cannot say that an update is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<LatestVersion>,
+}
+
+/// An AUR package name as the AUR spells it (what may end up in a request URL and a pacman command).
+pub fn valid_aur_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 100 && !n.starts_with(['-', '.']) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '@' | '.' | '_' | '+' | '-'))
+}
+
+/// Where the latest version of a command-installed application is published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LatestVersion {
+    /// An AUR package (Arch): the installed version is what pacman says, the latest is what the AUR says.
+    Aur(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +476,8 @@ pub struct TelemetryRequest {
 pub struct TelemetryResponse {
     pub commands: Vec<SignedCommand>,
     pub heartbeat_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<AgentSettings>,
 }
 
 /// Build a signed command envelope.

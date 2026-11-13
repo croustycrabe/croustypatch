@@ -20,7 +20,19 @@ pub enum Request {
     List,
     Install { app_id: String },
     Uninstall { app_id: String },
+    /// Pending system updates of this machine, and whether the user may start them.
+    Updates,
+    /// Start the pending system updates (all, or the named ones), as the user who asks.
+    Update {
+        #[serde(default)]
+        packages: Vec<String>,
+    },
+    /// Look for updates now (refresh the repositories and send a fresh inventory); returns at once.
+    Check,
 }
+
+/// A check is already running: asking again does nothing.
+static CHECKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// One line of JSON back: `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`.
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,14 +52,39 @@ pub fn user_name(passwd: &str, uid: u32) -> String {
     }).filter(|n| !n.is_empty() && n.len() <= 32 && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))).unwrap_or_else(|| format!("uid{uid}"))
 }
 
-/// Add `local: {present, total, missing}` to every app, from the packages installed on this machine.
-pub fn annotate_local(view: &mut Value, installed: &std::collections::HashSet<String>) {
+/// Add `local: {present, total, missing}` to every app, from the packages installed on this machine; a command app
+/// counts as present when its check path is usable by the asking user (`usable`).
+pub fn annotate_local(view: &mut Value, installed: &std::collections::HashSet<String>, usable: impl Fn(&str) -> bool) {
     if let Some(apps) = view.get_mut("apps").and_then(|a| a.as_array_mut()) {
         for app in apps {
+            if let Some(check) = app.get("command").and_then(|c| c.get("check")).and_then(|c| c.as_str()).map(str::to_owned) {
+                let ok = usable(&check);
+                app["local"] = json!({ "present": ok as u32, "total": 1, "missing": if ok { vec![] } else { vec![check] } });
+                continue;
+            }
             let pkgs: Vec<String> = app.get("packages").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default();
             let missing: Vec<&String> = pkgs.iter().filter(|p| !installed.contains(*p)).collect();
             app["local"] = json!({ "present": pkgs.len() - missing.len(), "total": pkgs.len(), "missing": missing });
         }
+    }
+}
+
+/// For command apps that say where their latest version is published: what is installed, what is the latest, and
+/// whether an update is available (`local.installed_version`, `local.latest_version`, `local.update`). Quiet when the
+/// lookup fails: the app is then shown as before.
+pub async fn annotate_updates(view: &mut Value) {
+    use croustypatch_common::protocol::LatestVersion;
+    let Some(apps) = view.get_mut("apps").and_then(|a| a.as_array_mut()) else { return };
+    for app in apps {
+        let Some(LatestVersion::Aur(pkg)) = app.get("command").and_then(|c| c.get("latest")).and_then(|l| serde_json::from_value::<LatestVersion>(l.clone()).ok()) else { continue };
+        if app.pointer("/local/present").and_then(|p| p.as_u64()) != Some(1) {
+            continue;
+        }
+        let (Some(have), Ok(latest)) = (crate::modules::aur::installed(&pkg).await, crate::modules::aur::latest(&pkg).await) else { continue };
+        let newer = crate::modules::aur::is_newer(&latest, &have).await;
+        app["local"]["installed_version"] = json!(have);
+        app["local"]["latest_version"] = json!(latest);
+        app["local"]["update"] = json!(newer);
     }
 }
 
@@ -82,17 +119,42 @@ impl Relay {
         Ok(v)
     }
 
-    pub async fn handle(&self, req: Request, user: &str) -> Response {
+    pub async fn handle(&self, req: Request, user: &str, uid: u32) -> Response {
         let bad_id = matches!(&req, Request::Install { app_id } | Request::Uninstall { app_id } if app_id.len() > 64);
+        let bad_list = matches!(&req, Request::Update { packages } if packages.len() > 1000 || packages.iter().any(|p| !croustypatch_common::model::is_valid_package_name(p)));
         let res = match req {
             _ if bad_id => Err(anyhow!("bad app id")),
+            _ if bad_list => Err(anyhow!("bad package list")),
+            Request::Updates => self.call("GET", "/agent/portal/updates", None).await,
+            Request::Update { packages } => self.call("POST", "/agent/portal/update", Some(json!({ "packages": packages, "user": user }))).await,
+            Request::Check => match &self.agent {
+                Some(a) if !CHECKING.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                    let a = a.clone();
+                    tokio::spawn(async move {
+                        let log = crate::runner::TaskLog::default();
+                        a.backend.refresh(&a.runner, &log).await;
+                        if let Err(e) = a.send_inventory().await {
+                            tracing::warn!("update check: {e:#}");
+                        }
+                        CHECKING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
+                    Ok(json!({ "started": true }))
+                }
+                Some(_) => Ok(json!({ "started": false, "already": true })),
+                None => Err(anyhow!("not available here")),
+            },
             Request::List => match self.call("GET", "/agent/portal", None).await {
                 Ok(mut v) => {
                     if let Some(a) = &self.agent {
                         // Checked on this machine at every listing: the truth, even for software installed by hand.
                         if let Ok(inv) = a.backend.inventory(&a.runner).await {
                             let names: std::collections::HashSet<String> = inv.into_iter().filter(|p| p.source == "system").map(|p| p.name).collect();
-                            annotate_local(&mut v, &names);
+                            // Command apps: usable by the person at the keyboard, not just present for root.
+                            let target = crate::app_command::lookup(user).await.unwrap_or(crate::app_command::Target { name: user.to_string(), uid, gid: u32::MAX - 1, groups: vec![], home: String::new() });
+                            annotate_local(&mut v, &names, |p| crate::app_command::usable_by(Path::new(p), &target).is_ok());
+                            if !a.offline() {
+                                annotate_updates(&mut v).await;
+                            }
                         }
                     }
                     Ok(v)
@@ -138,7 +200,7 @@ pub async fn serve(relay: Arc<Relay>) -> Result<()> {
             let mut lines = BufReader::new(r.take(64 * 1024)).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let resp = match serde_json::from_str::<Request>(&line) {
-                    Ok(req) => relay.handle(req, &user).await,
+                    Ok(req) => relay.handle(req, &user, uid).await,
                     Err(_) => Response { ok: false, data: Value::Null, error: "bad request".into() },
                 };
                 let mut out = serde_json::to_vec(&resp).unwrap_or_default();

@@ -37,6 +37,23 @@ character set before use. Health probes accept only `tcp`, `http(s)` and service
   tampering after the fact; it cannot prove the *latest* entries were not removed unless you also record the
   head hash elsewhere (export it periodically).
 
+## App center self-service (0.7)
+
+Updates started from the desktop app center need no approval, so the server limits what they can do: the request
+comes from the agent's own signed identity (a host only ever acts on itself), the local user comes from the socket's
+peer credentials, the app center and the host's **Updates from the app center** switch must be on, the host must not
+be pending or quarantined, one patch or rollback at a time, and every name must be a pending *system* update of that
+machine. Everything is audited (`portal.update_requested`, task requested by `local:<user>@<host>`). Uploaded app
+icons are checked by content, size-limited and only shown through `<img>`.
+
+## Applying a Docker version (0.7.4)
+
+The only thing the agent writes outside its own directories is the `image:` line of a compose file, and only when asked
+by a signed command that the server builds from the container's own inventory (never from an image name in a request).
+The agent re-checks that the new reference is the running one with another tag, edits one literal line it can identify
+without doubt, keeps the original for the rollback and leaves any file that changed since alone. A major version needs an
+explicit confirmation. See `modules.md`.
+
 ## Known limits
 
 - The server → PostgreSQL link is not TLS-protected (the client library is compiled without OpenSSL). Keep it on a private network or a unix socket.
@@ -46,6 +63,6 @@ character set before use. Health probes accept only `tcp`, `http(s)` and service
   in English whatever the UI language; the UI's own text is fully bilingual.
 - A task in flight is lost if the agent restarts; the server marks it failed after 90 minutes of silence.
 - OIDC/SSO, SMTP/SMS, SIEM export and Vault are not implemented yet.
-- Verified on Linux with the mock package backend and unit-tested parsers. The apt, pacman and FreeBSD paths
-  run real commands that were not exercised on those systems here; `nft` and `pf` rule generation is tested
+- Verified on Linux with the mock package backend and unit-tested parsers. The apt and pacman paths
+  run real commands that were not exercised on those systems here; `nft` rule generation is tested
   but the rules were not applied on a live host.

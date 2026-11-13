@@ -25,6 +25,12 @@ struct PolicyOut {
     #[serde(flatten)]
     policy: Policy,
     group_ids: Vec<Uuid>,
+    /// Hosts in the policy's groups.
+    hosts: i64,
+    /// Is the patch window open right now (always true without a window)?
+    in_window: bool,
+    /// The next three patch days.
+    next_runs: Vec<crate::engine::policy::Occurrence>,
 }
 
 pub async fn list_policies(state: web::Data<AppState>, user: AuthUser) -> ApiResult<HttpResponse> {
@@ -37,7 +43,21 @@ pub async fn list_policies(state: web::Data<AppState>, user: AuthUser) -> ApiRes
             for (p, g) in links {
                 m.entry(p).or_default().push(g);
             }
-            Ok(ps.into_iter().map(|p| PolicyOut { group_ids: m.remove(&p.id).unwrap_or_default(), policy: p }).collect::<Vec<_>>())
+            let members: Vec<(Uuid, Uuid)> = crate::schema::host_group_members::table.select((crate::schema::host_group_members::group_id, crate::schema::host_group_members::host_id)).load(c)?;
+            let now = Utc::now();
+            Ok(ps
+                .into_iter()
+                .map(|p| {
+                    let group_ids = m.remove(&p.id).unwrap_or_default();
+                    let hosts = members.iter().filter(|(g, _)| group_ids.contains(g)).map(|(_, h)| *h).collect::<std::collections::HashSet<_>>().len() as i64;
+                    let window = serde_json::from_value::<PolicyDef>(p.definition.clone()).ok().and_then(|d| d.maintenance_window);
+                    let (in_window, next_runs) = match &window {
+                        Some(w) => (w.contains(now), w.upcoming(now, 3)),
+                        None => (true, vec![]),
+                    };
+                    PolicyOut { group_ids, hosts, in_window, next_runs, policy: p }
+                })
+                .collect::<Vec<_>>())
         })
         .await?;
     Ok(HttpResponse::Ok().json(out))
@@ -86,7 +106,7 @@ pub async fn create_policy(state: web::Data<AppState>, user: AuthUser, body: web
                     diesel::insert_into(policy_groups::table).values((policy_groups::policy_id.eq(p.id), policy_groups::group_id.eq(g))).on_conflict_do_nothing().execute(c)?;
                 }
                 audit::record(c, Event::new(&user.username, "policy.created").target("policy", &p.id.to_string()).details(json!({"name": p.name, "groups": b.group_ids, "definition": canonical})).ip(&user.ip))?;
-                Ok(PolicyOut { policy: p, group_ids: b.group_ids })
+                Ok(PolicyOut { policy: p, group_ids: b.group_ids, hosts: 0, in_window: true, next_runs: vec![] })
             })
         })
         .await?;
@@ -116,7 +136,7 @@ pub async fn update_policy(state: web::Data<AppState>, user: AuthUser, path: web
                     diesel::insert_into(policy_groups::table).values((policy_groups::policy_id.eq(id), policy_groups::group_id.eq(g))).on_conflict_do_nothing().execute(c)?;
                 }
                 audit::record(c, Event::new(&user.username, "policy.updated").target("policy", &id.to_string()).details(json!({"name": p.name, "groups": b.group_ids, "definition": canonical, "enabled": p.enabled})).ip(&user.ip))?;
-                Ok(PolicyOut { policy: p, group_ids: b.group_ids })
+                Ok(PolicyOut { policy: p, group_ids: b.group_ids, hosts: 0, in_window: true, next_runs: vec![] })
             })
         })
         .await?;
@@ -149,6 +169,33 @@ pub async fn simulate(state: web::Data<AppState>, user: AuthUser, body: web::Jso
     let b = body.into_inner();
     let def = parse_def(&b.definition)?;
     let out = state.db(move |c| planner::simulate(c, b.host_id, &def)).await?;
+    Ok(HttpResponse::Ok().json(out))
+}
+
+#[derive(Deserialize)]
+pub struct SchedulePreviewBody {
+    window: crate::engine::policy::MaintenanceWindow,
+}
+
+/// POST /policies/preview-schedule — the next patch days of a window being edited, computed by the same code the
+/// planner uses (time zone and daylight saving time included).
+pub async fn preview_schedule(user: AuthUser, body: web::Json<SchedulePreviewBody>) -> ApiResult<HttpResponse> {
+    user.require("policies:read")?;
+    let w = body.into_inner().window;
+    let mut def = PolicyDef::default();
+    def.maintenance_window = Some(w.clone());
+    if let Err(e) = def.validate() {
+        return Ok(HttpResponse::Ok().json(json!({ "valid": false, "error": e, "next": [] })));
+    }
+    let now = Utc::now();
+    Ok(HttpResponse::Ok().json(json!({ "valid": true, "error": null, "open": w.contains(now), "next": w.upcoming(now, 5) })))
+}
+
+/// GET /hosts/{id}/patching — why this host is, or is not, being patched automatically.
+pub async fn host_patching(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>) -> ApiResult<HttpResponse> {
+    user.require("hosts:read")?;
+    let id = path.into_inner();
+    let out = state.db(move |c| planner::explain(c, id, Utc::now())).await?;
     Ok(HttpResponse::Ok().json(out))
 }
 
@@ -215,9 +262,51 @@ pub struct NewTasks {
     /// Only "patch" is accepted here; scans have their own endpoint.
     #[serde(default = "patch_kind")]
     kind: String,
-    /// Empty = every pending update.
+    /// Empty = every pending update (of the chosen scope).
     #[serde(default)]
     packages: Vec<String>,
+    /// What to update: the operating system, the Docker containers, or both (the default).
+    #[serde(default)]
+    scope: UpdateScope,
+    /// Move the named containers to the newer version tag their agent reported (the compose file's `image:` line is
+    /// changed on the host). Docker only, and only containers named in `packages`.
+    #[serde(default)]
+    to_latest: bool,
+    /// Confirms a major version change (`3.x` to `4.x`, a database's next major): refused without it.
+    #[serde(default)]
+    allow_major: bool,
+    /// With `to_latest`: pull the new version from this configured registry (Settings > Docker registries) and write
+    /// that registry into the compose file, so the container keeps using it. Empty: the image's own registry.
+    #[serde(default)]
+    registry_id: Option<String>,
+}
+
+/// Which pending updates a manual request takes. System updates and container images are separate tasks whatever
+/// the scope; the scope only chooses which of the two are created.
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateScope {
+    #[default]
+    All,
+    System,
+    Docker,
+}
+
+impl UpdateScope {
+    fn takes(self, source: &str) -> bool {
+        match self {
+            UpdateScope::All => true,
+            UpdateScope::System => source != "docker",
+            UpdateScope::Docker => source == "docker",
+        }
+    }
+    fn nothing(self, host: &str) -> String {
+        match self {
+            UpdateScope::All => format!("{host} has nothing to update"),
+            UpdateScope::System => format!("{host} has no pending system updates"),
+            UpdateScope::Docker => format!("{host} has no pending container updates"),
+        }
+    }
 }
 fn patch_kind() -> String {
     "patch".into()
@@ -237,6 +326,12 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
     if let Some(bad) = b.packages.iter().find(|p| !is_valid_package_name(p)) {
         return Err(ApiError::bad(format!("invalid package name: {bad}")));
     }
+    if b.to_latest {
+        if b.scope != UpdateScope::Docker || b.packages.is_empty() || b.packages.iter().any(|p| !p.starts_with("docker:")) {
+            return Err(ApiError::bad("a new version is applied to named containers: scope docker and packages docker:<container>"));
+        }
+        return create_retag_tasks(&state, user, b).await;
+    }
     let host_ids = b.host_ids.clone();
     let ids: Vec<(Uuid, Uuid)> = state
         .db(move |c| {
@@ -247,42 +342,163 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
                     if matches!(host.status.as_str(), "pending" | "quarantined") {
                         return Err(ApiError::Conflict(format!("{} is {}", host.hostname, host.status)));
                     }
-                    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
-                    if open > 0 {
-                        return Err(ApiError::Conflict(format!("{} already has an open patch task", host.hostname)));
-                    }
                     let mut q = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::candidate.is_not_null()).into_boxed();
                     if !b.packages.is_empty() {
                         q = q.filter(host_packages::name.eq_any(b.packages.clone()));
                     }
-                    let pending: Vec<crate::models::HostPackage> = q.select(crate::models::HostPackage::as_select()).load(c)?;
+                    let pending: Vec<crate::models::HostPackage> = q.select(crate::models::HostPackage::as_select()).load(c)?.into_iter().filter(|p| b.scope.takes(&p.source)).collect();
                     if pending.is_empty() {
-                        return Err(ApiError::Conflict(format!("{} has nothing to update", host.hostname)));
+                        return Err(ApiError::Conflict(b.scope.nothing(&host.hostname)));
                     }
-                    let batch: Vec<planner::Candidate> = pending.into_iter().filter_map(|p| p.candidate.clone().map(|candidate| planner::Candidate { pkg: p, candidate })).collect();
                     let groups = planner::host_groups(c, host_id)?;
                     let def = planner::applicable_policy(c, &host, &groups)?;
                     let exec: ExecPolicy = def.as_ref().map(|p| planner::exec_policy(&p.def, host.has_staging, &host.criticality)).unwrap_or_default();
+                    // System updates and container images are separate tasks.
+                    let (docker, system): (Vec<_>, Vec<_>) = pending.into_iter().filter_map(|p| p.candidate.clone().map(|candidate| planner::Candidate { pkg: p, candidate })).partition(|b| b.pkg.source == "docker");
+                    let (mut made, mut blocked) = (vec![], vec![]);
+                    for (kind, batch) in [("patch", system), ("docker", docker)] {
+                        if batch.is_empty() {
+                            continue;
+                        }
+                        let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(planner::blocking_kinds(kind))).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+                        if open > 0 {
+                            blocked.push(kind);
+                            continue;
+                        }
+                        let id: Uuid = diesel::insert_into(tasks::table)
+                            .values((
+                                tasks::host_id.eq(host_id),
+                                tasks::kind.eq(kind),
+                                tasks::status.eq("queued"),
+                                tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
+                                tasks::packages.eq(planner::packages_json(&batch)),
+                                tasks::exec.eq(Some(serde_json::to_value(&exec).unwrap_or_default())),
+                                tasks::requested_by.eq(&user.username),
+                                tasks::message.eq(format!("manual {} update by {}", if kind == "docker" { "container" } else { "patch" }, user.username)),
+                            ))
+                            .returning(tasks::id)
+                            .get_result(c)?;
+                        diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
+                        audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": kind, "scope": b.scope})).ip(&user.ip))?;
+                        made.push(id);
+                    }
+                    if made.is_empty() {
+                        return Err(ApiError::Conflict(format!("{} already has an open {} task", host.hostname, if blocked.first() == Some(&"docker") { "container" } else { "patch" })));
+                    }
+                    Ok(made)
+                });
+                created.push(r.map(|ids| ids.into_iter().map(|id| (host_id, id)).collect::<Vec<_>>()));
+            }
+            // Report partial failures instead of hiding them.
+            let (ok, errs): (Vec<_>, Vec<_>) = created.into_iter().partition(|r| r.is_ok());
+            if ok.is_empty() {
+                return Err(errs.into_iter().next().unwrap().unwrap_err());
+            }
+            Ok(ok.into_iter().flat_map(|r| r.unwrap()).collect())
+        })
+        .await?;
+    for h in &host_ids {
+        gateway::push_pending(&state, *h).await;
+    }
+    Ok(HttpResponse::Accepted().json(json!({ "tasks": ids.iter().map(|(h, t)| json!({"host_id": h, "task_id": t})).collect::<Vec<_>>() })))
+}
+
+/// `ghcr.io/x/y:v3.3.1` and `v3.4.1` -> `ghcr.io/x/y:v3.4.1`. None without a tag, or with an unusable one.
+pub fn retag_ref(image: &str, tag: &str) -> Option<String> {
+    let valid = !tag.is_empty() && tag.len() <= 128 && tag.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    let i = image.rfind(':')?;
+    if !valid || image.rfind('/').is_some_and(|s| i < s) || image.contains('@') {
+        return None;
+    }
+    Some(format!("{}:{}", &image[..i], tag))
+}
+
+/// Apply the suggested version of containers. The new image is built here from what the agent reported for the
+/// container (its running image with the tag it found in the registry): the request names containers, never images.
+async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewTasks) -> ApiResult<HttpResponse> {
+    use croustypatch_common::protocol::capability;
+    let host_ids = b.host_ids.clone();
+    let ids: Vec<(Uuid, Uuid)> = state
+        .db(move |c| {
+            let mut created = vec![];
+            // offline without a local registry the Docker features are off; a chosen registry must be usable offline
+            crate::docker_registry::require_local_when_offline(c).map_err(|e| ApiError::Conflict(e.to_string()))?;
+            let registry = match b.registry_id.as_deref().filter(|id| !id.is_empty()) {
+                Some(id) => Some(crate::docker_registry::load(c).into_iter().find(|r| r.id == id).ok_or_else(|| ApiError::bad("unknown registry"))?),
+                None => None,
+            };
+            if registry.as_ref().is_some_and(|r| r.kind != "local") && crate::docker_registry::offline(c) {
+                return Err(ApiError::bad("offline mode: only a local registry can be used"));
+            }
+            for host_id in b.host_ids {
+                let r = c.transaction::<_, ApiError, _>(|c| {
+                    let host: crate::models::Host = hosts::table.find(host_id).select(crate::models::Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?;
+                    if matches!(host.status.as_str(), "pending" | "quarantined") {
+                        return Err(ApiError::Conflict(format!("{} is {}", host.hostname, host.status)));
+                    }
+                    if !crate::modules::has_capability(&host.facts, capability::DOCKER_RETAG) {
+                        return Err(ApiError::Conflict(format!("the agent of {} cannot change a compose file yet: update it first (Hosts > host > Update agent)", host.hostname)));
+                    }
+                    let open: i64 = tasks::table.filter(tasks::host_id.eq(host_id)).filter(tasks::kind.eq_any(planner::blocking_kinds("docker"))).filter(tasks::status.eq_any(OPEN)).count().get_result(c)?;
+                    if open > 0 {
+                        return Err(ApiError::Conflict(format!("{} already has an open container task", host.hostname)));
+                    }
+                    let pkgs: Vec<crate::models::HostPackage> = host_packages::table.filter(host_packages::host_id.eq(host_id)).filter(host_packages::source.eq("docker")).filter(host_packages::name.eq_any(b.packages.clone())).select(crate::models::HostPackage::as_select()).load(c)?;
+                    if pkgs.is_empty() {
+                        return Err(ApiError::Conflict(format!("{} has none of these containers", host.hostname)));
+                    }
+                    let mut retag = serde_json::Map::new();
+                    let mut batch = vec![];
+                    for p in pkgs {
+                        let name = p.name.trim_start_matches("docker:").to_string();
+                        let (image, latest) = (p.meta.get("image").and_then(|v| v.as_str()).map(str::to_owned), p.meta.get("latest").cloned());
+                        let Some((image, latest)) = image.zip(latest.filter(|l| l.get("tag").is_some_and(|t| t.is_string()))) else {
+                            return Err(ApiError::Conflict(format!("{name}: no newer version is known for this container")));
+                        };
+                        if let Some(reason) = latest.pointer("/apply/reason").and_then(|r| r.as_str()).filter(|_| latest.pointer("/apply/mode").and_then(|m| m.as_str()) == Some("manual")) {
+                            return Err(ApiError::Conflict(format!("{name}: the new version has to be applied by hand: {reason}")));
+                        }
+                        let tag = latest["tag"].as_str().unwrap_or_default();
+                        let new_ref = retag_ref(&image, tag).ok_or_else(|| ApiError::Conflict(format!("{name}: {tag} is not a tag that can be applied to {image}")))?;
+                        // moving to a configured registry: the same image and tag, held there
+                        let new_ref = match &registry {
+                            Some(r) => crate::docker_registry::image_on(r, &new_ref).ok_or_else(|| ApiError::Conflict(format!("{name}: {image} cannot be taken from {}", r.name)))?,
+                            None => new_ref,
+                        };
+                        let major = latest.get("major").and_then(|m| m.as_bool()).unwrap_or(false);
+                        if major && croustypatch_common::model::is_database_image(&image) {
+                            return Err(ApiError::Conflict(format!("{name}: {}", croustypatch_common::model::DATABASE_MAJOR_REASON)));
+                        }
+                        if major && !b.allow_major {
+                            return Err(ApiError::Conflict(format!("{name}: {tag} is a major version change ({image} → {new_ref}): confirm it explicitly (allow_major)")));
+                        }
+                        retag.insert(p.name.clone(), json!(new_ref));
+                        batch.push(planner::Candidate { candidate: new_ref, pkg: p });
+                    }
+                    let groups = planner::host_groups(c, host_id)?;
+                    let def = planner::applicable_policy(c, &host, &groups)?;
+                    let policy_exec: ExecPolicy = def.as_ref().map(|p| planner::exec_policy(&p.def, host.has_staging, &host.criticality)).unwrap_or_default();
+                    let mut exec = serde_json::to_value(&policy_exec).unwrap_or_default();
+                    exec["retag"] = serde_json::Value::Object(retag.clone());
                     let id: Uuid = diesel::insert_into(tasks::table)
                         .values((
                             tasks::host_id.eq(host_id),
-                            tasks::kind.eq("patch"),
+                            tasks::kind.eq("docker"),
                             tasks::status.eq("queued"),
                             tasks::policy_id.eq(def.as_ref().map(|d| d.id)),
                             tasks::packages.eq(planner::packages_json(&batch)),
-                            tasks::exec.eq(Some(serde_json::to_value(&exec).unwrap_or_default())),
+                            tasks::exec.eq(Some(exec)),
                             tasks::requested_by.eq(&user.username),
-                            tasks::message.eq(format!("manual patch by {}", user.username)),
+                            tasks::message.eq(format!("new container version applied by {}", user.username)),
                         ))
                         .returning(tasks::id)
                         .get_result(c)?;
                     diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
-                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len()})).ip(&user.ip))?;
+                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": "docker", "scope": "docker", "retag": retag, "allow_major": b.allow_major, "registry": registry.as_ref().map(|r| r.name.clone())})).ip(&user.ip))?;
                     Ok(id)
                 });
                 created.push(r.map(|id| (host_id, id)));
             }
-            // Report partial failures instead of hiding them.
             let (ok, errs): (Vec<_>, Vec<_>) = created.into_iter().partition(|r| r.is_ok());
             if ok.is_empty() {
                 return Err(errs.into_iter().next().unwrap().unwrap_err());
@@ -291,7 +507,7 @@ pub async fn create_tasks(state: web::Data<AppState>, user: AuthUser, body: web:
         })
         .await?;
     for h in &host_ids {
-        gateway::push_pending(&state, *h).await;
+        gateway::push_pending(state, *h).await;
     }
     Ok(HttpResponse::Accepted().json(json!({ "tasks": ids.iter().map(|(h, t)| json!({"host_id": h, "task_id": t})).collect::<Vec<_>>() })))
 }
@@ -324,8 +540,8 @@ pub async fn approve_task(state: web::Data<AppState>, user: AuthUser, path: web:
                     None => None,
                 };
                 let ring: i32 = hosts::table.find(t.host_id).select(hosts::ring).first(c)?;
-                let when = planner::compute_schedule(def.as_ref(), ring, Utc::now());
-                diesel::update(tasks::table.find(t.id)).set((tasks::approved_by.eq(Some(&name)), tasks::scheduled_for.eq(when))).execute(c)?;
+                let sch = planner::schedule_for(def.as_ref(), ring, Utc::now());
+                diesel::update(tasks::table.find(t.id)).set((tasks::approved_by.eq(Some(&name)), tasks::scheduled_for.eq(sch.start), tasks::deadline_at.eq(sch.deadline))).execute(c)?;
                 Ok(())
             })
         })
@@ -356,10 +572,10 @@ pub async fn rollback_task(state: web::Data<AppState>, user: AuthUser, path: web
         .db(move |c| {
             c.transaction::<_, ApiError, _>(|c| {
                 let t: Task = tasks::table.find(parent).select(Task::as_select()).first(c).map_err(|_| ApiError::NotFound("task"))?;
-                if t.kind != "patch" || !matches!(t.status.as_str(), "succeeded" | "failed" | "soaking") {
+                if !matches!(t.kind.as_str(), "patch" | "docker") || !matches!(t.status.as_str(), "succeeded" | "failed" | "soaking") {
                     return Err(ApiError::Conflict("only a finished or soaking patch task can be rolled back".into()));
                 }
-                let open: i64 = tasks::table.filter(tasks::host_id.eq(t.host_id)).filter(tasks::kind.eq_any(["patch", "rollback"])).filter(tasks::status.eq_any(OPEN)).filter(tasks::id.ne(parent)).count().get_result(c)?;
+                let open: i64 = tasks::table.filter(tasks::host_id.eq(t.host_id)).filter(tasks::kind.eq_any(["patch", "rollback", "docker"])).filter(tasks::status.eq_any(OPEN)).filter(tasks::id.ne(parent)).count().get_result(c)?;
                 if open > 0 {
                     return Err(ApiError::Conflict("the host has another open task".into()));
                 }

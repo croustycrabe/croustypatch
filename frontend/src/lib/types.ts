@@ -8,6 +8,7 @@ export interface Me {
   permissions: string[];
   language: Lang;
   must_change_password: boolean;
+  email?: string | null;
 }
 
 export interface Host {
@@ -35,14 +36,28 @@ export interface Host {
   last_seen_at: string | null;
   last_inventory_at: string | null;
   enrolled_at: string;
+  modules: HostModules;
+  metrics?: HostMetrics['current'];
+  metrics_at?: string | null;
+}
+
+/** Optional features switched on per host. */
+export interface HostModules {
+  docker: boolean;
+  helper_script: boolean;
+  portal: boolean;
+  portal_updates: boolean;
+  eco: boolean;
 }
 
 export type HostStatus = 'online' | 'offline' | 'eco' | 'maintenance' | 'alert' | 'quarantined' | 'pending';
 
 export interface HostSummary extends Host {
   group_ids: string[];
+  /** Pending updates of every kind; of those, `docker_updates` are container images (the system ones are the rest). */
   updates: number;
   security_updates: number;
+  docker_updates: number;
 }
 
 export interface HostPackage {
@@ -91,7 +106,7 @@ export interface Task {
   id: string;
   host_id: string;
   hostname: string;
-  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app';
+  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'app' | 'agent_update' | 'docker' | 'docker_shell';
   status: TaskStatus;
   policy_id: string | null;
   parent_task_id: string | null;
@@ -127,7 +142,60 @@ export interface Probe {
   unit?: string;
 }
 
+/** A patch day: when updates may run. `timezone` (IANA) replaces the fixed offset when set. */
+export interface MaintenanceWindow {
+  days: number[];
+  start: string;
+  end: string;
+  utc_offset_minutes: number;
+  timezone?: string | null;
+  repeat?: 'weekly' | 'monthly_weekday' | 'monthly_day';
+  nth?: number | null;
+  day_of_month?: number | null;
+}
+
+export interface Occurrence { start: string; end: string }
+
+/** GET /docker: every container of every host whose Docker module is on. */
+export interface DockerData {
+  summary: { containers: number; with_updates: number; with_newer_version: number; hosts: number };
+  containers: {
+    host_id: string; hostname: string; name: string; package: string; image: string; current: string; candidate: string | null; update: boolean;
+    project: string | null; service: string | null; state: string | null; health: string | null; started_at: string | null; open_task: { id: string; status: string } | null;
+    /** A newer version tag in the registry (informative: moving to it means changing the compose file). */
+    latest: { tag: string; major: boolean; same_major: string | null; apply?: { mode: 'file' | 'manual'; file?: string; reason?: string; already?: boolean } } | null;
+    /** What the agent's registry checks found: `digest` ok / pinned / offline / error: …; `tags` listed / probed / not_version / pinned / offline / error: … */
+    check?: { digest: string; tags: string } | null;
+  }[];
+}
+
+/** Latest resource reading of a host and its history (GET /hosts/{id}/metrics). All fields are absent for agents before 0.6. */
+export interface HostMetrics {
+  at: string | null;
+  current: {
+    cpu_pct?: number | null; mem_total_mb?: number; mem_used_mb?: number; mem_pct?: number | null; swap_total_mb?: number; swap_used_mb?: number;
+    load_1m?: number; load_5m?: number; load_15m?: number; uptime_secs?: number; disks?: { mount: string; fs: string; total_mb: number; used_mb: number }[];
+  };
+  points: { at: string; cpu: number | null; mem: number | null; load: number | null }[];
+}
+
+/** Why a host is (not) being patched automatically (GET /hosts/{id}/patching). */
+export interface PatchingExplain {
+  state: 'host_inactive' | 'task_open' | 'no_group' | 'no_policy' | 'out_of_scope' | 'nothing_pending' | 'nothing_matches' | 'already_handled' | 'waiting_for_window' | 'will_plan' | 'needs_approval' | 'blocked';
+  pending: { total: number; security: number };
+  groups: string[];
+  policies: { id: string; name: string; in_scope: boolean; security_only: boolean; matching: number; not_security: number; not_docker?: number; docker?: DockerMode; waived: number; ai: boolean; window: MaintenanceWindow | null }[];
+  chosen: string | null;
+  action: PolicyAction | null;
+  window: { open: boolean; current: Occurrence | null; next: Occurrence[]; config: MaintenanceWindow } | null;
+  open_task: { id: string; kind: string; status: string; scheduled_for: string } | null;
+}
+
+export type DockerMode = 'include' | 'exclude' | 'only';
+
 export interface PolicyDef {
+  /** Container image updates: with the system updates, left out, or the only thing this policy updates. */
+  docker?: DockerMode;
   ai_mode_enabled: boolean;
   target_scope: string;
   security_only: boolean;
@@ -137,7 +205,7 @@ export interface PolicyDef {
     action: PolicyAction;
   }[];
   default_action: PolicyAction;
-  maintenance_window: { days: number[]; start: string; end: string; utc_offset_minutes: number } | null;
+  maintenance_window: MaintenanceWindow | null;
   rollback: { soak_minutes: number; probes: Probe[]; auto_rollback: boolean; snapshot_required: boolean };
   reboot: { mode: string };
   rings: { delay_minutes: number };
@@ -151,6 +219,10 @@ export interface Policy {
   priority: number;
   definition: PolicyDef;
   group_ids: string[];
+  /** Hosts in the policy's groups. */
+  hosts?: number;
+  in_window?: boolean;
+  next_runs?: Occurrence[];
 }
 
 export interface Vulnerability {
@@ -232,7 +304,6 @@ export interface Role {
 export interface Modules {
   docker: boolean;
   helper_script: boolean;
-  openscap: boolean;
   portal: boolean;
   notifications: boolean;
   eco: boolean;
@@ -244,12 +315,17 @@ export interface Dashboard {
   top_outdated: { name: string; hosts: number; security: boolean }[];
   tasks: { awaiting_approval: number; in_progress: number; waivers_pending: number };
   activity: { id: string; host_id: string; hostname: string; kind: string; status: TaskStatus; message: string; ts: string }[];
-  compliance: { enabled: boolean; score: number | null };
   portal: { enabled: boolean; installs: number | null };
+  resources: { reporting: number; avg_cpu: number | null; avg_mem: number | null; busiest: { id: string; hostname: string; cpu: number | null; mem: number | null; disk: number | null }[] };
+  patching: {
+    next: { policy: string; start: string; end: string; hosts: number; auto: boolean; docker?: string }[];
+    week: { succeeded: number; failed: number; rolled_back: number; missed: number };
+    uncovered_hosts: number;
+  };
 }
 
 export interface Layout {
-  widgets: { id: string; visible: boolean; size: 'sm' | 'md' | 'lg' }[];
+  widgets: { id: string; visible: boolean; size: 'xs' | 'sm' | 'md' | 'lg' }[];
 }
 
 export interface Settings {
@@ -257,7 +333,8 @@ export interface Settings {
   ai: { enabled: boolean; provider: string; base_url: string; model: string; api_key: string; api_key_set?: boolean };
   connectivity: { mode: 'connected' | 'air_gapped' };
   agent: { heartbeat_secs: number };
-  compliance: { threshold: number; profile: string };
+  /** What stays reachable while a host is isolated, besides the server. */
+  isolation: { keep_ssh: boolean; ssh_port: number; ssh_sources: string[] };
 }
 
 export interface PackageRow {
@@ -276,4 +353,31 @@ export interface PackageHost {
   candidate: string | null;
   is_security: boolean;
   cves: string[];
+}
+
+
+/** A page of rows with the total behind it (`page` is 1-based, as in the API). */
+export interface Paged<T> { items: T[]; total: number; page: number; per_page: number }
+
+/** A line of Administration > Logs. */
+export interface LogEntry { ts: string; source: 'tasks' | 'notifications' | 'reports' | 'server'; level: 'info' | 'warn' | 'error'; title: string; message: string; host_id?: string; hostname?: string; ref_id?: string }
+
+/** One command of the Docker migration console. */
+export interface ShellStep { title: string; command: string }
+export interface MigrationTemplate { id: string; title: string; description: string; steps: ShellStep[]; rollback: ShellStep[] }
+/** GET /docker/migration: the prebuilt lines for a container and what this user, host and server can do with them. */
+export interface MigrationInfo {
+  container: string; image: string; suggested: string | null; to: string; family: string;
+  can_run: boolean; docker_module: boolean; agent_ready: boolean; ai: { available: boolean };
+  templates: MigrationTemplate[]; problem?: string;
+}
+/** POST /docker/migration-plan: a draft written by the AI provider, to be read before anything runs. */
+export interface MigrationPlan { summary: string; risks: string[]; steps: (ShellStep & { warnings: string[] })[]; source: 'ai'; model: string }
+
+/** GET /docker/registries (passwords are never returned). */
+export interface DockerRegistries {
+  registries: { id: string; name: string; kind: 'local' | 'distant'; host: string; mirror_of: string[]; path_prefix: string; username: string; password_set: boolean; insecure: boolean }[];
+  offline: boolean; docker_enabled: boolean; has_local: boolean;
+  /** Offline without a local registry: the Docker features are not available. */
+  blocked: boolean; problem: string | null;
 }

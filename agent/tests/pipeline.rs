@@ -14,7 +14,7 @@ fn statuses(u: &[croustypatch_common::protocol::TaskUpdate]) -> Vec<TaskStatus> 
 }
 
 fn apply(names: &[&str], exec: ExecPolicy) -> CommandAction {
-    CommandAction::ApplyUpdates { packages: names.iter().map(|s| s.to_string()).collect(), exec }
+    CommandAction::ApplyUpdates { packages: names.iter().map(|s| s.to_string()).collect(), exec, retag: Default::default() }
 }
 
 fn exec_with_probe(port: u16, auto_rollback: bool) -> ExecPolicy {

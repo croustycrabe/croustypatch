@@ -1,14 +1,15 @@
 'use client';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { Pager, usePageSize } from '@/components/Pager';
 import { Button, Chip, Drawer, Empty, Notice, PageHeader, SearchInput, Spinner, Table, Tag } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
-import type { PackageHost, PackageRow } from '@/lib/types';
+import type { Paged, PackageHost, PackageRow } from '@/lib/types';
 
 function HostsOf({ name, onChanged }: { name: string; onChanged: () => void }) {
   const { t } = useI18n();
@@ -47,19 +48,27 @@ function Packages() {
   const [q, setQ] = useState(params.get('q') ?? '');
   const [updates, setUpdates] = useState(!!params.get('updates'));
   const [open, setOpen] = useState<string | null>(null);
-  const list = useApi<PackageRow[]>(`/packages?updates=${updates}&q=${encodeURIComponent(q)}`);
+  const [page, setPage] = useState(0);
+  const [perPage, setPerPage] = usePageSize();
+  const list = useApi<Paged<PackageRow>>(`/packages?updates=${updates}&q=${encodeURIComponent(q)}&page=${page + 1}&per_page=${perPage}`);
+  // a list that got shorter (another search, an update that cleared a package) can leave the page past its end
+  useEffect(() => {
+    if (list.data && list.data.items.length === 0 && list.data.total > 0 && page > 0) setPage(Math.ceil(list.data.total / perPage) - 1);
+  }, [list.data, page, perPage]);
+  const rows = list.data?.items ?? [];
 
   return (
     <>
       <PageHeader title={t('pkg.title')} subtitle={t('pkg.subtitle')} />
       <div className="toolbar">
-        <SearchInput value={q} onChange={setQ} placeholder={t('pkg.search')} />
-        <Chip active={updates} onClick={() => setUpdates((v) => !v)}>{t('pkg.updates_only')}</Chip>
+        <SearchInput value={q} onChange={(v) => { setQ(v); setPage(0); }} placeholder={t('pkg.search')} />
+        <Chip active={updates} onClick={() => { setUpdates((v) => !v); setPage(0); }}>{t('pkg.updates_only')}</Chip>
       </div>
       {list.error && <Notice kind="error">{list.error.message}</Notice>}
+      {list.data && !updates && !q && <p className="muted" style={{ margin: '0 0 8px', fontSize: 13 }}>{t('pkg.all_hint', { n: list.data.total })}</p>}
       {!list.data ? <Spinner /> : (
-        <Table head={[t('pkg.col.name'), t('pkg.col.hosts'), t('pkg.col.outdated'), t('pkg.col.latest')]} empty={list.data.length === 0 && <Empty>{t('pkg.none')}</Empty>}>
-          {list.data.map((p) => (
+        <Table head={[t('pkg.col.name'), t('pkg.col.hosts'), t('pkg.col.outdated'), t('pkg.col.latest')]} empty={list.data.total === 0 && <Empty>{t('pkg.none')}</Empty>}>
+          {rows.map((p) => (
             <tr key={`${p.source}/${p.name}`} style={{ cursor: 'pointer' }} onClick={() => setOpen(p.name)}>
               <td><button type="button" className="btn btn--ghost btn--sm" style={{ padding: 0, fontWeight: 700 }} onClick={() => setOpen(p.name)}>{p.name}</button> {p.security && <Tag tone="brick">{t('pkg.security')}</Tag>}{p.source !== 'system' && <span className="sub">{p.source}</span>}</td>
               <td>{p.hosts}</td>
@@ -69,6 +78,7 @@ function Packages() {
           ))}
         </Table>
       )}
+      {list.data && <Pager page={page} perPage={perPage} total={list.data.total} onPage={setPage} onPerPage={setPerPage} />}
       <Drawer open={!!open} title={open ?? ''} onClose={() => setOpen(null)}>
         {open && <HostsOf name={open} onChanged={() => void list.reload()} />}
       </Drawer>

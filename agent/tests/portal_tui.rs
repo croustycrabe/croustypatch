@@ -65,6 +65,7 @@ fn the_screen_shows_the_brand_the_apps_and_their_state() {
     let mut t = Terminal::new(TestBackend::new(100, 24)).unwrap();
     t.draw(|f| render(f, &s)).unwrap();
     let text: String = t.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(text.contains(&format!("[ CroustyPatch ] v{}", env!("CARGO_PKG_VERSION"))), "the version follows the brand");
     for want in ["[ CroustyPatch ]", "Portail applicatif", "srv-01", "htop", "Dev tools", "● Présent", "○ Disponible", "Installation…", "Process viewer", "q quitter", "État et notifications", "Installation ncdu", "applications déjà présentes"] {
         assert!(text.contains(want), "missing {want:?}");
     }
@@ -154,6 +155,53 @@ async fn the_socket_relays_to_the_server_as_the_agent_and_names_the_local_user()
     assert!(String::from_utf8_lossy(&out[..n]).contains("bad request"));
 }
 
+#[tokio::test]
+async fn updates_are_relayed_as_the_agent_for_the_local_user_and_the_names_are_checked_first() {
+    let (url, mut seen) = fake_server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("portal.sock").to_string_lossy().to_string();
+    let kp = croustypatch_common::crypto::generate_rsa(2048).unwrap();
+    let cfg = Config { server_url: url, portal_socket: sock.clone(), state_dir: dir.path().to_path_buf(), ..Default::default() };
+    let relay = Arc::new(Relay { agent: None, cfg, identity: Identity { agent_id: uuid::Uuid::new_v4(), server_public_key_pem: String::new(), private_key_pem: kp.private_pem }, server_ips: Arc::new(|| vec!["127.0.0.1".parse().unwrap()]) });
+    tokio::spawn(portal::serve(relay));
+    for _ in 0..50 { if std::path::Path::new(&sock).exists() { break; } tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+
+    let r = portal::ask(&sock, &Request::Updates).await.unwrap();
+    assert!(r.ok, "{}", r.error);
+    let (line, auth, _) = seen.recv().await.unwrap();
+    assert!(line.starts_with("GET /api/v1/agent/portal/updates "), "{line}");
+    assert!(auth.contains("Bearer ey"), "as the agent: {auth}");
+
+    let r = portal::ask(&sock, &Request::Update { packages: vec!["vim".into(), "libssl3".into()] }).await.unwrap();
+    assert!(r.ok, "{}", r.error);
+    let (line, _, body) = seen.recv().await.unwrap();
+    assert!(line.starts_with("POST /api/v1/agent/portal/update "), "{line}");
+    let b: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(b["packages"], json!(["vim", "libssl3"]));
+    let me = std::env::var("USER").unwrap_or_default();
+    if !me.is_empty() { assert_eq!(b["user"], json!(me), "the person is named from the socket's peer credentials, never from the request"); }
+
+    // no names = all of them; a list that is not made of package names never leaves the machine
+    let r = portal::ask(&sock, &Request::Update { packages: vec![] }).await.unwrap();
+    assert!(r.ok);
+    let (_, _, body) = seen.recv().await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["packages"], json!([]));
+    for bad in [vec!["vim;reboot".to_string()], vec!["-rf".to_string()], vec!["a b".to_string()], (0..1001).map(|i| format!("p{i}")).collect()] {
+        let r = portal::ask(&sock, &Request::Update { packages: bad }).await.unwrap();
+        assert!(!r.ok && r.error.contains("bad package list"), "{}", r.error);
+    }
+    // an update check needs the agent itself (the relay has none in this test)
+    let r = portal::ask(&sock, &Request::Check).await.unwrap();
+    assert!(!r.ok);
+    // nothing but the three valid requests reached the server
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(200), seen.recv()).await.is_err());
+
+    // the wire format of the new requests
+    assert_eq!(serde_json::to_string(&Request::Updates).unwrap(), r#"{"op":"updates"}"#);
+    assert_eq!(serde_json::to_string(&Request::Check).unwrap(), r#"{"op":"check"}"#);
+    assert_eq!(serde_json::from_str::<Request>(r#"{"op":"update"}"#).unwrap(), Request::Update { packages: vec![] }, "names are optional");
+}
+
 
 fn screen(s: &State) -> String {
     let mut t = Terminal::new(TestBackend::new(110, 28)).unwrap();
@@ -165,7 +213,7 @@ fn screen(s: &State) -> String {
 fn presence_comes_from_the_local_check_and_shows_partial_installs() {
     let mut v = catalog();
     let installed: std::collections::HashSet<String> = ["htop", "git"].iter().map(|s| s.to_string()).collect();
-    portal::annotate_local(&mut v, &installed);
+    portal::annotate_local(&mut v, &installed, |_| false);
     assert_eq!(v["apps"][1]["local"], json!({ "present": 1, "total": 2, "missing": ["make"] }));
     let mut s = State::new(&EN);
     s.load(&v);
@@ -182,7 +230,7 @@ fn presence_comes_from_the_local_check_and_shows_partial_installs() {
     assert!(s.confirm.is_some());
     // software installed by hand counts as present even when the server's inventory is older
     let mut by_hand = catalog();
-    portal::annotate_local(&mut by_hand, &["htop", "git", "make"].iter().map(|s| s.to_string()).collect());
+    portal::annotate_local(&mut by_hand, &["htop", "git", "make"].iter().map(|s| s.to_string()).collect(), |_| false);
     let mut s2 = State::new(&EN);
     s2.load(&by_hand);
     assert_eq!(s2.apps[1].presence(), Presence::Present);
@@ -222,4 +270,54 @@ fn the_status_area_follows_an_operation_and_notifies_its_outcome() {
     assert!(text.contains("✔") && text.contains("✖") && text.contains("No operation in progress."));
     s.on_key(KeyCode::Char('c'), NONE);
     assert!(s.notes.is_empty(), "c clears the log");
+}
+
+#[test]
+fn an_app_with_a_newer_version_says_so_and_can_be_updated() {
+    let mut c = catalog();
+    c["apps"][0]["kind"] = json!("command");
+    c["apps"][0]["command"] = json!({ "install": "makepkg", "uninstall": "pacman -R", "check": "/usr/bin/code" });
+    c["apps"][0]["local"] = json!({ "present": 1, "total": 1, "installed_version": "1.145.2-1", "latest_version": "1.146.0-1", "update": true });
+    let mut s = State::new(&EN);
+    s.load(&c);
+    assert_eq!(s.apps[0].update.as_deref(), Some("1.146.0-1"));
+    assert!(s.notes.iter().any(|n| n.tone == Tone::Warn && n.text.contains("1 update(s) available: htop 1.146.0-1")), "{:?}", s.notes);
+    let text = screen(&s);
+    assert!(text.contains("↑ Update 1.146.0-1"), "{text}");
+    // installing again is the update (the recipe builds the latest version)
+    assert_eq!(s.on_key(KeyCode::Char('i'), NONE), None);
+    assert!(s.confirm.is_some(), "an installed app with an update can be installed again");
+    assert!(screen(&s).contains("Update htop ?"));
+    assert_eq!(s.on_key(KeyCode::Char('y'), NONE), Some(Cmd::Install("a".into())));
+    // without an update, an installed app is left alone
+    c["apps"][0]["local"]["update"] = json!(false);
+    s.load(&c);
+    assert!(s.apps[0].update.is_none());
+    assert_eq!(s.on_key(KeyCode::Char('i'), NONE), None);
+    assert!(s.confirm.is_none());
+}
+
+#[test]
+fn the_filter_key_narrows_the_list_to_installed_apps_updates_or_what_is_missing() {
+    use croustypatch_agent::tui::Filter;
+    let mut s = State::new(&EN);
+    s.load(&json!({ "host": { "hostname": "h" }, "apps": [
+        { "id": "a", "name": "htop", "category": "Outils", "packages": ["htop"], "installed": true },
+        { "id": "b", "name": "Dev tools", "category": "Outils", "packages": ["git", "make"], "installed": false, "local": { "present": 1, "total": 2 } },
+        { "id": "c", "name": "ncdu", "category": "Outils", "packages": ["ncdu"], "installed": false },
+        { "id": "d", "name": "Code", "category": "Outils", "kind": "command", "installed": true, "local": { "present": 1, "total": 1, "update": true, "latest_version": "2" } },
+    ]}));
+    let names = |s: &State| s.visible().iter().map(|a| a.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["htop", "Dev tools", "ncdu", "Code"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Installed);
+    assert_eq!(names(&s), ["htop", "Dev tools", "Code"], "installed, partly installed included");
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Updates);
+    assert_eq!(names(&s), ["Code"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Available);
+    assert_eq!(names(&s), ["ncdu"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::All);
 }

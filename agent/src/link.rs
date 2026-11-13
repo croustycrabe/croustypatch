@@ -22,11 +22,13 @@ pub struct Link {
     nonces: Mutex<HashMap<String, i64>>,
     /// Messages that could not be delivered yet; retried first on the next connection.
     pending: Mutex<VecDeque<AgentMessage>>,
+    /// CPU samples between heartbeats.
+    sampler: crate::sysinfo::Sampler,
 }
 
 impl Link {
     pub fn new(agent: Arc<Agent>, cmd_tx: mpsc::UnboundedSender<CommandPayload>) -> Self {
-        Self { agent, cmd_tx, nonces: Mutex::new(HashMap::new()), pending: Mutex::new(VecDeque::new()) }
+        Self { agent, cmd_tx, nonces: Mutex::new(HashMap::new()), pending: Mutex::new(VecDeque::new()), sampler: Default::default() }
     }
 
     /// Verify and queue a command. Returns false if it was rejected.
@@ -53,14 +55,22 @@ impl Link {
 
     async fn heartbeat(&self) -> Heartbeat {
         let (is_laptop, on_battery) = facts::power_state().await;
-        let eco = self.agent.cfg.eco_enabled && is_laptop && on_battery;
+        let eco = self.agent.eco_allowed() && is_laptop && on_battery;
         let load_1m = std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse().ok())).unwrap_or(0.0);
         let uptime_secs = std::fs::read_to_string("/proc/uptime").ok().and_then(|s| s.split_whitespace().next().and_then(|x| x.parse::<f64>().ok())).unwrap_or(0.0) as u64;
-        Heartbeat { on_battery, eco, load_1m, uptime_secs, running_tasks: self.agent.running.lock().unwrap().iter().copied().collect() }
+        let metrics = Some(crate::sysinfo::metrics(&self.sampler).await);
+        Heartbeat { on_battery, eco, load_1m, uptime_secs, running_tasks: self.agent.running.lock().unwrap().iter().copied().collect(), metrics }
     }
 
     fn interval(&self, eco: bool) -> Duration {
         Duration::from_secs(if eco { self.agent.cfg.eco_heartbeat_secs } else { self.agent.cfg.heartbeat_secs }.max(5))
+    }
+
+    /// New settings from the server; a module switch changes what the inventory holds, so send a fresh one.
+    fn settings(&self, s: AgentSettings) {
+        if self.agent.apply_settings(s) {
+            self.spawn_inventory();
+        }
     }
 
     fn spawn_inventory(&self) {
@@ -109,6 +119,7 @@ pub async fn run_pull(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
         link.refresh_server_ips().await;
         match pull_session(&link, &mut out_rx, &mut attempt).await {
             Ok(()) => tracing::info!("tunnel closed by server"),
+            Err(e) if format!("{e:#}").contains("401") => tracing::error!("the server refuses this agent's identity (401): this host was probably deleted in the web UI or enrolled again elsewhere. Re-run the installer with a new token from Hosts > Add agent"),
             Err(e) => tracing::warn!("tunnel error: {e:#}"),
         }
         attempt += 1;
@@ -151,16 +162,22 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
         }
     }
 
-    let mut last_hb = Instant::now() - Duration::from_secs(3600);
+    // Report resources right away: a host that just connected should not look empty for a minute.
+    let first = link.heartbeat().await;
+    let mut eco = first.eco;
+    send(&mut sink, &AgentMessage::Heartbeat(first)).await?;
+    let mut last_hb = Instant::now();
     let mut last_inv = Instant::now();
-    let mut eco = false;
+    let mut last_rx = Instant::now();
+    let silence = Duration::from_secs(link.agent.cfg.link_silence_secs.max(10));
     loop {
-        let wake = link.interval(eco).min(Duration::from_secs(30));
+        let wake = link.interval(eco).min(Duration::from_secs(30)).min(silence / 3);
         tokio::select! {
-            incoming = stream.next() => match incoming {
+            incoming = stream.next() => { last_rx = Instant::now(); match incoming {
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<ServerMessage>(&t) {
                     Ok(ServerMessage::Command(c)) => { link.accept(&c); }
                     Ok(ServerMessage::Ping) => link.spawn_inventory(),
+                    Ok(ServerMessage::Settings(s)) => link.settings(s),
                     Ok(ServerMessage::Welcome { heartbeat_secs }) => tracing::debug!(heartbeat_secs, "welcome"),
                     Err(e) => tracing::warn!("unreadable server message: {e}"),
                 },
@@ -168,12 +185,17 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
                 Some(Ok(Message::Close(_))) | None => return Ok(()),
                 Some(Err(e)) => return Err(e.into()),
                 _ => {}
-            },
+            } },
             out = out_rx.recv() => {
                 let Some(m) = out else { return Ok(()) };
                 if let Err(e) = send(&mut sink, &m).await { link.pending.lock().unwrap().push_back(m); return Err(e); }
             }
             _ = tokio::time::sleep(wake) => {
+                // A connection left half-open by a suspend or a network change gives no error until the system gives
+                // up on it (about 15 min): the server pings every 30 s, so silence means it is gone.
+                if tunnel_is_dead(last_rx.elapsed(), silence) {
+                    return Err(anyhow!("no frame from the server for {} s: reconnecting", last_rx.elapsed().as_secs()));
+                }
                 let hb = link.heartbeat().await;
                 let eco_changed = hb.eco != eco;
                 eco = hb.eco;
@@ -189,6 +211,11 @@ async fn pull_session(link: &Link, out_rx: &mut mpsc::UnboundedReceiver<AgentMes
             }
         }
     }
+}
+
+/// Has the server been silent long enough for the tunnel to be taken for dead?
+pub fn tunnel_is_dead(since_last_frame: Duration, limit: Duration) -> bool {
+    since_last_frame > limit
 }
 
 async fn send<S>(sink: &mut S, m: &AgentMessage) -> Result<()>
@@ -238,6 +265,9 @@ pub async fn run_push(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
             Ok(r) if r.status().is_success() => match r.json::<TelemetryResponse>().await {
                 Ok(t) => {
                     attempt = 0;
+                    if let Some(s) = t.settings {
+                        link.settings(s);
+                    }
                     for c in &t.commands {
                         link.accept(c);
                     }
@@ -251,6 +281,9 @@ pub async fn run_push(link: Arc<Link>, mut out_rx: mpsc::UnboundedReceiver<Agent
                 }
             },
             Ok(r) => {
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    tracing::error!("the server refuses this agent's identity (401): this host was probably deleted in the web UI or enrolled again elsewhere. Re-run the installer with a new token from Hosts > Add agent");
+                }
                 tracing::warn!(status = %r.status(), "telemetry rejected");
                 attempt += 1;
                 link.pending.lock().unwrap().extend(msgs.into_iter().filter(|m| !matches!(m, AgentMessage::Heartbeat(_))));

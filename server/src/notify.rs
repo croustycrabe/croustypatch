@@ -38,12 +38,14 @@ pub const CATALOG: &[EventKind] = &[
     EventKind { key: "host.quarantined", severity: "critical", title_en: "Host quarantined", title_fr: "Hôte mis en quarantaine" },
     EventKind { key: "host.unresponsive", severity: "critical", title_en: "Host unresponsive after planned downtime", title_fr: "Hôte muet après un arrêt planifié" },
     EventKind { key: "reboot.overdue", severity: "critical", title_en: "Host did not come back after reboot", title_fr: "Hôte non revenu après redémarrage" },
-    EventKind { key: "compliance.score_low", severity: "high", title_en: "Compliance score below threshold", title_fr: "Score de conformité sous le seuil" },
     EventKind { key: "task.failed", severity: "high", title_en: "Task failed", title_fr: "Tâche en échec" },
     EventKind { key: "task.rolled_back", severity: "high", title_en: "Patch rolled back", title_fr: "Correctif annulé (rollback)" },
+    EventKind { key: "task.missed_window", severity: "high", title_en: "Patch day missed", title_fr: "Jour de patch manqué" },
+    EventKind { key: "report.failed", severity: "high", title_en: "Report could not be sent", title_fr: "Rapport non envoyé" },
     EventKind { key: "host.offline", severity: "medium", title_en: "Host offline", title_fr: "Hôte hors ligne" },
     EventKind { key: "approval.required", severity: "medium", title_en: "Patch awaiting approval", title_fr: "Correctif en attente d’approbation" },
-    EventKind { key: "compliance.reported", severity: "info", title_en: "Compliance scan finished", title_fr: "Analyse de conformité terminée" },
+    EventKind { key: "updates.system_available", severity: "medium", title_en: "New system updates", title_fr: "Nouvelles mises à jour système" },
+    EventKind { key: "updates.docker_available", severity: "info", title_en: "New container updates", title_fr: "Nouvelles mises à jour de conteneurs" },
     EventKind { key: "task.succeeded", severity: "info", title_en: "Patch applied", title_fr: "Correctif appliqué" },
     EventKind { key: "reboot.scheduled", severity: "info", title_en: "Reboot scheduled", title_fr: "Redémarrage planifié" },
     EventKind { key: "reboot.started", severity: "info", title_en: "Reboot started (downtime)", title_fr: "Redémarrage lancé (arrêt planifié)" },
@@ -61,7 +63,7 @@ pub fn event_key(action: &str, details: &Value) -> Option<&'static str> {
     match action {
         "task.planned" if details.get("action").and_then(|v| v.as_str()) == Some("REQUIRE_APPROVAL") => Some("approval.required"),
         // A successful scan or control task is routine; patches, rollbacks and reboots are worth telling.
-        "task.succeeded" if !matches!(kind, "patch" | "rollback") => None,
+        "task.succeeded" if !matches!(kind, "patch" | "rollback" | "docker") => None,
         a => catalog_entry(a).map(|e| e.key),
     }
 }
@@ -200,6 +202,8 @@ pub struct Message {
     pub body: String,
     pub payload: Value,
     pub recipients: Vec<String>,
+    /// A formatted version for channels that can show one (e-mail); the others get `body`.
+    pub html: Option<String>,
 }
 
 pub struct Channel {
@@ -285,11 +289,17 @@ async fn send_mail(ch: &Channel, m: &Message) -> anyhow::Result<()> {
     }
     anyhow::ensure!(!to.is_empty(), "no recipient: add addresses to the channel or the rule");
     let from: Mailbox = cfg_str(cfg, "from").parse().map_err(|e| anyhow::anyhow!("bad sender address: {e}"))?;
-    let mut b = lettre::Message::builder().from(from).subject(&m.title).header(ContentType::TEXT_PLAIN);
+    let mut b = lettre::Message::builder().from(from).subject(&m.title);
+    if m.html.is_none() {
+        b = b.header(ContentType::TEXT_PLAIN);
+    }
     for r in &to {
         b = b.to(r.parse().map_err(|e| anyhow::anyhow!("bad recipient {r}: {e}"))?);
     }
-    let email = b.body(m.body.clone())?;
+    let email = match &m.html {
+        Some(html) => b.multipart(lettre::message::MultiPart::alternative_plain_html(m.body.clone(), html.clone()))?,
+        None => b.body(m.body.clone())?,
+    };
     let mut t = match cfg_str(cfg, "tls") {
         "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)?,
         "none" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
@@ -318,6 +328,9 @@ pub fn worker(state: web::Data<AppState>) {
             if let Err(e) = run_once(&state).await {
                 tracing::warn!(error = %e, "notification worker");
             }
+            if let Err(e) = crate::reports::run_due(&state).await {
+                tracing::warn!(error = %e, "report worker");
+            }
         }
     });
 }
@@ -339,7 +352,7 @@ pub async fn run_once(state: &web::Data<AppState>) -> anyhow::Result<usize> {
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let mut sent = 0;
     for (id, ch, event, severity, title, body, payload, recipients, attempts) in due {
-        let m = Message { id, event, severity, title, body, payload, recipients: strs(&recipients) };
+        let m = Message { id, event, severity, title, body, payload, recipients: strs(&recipients), html: None };
         let res = deliver(state, ch, &m).await;
         let ok = res.is_ok();
         sent += ok as usize;
@@ -391,6 +404,32 @@ async fn send_digests(state: &web::Data<AppState>, now: DateTime<Utc>) -> anyhow
 
 /// Combine a rule's queued events into one message per channel and send it now (public for the "send now" button
 /// and tests).
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The daily digest as an e-mail page: the events grouped by severity, the worst first, each with its badge.
+/// (`severity`, `title`) per event, in the order they happened.
+pub fn digest_html(rule: &str, events: &[(String, String)]) -> String {
+    let colour = |s: &str| match s { "critical" => "#b3261e", "high" => "#c2410c", "medium" => "#b7791f", "low" => "#2b6cb0", _ => "#5f6f75" };
+    let mut sections = String::new();
+    for sev in SEVERITIES.iter().rev() {
+        let rows: Vec<&(String, String)> = events.iter().filter(|e| e.0 == *sev).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        sections.push_str(&format!("<h2 style=\"font:700 15px Arial,sans-serif;margin:22px 0 8px;color:{}\">{} · {}</h2><table style=\"width:100%;border-collapse:collapse\">", colour(sev), esc(sev), rows.len()));
+        for (_, title) in rows {
+            sections.push_str(&format!("<tr><td style=\"padding:7px 0;border-bottom:1px solid #e6e1d6\"><span style=\"display:inline-block;width:8px;height:8px;border-radius:4px;background:{};margin-right:8px\"></span>{}</td></tr>", colour(sev), esc(title)));
+        }
+        sections.push_str("</table>");
+    }
+    format!(
+        "<!doctype html><html><body style=\"margin:0;background:#f5f2ea\"><div style=\"max-width:720px;margin:0 auto;padding:24px;background:#fcfbf8;font:14px/1.5 Arial,sans-serif;color:#1b2125\"><h1 style=\"font:700 20px Arial,sans-serif;margin:0 0 4px\">Daily summary</h1><p style=\"margin:0;color:#5f6f75\">{} · {} event(s)</p>{}<p style=\"margin-top:28px;color:#8a979c;font-size:12px\">CroustyPatch</p></div></body></html>",
+        esc(rule), events.len(), sections
+    )
+}
+
 pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) -> anyhow::Result<usize> {
     type Row = (Uuid, Uuid, String, String, Value);
     let rows: Vec<Row> = state
@@ -405,6 +444,7 @@ pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) ->
     for (ch, items) in by_channel {
         let worst = items.iter().map(|r| severity_rank(&r.2)).max().unwrap_or(0);
         let lines: Vec<String> = items.iter().map(|r| format!("- {}", r.3.trim_start_matches("[CroustyPatch] "))).collect();
+        let html = digest_html(name, &items.iter().map(|r| (r.2.clone(), r.3.trim_start_matches("[CroustyPatch] ").to_string())).collect::<Vec<_>>());
         let m = Message {
             id: Uuid::new_v4(),
             event: "digest".into(),
@@ -413,6 +453,7 @@ pub async fn send_digest(state: &web::Data<AppState>, rule: Uuid, name: &str) ->
             body: lines.join("\n"),
             payload: json!({ "rule": rule, "events": items.len() }),
             recipients: strs(&items[0].4),
+            html: Some(html),
         };
         let res = deliver(state, ch, &m).await;
         let ids: Vec<Uuid> = items.iter().map(|r| r.0).collect();

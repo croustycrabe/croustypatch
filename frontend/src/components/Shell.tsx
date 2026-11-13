@@ -1,5 +1,5 @@
 'use client';
-import { Bell, ClipboardText, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
+import { Bell, Cube, ClipboardText, Scroll, SquaresFour, Gear, HardDrives, House, Key, List, ListChecks, MagnifyingGlass, Package, Scales, ShieldCheck, ShieldWarning, SignOut, UserGear, UsersThree, Lock, Sun, Moon, type Icon } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -20,6 +20,7 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
     items: [
       { href: '/hosts', key: 'nav.hosts', perm: 'hosts:read', icon: HardDrives },
       { href: '/packages', key: 'nav.packages', perm: 'hosts:read', icon: Package },
+      { href: '/docker', key: 'nav.docker', perm: 'hosts:read', icon: Cube },
       { href: '/groups', key: 'nav.groups', perm: 'groups:read', icon: UsersThree },
       { href: '/portal', key: 'nav.portal', perm: 'hosts:read', icon: SquaresFour },
     ],
@@ -33,11 +34,17 @@ export const NAV_GROUPS: { label: MessageKey; items: NavItem[] }[] = [
       { href: '/vulnerabilities', key: 'nav.vulns', perm: 'vulnerabilities:read', icon: ShieldWarning },
     ],
   },
-  { label: 'nav.group.governance', items: [{ href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText }] },
+  {
+    label: 'nav.group.governance',
+    items: [
+    ],
+  },
   {
     label: 'nav.group.admin',
     items: [
       { href: '/enrollment', key: 'nav.enrollment', perm: 'enrollment:read', icon: Key },
+      { href: '/audit', key: 'nav.audit', perm: 'audit:read', icon: ClipboardText },
+      { href: '/logs', key: 'nav.logs', perm: 'audit:read', icon: Scroll },
       { href: '/users', key: 'nav.users', perm: 'users:read', icon: UserGear },
       { href: '/notifications', key: 'nav.notifications', perm: 'settings:read', icon: Bell },
       { href: '/settings', key: 'nav.settings', perm: 'settings:read', icon: Gear },
@@ -69,7 +76,13 @@ function Brand({ onDark }: { onDark?: boolean }) {
   return (
     <Link href="/" className="sidebar__brand" aria-label={t('app.name')} style={onDark ? { border: 0, padding: 0 } : undefined}>
       {/* The mark is used as supplied by the design system, never redrawn. */}
-      <img src={onDark ? '/brand/crab-logo-mono-cream.svg' : '/brand/crab-logo.svg'} alt="" width={34} height={34} />
+      {onDark
+        ? <img src="/brand/crab-logo-mono-cream.svg" alt="" width={34} height={34} />
+        : <>
+            {/* One mark per theme: the brick crab on light, the cream one on dark. */}
+            <img className="logo--light" src="/brand/crab-logo.svg" alt="" width={34} height={34} />
+            <img className="logo--dark" src="/brand/crab-logo-dark.svg" alt="" width={34} height={34} />
+          </>}
       <span className="brandmark">
         <span className="cl-bracket" aria-hidden="true">[</span> {t('app.name')} <span className="cl-bracket" aria-hidden="true">]</span>
       </span>
@@ -77,9 +90,16 @@ function Brand({ onDark }: { onDark?: boolean }) {
   );
 }
 
+/** The version of the running server (`GET /server-info`, public), "0.7.3"; empty until known or when it cannot be read. */
+export function useServerVersion(): string {
+  const info = useApi<{ version: string }>('/server-info');
+  return info.data?.version ?? '';
+}
+
 /** Sign-in style pages: brand panel on the left, the form on the right. */
 export function AuthLayout({ children }: { children: ReactNode }) {
   const { t } = useI18n();
+  const version = useServerVersion();
   return (
     <div className="auth">
       <aside className="auth__brand">
@@ -88,7 +108,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
           <h2><span className="cl-bracket" aria-hidden="true">[</span> {t('app.name')} <span className="cl-bracket" aria-hidden="true">]</span></h2>
           <p>{t('app.pitch')}</p>
         </div>
-        <small>Croustylab · Croustycrabe</small>
+        <small>Croustylab · Croustycrabe{version && <> · <span data-testid="app-version">v{version}</span></>}</small>
       </aside>
       <main className="auth__form">
         <div className="auth__lang"><LanguageToggle /></div>
@@ -220,6 +240,7 @@ function Frame({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', k);
   }, [navOpen]);
   const [palette, setPalette] = useState(false);
+  const version = useServerVersion();
   const dash = useApi<Dashboard>(can('dashboard:read') ? '/dashboard' : null, { poll: 20000 });
   // The palette searches hosts: have the list ready before it opens, and refresh it each time it does.
   const hostList = useApi<HostSummary[]>(can('hosts:read') ? '/hosts' : null);
@@ -263,6 +284,7 @@ function Frame({ children }: { children: ReactNode }) {
           })}
         </nav>
         <div className="sidebar__foot">
+          {version && <div className="sidebar__version" title={t('app.version.title')}>{t('app.name')} <span data-testid="app-version">v{version}</span></div>}
           <Menu up label={me?.username ?? ''} trigger={<><span className="avatar">{me?.username.slice(0, 1)}</span><span style={{ minWidth: 0 }}><div className="usercard__name">{me?.username}</div><div className="usercard__role">{me?.role}</div></span></>}>
             {(close) => (
               <>

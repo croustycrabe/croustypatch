@@ -34,12 +34,16 @@ pub struct AppItem {
     pub category: String,
     pub description: String,
     pub packages: Vec<String>,
+    /// Command recipe (install, uninstall, check path) instead of packages.
+    pub command: Option<(String, String, String)>,
     /// Per the server's last inventory of this host.
     pub installed: bool,
     /// Checked on this machine just now: (packages present, packages in the app).
     pub local: Option<(usize, usize)>,
     /// (installing?, status) while a request runs.
     pub pending: Option<(bool, String)>,
+    /// A newer version than the one installed (apps built from the AUR): installing again updates it.
+    pub update: Option<String>,
 }
 
 impl AppItem {
@@ -53,9 +57,14 @@ impl AppItem {
             category: s("category"),
             description: s("description"),
             packages: v.get("packages").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+            command: v.get("command").filter(|c| c.is_object()).map(|c| {
+                let f = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                (f("install"), f("uninstall"), f("check"))
+            }),
             installed: v.get("installed").and_then(|x| x.as_bool()).unwrap_or(false),
             local: n("/local/present").zip(n("/local/total")),
             pending: v.get("pending").filter(|p| !p.is_null()).map(|p| (p.get("install").and_then(|x| x.as_bool()).unwrap_or(true), p.get("status").and_then(|x| x.as_str()).unwrap_or("").to_string())),
+            update: (v.pointer("/local/update").and_then(|u| u.as_bool()) == Some(true)).then(|| v.pointer("/local/latest_version").and_then(|l| l.as_str()).unwrap_or("").to_string()),
         })
     }
 
@@ -67,6 +76,35 @@ impl AppItem {
             Some(_) => Presence::Absent,
             None if self.installed => Presence::Present,
             None => Presence::Absent,
+        }
+    }
+}
+
+/// Which applications the list shows, besides the category: everything, what is on the machine, what has a newer
+/// version, or what is not there yet. `f` cycles through them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Filter {
+    #[default]
+    All,
+    Installed,
+    Updates,
+    Available,
+}
+
+impl Filter {
+    pub const ALL: [Filter; 4] = [Filter::All, Filter::Installed, Filter::Updates, Filter::Available];
+
+    pub fn next(self) -> Filter {
+        Self::ALL[(Self::ALL.iter().position(|f| *f == self).unwrap_or(0) + 1) % Self::ALL.len()]
+    }
+
+    /// Installed means present or partly there; updates means present with a newer version known.
+    pub fn matches(self, a: &AppItem) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Installed => a.presence() != Presence::Absent,
+            Filter::Updates => a.presence() == Presence::Present && a.update.is_some(),
+            Filter::Available => a.presence() == Presence::Absent,
         }
     }
 }
@@ -118,6 +156,8 @@ pub struct Words {
     pub sent: &'static str,
     pub packages: &'static str,
     pub missing: &'static str,
+    pub command: &'static str,
+    pub check: &'static str,
     pub categories: &'static str,
     pub apps: &'static str,
     pub status: &'static str,
@@ -130,27 +170,38 @@ pub struct Words {
     pub failed: &'static str,
     pub cancelled: &'static str,
     pub opened: &'static str,
+    pub update: &'static str,
+    pub confirm_update: &'static str,
+    pub updates: &'static str,
+    /// Names of the filters, in the order of [`Filter::ALL`].
+    pub filters: [&'static str; 4],
+    pub filter: &'static str,
 }
 
 pub const FR: Words = Words {
     title: "Portail applicatif", all: "Toutes", present: "Présent", partial: "Partiel", available: "Disponible", installing: "Installation", removing: "Désinstallation",
-    empty: "Aucune application proposée pour cette machine.", keys: "↑↓ choisir  ←→ catégorie  i installer  u désinstaller  r actualiser  c effacer  q quitter",
-    confirm_install: "Installer", confirm_remove: "Désinstaller", yes_no: "o / n", sent: "demande envoyée", packages: "Paquets", missing: "manquants",
+    empty: "Aucune application proposée pour cette machine.", keys: "↑↓ choisir  ←→ catégorie  f filtre  i installer  u désinstaller  r actualiser  c effacer  q quitter",
+    confirm_install: "Installer", confirm_remove: "Désinstaller", yes_no: "o / n", sent: "demande envoyée", packages: "Paquets", missing: "manquants", command: "Commande", check: "Vérifié par",
     categories: "Catégories", apps: "Applications", status: "État et notifications", idle: "Aucune opération en cours.", queued: "en file d’attente", to_agent: "transmise à l’agent",
     running: "en cours", installed_ok: "installé", removed_ok: "désinstallé", failed: "échec", cancelled: "annulé", opened: "applications déjà présentes sur cette machine",
+    update: "Mise à jour", confirm_update: "Mettre à jour", updates: "mise(s) à jour disponible(s)",
+    filters: ["Tout", "Installées", "À mettre à jour", "Non installées"], filter: "Filtre",
 };
 pub const EN: Words = Words {
     title: "App center", all: "All", present: "Present", partial: "Partial", available: "Available", installing: "Installing", removing: "Removing",
-    empty: "No application offered for this machine.", keys: "↑↓ select  ←→ category  i install  u uninstall  r refresh  c clear  q quit",
-    confirm_install: "Install", confirm_remove: "Uninstall", yes_no: "y / n", sent: "request sent", packages: "Packages", missing: "missing",
+    empty: "No application offered for this machine.", keys: "↑↓ select  ←→ category  f filter  i install  u uninstall  r refresh  c clear  q quit",
+    confirm_install: "Install", confirm_remove: "Uninstall", yes_no: "y / n", sent: "request sent", packages: "Packages", missing: "missing", command: "Command", check: "Checked by",
     categories: "Categories", apps: "Applications", status: "Status and notifications", idle: "No operation in progress.", queued: "queued", to_agent: "handed to the agent",
     running: "running", installed_ok: "installed", removed_ok: "uninstalled", failed: "failed", cancelled: "cancelled", opened: "applications already present on this machine",
+    update: "Update", confirm_update: "Update", updates: "update(s) available",
+    filters: ["Everything", "Installed", "Needs update", "Not installed"], filter: "Filter",
 };
 
 pub struct State {
     pub host: String,
     pub apps: Vec<AppItem>,
     pub cat: usize,
+    pub filter: Filter,
     pub sel: usize,
     pub confirm: Option<(String, String, bool)>,
     /// Newest first.
@@ -168,7 +219,7 @@ fn now_hms() -> String {
 
 impl State {
     pub fn new(w: &'static Words) -> Self {
-        Self { host: String::new(), apps: vec![], cat: 0, sel: 0, confirm: None, notes: VecDeque::new(), seen: HashMap::new(), loaded: false, tick: 0, w }
+        Self { host: String::new(), apps: vec![], cat: 0, filter: Filter::All, sel: 0, confirm: None, notes: VecDeque::new(), seen: HashMap::new(), loaded: false, tick: 0, w }
     }
 
     pub fn note(&mut self, tone: Tone, text: impl Into<String>) {
@@ -187,7 +238,7 @@ impl State {
     pub fn visible(&self) -> Vec<&AppItem> {
         let cats = self.categories();
         let want = cats.get(self.cat).cloned().unwrap_or_default();
-        self.apps.iter().filter(|a| self.cat == 0 || a.category == want).collect()
+        self.apps.iter().filter(|a| (self.cat == 0 || a.category == want) && self.filter.matches(a)).collect()
     }
 
     pub fn selected(&self) -> Option<&AppItem> {
@@ -230,6 +281,11 @@ impl State {
                 let text = format!("{} {}: {}", present.len(), self.w.opened, present.join(", "));
                 self.note(Tone::Info, text);
             }
+            let updates: Vec<String> = self.apps.iter().filter_map(|a| a.update.as_ref().map(|v| format!("{} {v}", a.name))).collect();
+            if !updates.is_empty() {
+                let text = format!("{} {}: {}", updates.len(), self.w.updates, updates.join(", "));
+                self.note(Tone::Warn, text);
+            }
         }
     }
 
@@ -270,9 +326,13 @@ impl State {
                 self.cat = (self.cat + len - 1) % len;
                 self.sel = 0;
             }
+            KeyCode::Char('f') => {
+                self.filter = self.filter.next();
+                self.sel = 0;
+            }
             KeyCode::Char('r') => return Some(Cmd::Refresh),
             KeyCode::Char('i') | KeyCode::Enter => {
-                if let Some(a) = self.selected().filter(|a| a.presence() != Presence::Present && a.pending.is_none()) {
+                if let Some(a) = self.selected().filter(|a| (a.presence() != Presence::Present || a.update.is_some()) && a.pending.is_none()) {
                     self.confirm = Some((a.id.clone(), a.name.clone(), true));
                 }
             }
@@ -287,12 +347,22 @@ impl State {
     }
 }
 
+/// "Applications" or, when a filter is on, "Applications · Needs update (2)".
+fn apps_title(s: &State) -> String {
+    if s.filter == Filter::All {
+        return format!(" {} ", s.w.apps);
+    }
+    let i = Filter::ALL.iter().position(|f| *f == s.filter).unwrap_or(0);
+    format!(" {} · {}: {} ({}) ", s.w.apps, s.w.filter, s.w.filters[i], s.visible().len())
+}
+
 fn state_cell<'a>(a: &AppItem, s: &State) -> Cell<'a> {
     let w = s.w;
     let spin = SPINNER[s.tick % SPINNER.len()];
     match (&a.pending, a.presence()) {
         (Some((true, _)), _) => Cell::from(format!("{spin} {}…", w.installing)).style(Style::new().fg(INFO)),
         (Some((false, _)), _) => Cell::from(format!("{spin} {}…", w.removing)).style(Style::new().fg(INFO)),
+        (None, Presence::Present) if a.update.is_some() => Cell::from(format!("↑ {} {}", w.update, a.update.as_deref().unwrap_or(""))).style(Style::new().fg(WARNING).add_modifier(Modifier::BOLD)),
         (None, Presence::Present) => Cell::from(format!("● {}", w.present)).style(Style::new().fg(SUCCESS).add_modifier(Modifier::BOLD)),
         (None, Presence::Partial(p, t)) => Cell::from(format!("◑ {} {p}/{t}", w.partial)).style(Style::new().fg(WARNING)),
         (None, Presence::Absent) => Cell::from(format!("○ {}", w.available)).style(Style::new().fg(MUTED)),
@@ -315,6 +385,7 @@ pub fn render(f: &mut Frame, s: &State) {
         Span::styled("[ ", Style::new().fg(BRICK).add_modifier(Modifier::BOLD)),
         Span::styled("CroustyPatch", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(" ]", Style::new().fg(BRICK).add_modifier(Modifier::BOLD)),
+        Span::styled(concat!(" v", env!("CARGO_PKG_VERSION")), Style::new().fg(MUTED)),
         Span::raw(format!("  {} · ", s.w.title)),
         Span::styled(s.host.clone(), Style::new().fg(MUTED)),
     ]);
@@ -327,11 +398,11 @@ pub fn render(f: &mut Frame, s: &State) {
     f.render_stateful_widget(List::new(cats).block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.w.categories))).highlight_style(Style::new().fg(BRICK).add_modifier(Modifier::BOLD)).highlight_symbol("› "), cols[0], &mut ls);
     let vis = s.visible();
     if vis.is_empty() {
-        f.render_widget(Paragraph::new(s.w.empty).style(Style::new().fg(MUTED)).block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.w.apps))), cols[1]);
+        f.render_widget(Paragraph::new(s.w.empty).style(Style::new().fg(MUTED)).block(Block::default().borders(Borders::ALL).title(apps_title(s))), cols[1]);
     } else {
         let rows_t: Vec<Row> = vis.iter().map(|a| Row::new(vec![Cell::from(a.name.clone()).style(Style::new().add_modifier(Modifier::BOLD)), Cell::from(a.version.clone()).style(Style::new().fg(MUTED)), state_cell(a, s)])).collect();
         let mut ts = TableState::default().with_selected(Some(s.sel));
-        let t = Table::new(rows_t, [Constraint::Min(18), Constraint::Length(12), Constraint::Length(22)]).block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.w.apps))).row_highlight_style(Style::new().bg(Color::Rgb(0x3a, 0x24, 0x20))).highlight_symbol("› ");
+        let t = Table::new(rows_t, [Constraint::Min(18), Constraint::Length(12), Constraint::Length(22)]).block(Block::default().borders(Borders::ALL).title(apps_title(s))).row_highlight_style(Style::new().bg(Color::Rgb(0x3a, 0x24, 0x20))).highlight_symbol("› ");
         f.render_stateful_widget(t, cols[1], &mut ts);
     }
 
@@ -339,7 +410,14 @@ pub fn render(f: &mut Frame, s: &State) {
     let bottom = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(42), Constraint::Percentage(58)]).split(rows[2]);
     let detail = match s.selected() {
         Some(a) => {
-            let mut l = vec![Line::from(Span::styled(a.name.clone(), Style::new().add_modifier(Modifier::BOLD))), Line::from(Span::raw(a.description.clone())), Line::from(vec![Span::styled(format!("{}: ", s.w.packages), Style::new().fg(MUTED)), Span::raw(a.packages.join(", "))])];
+            let mut l = vec![Line::from(Span::styled(a.name.clone(), Style::new().add_modifier(Modifier::BOLD))), Line::from(Span::raw(a.description.clone()))];
+            match &a.command {
+                Some((install, _, check)) => {
+                    l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.command), Style::new().fg(MUTED)), Span::raw(install.lines().next().unwrap_or("").to_string())]));
+                    l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.check), Style::new().fg(MUTED)), Span::raw(check.clone())]));
+                }
+                None => l.push(Line::from(vec![Span::styled(format!("{}: ", s.w.packages), Style::new().fg(MUTED)), Span::raw(a.packages.join(", "))])),
+            }
             if let Presence::Partial(p, t) = a.presence() {
                 l.push(Line::from(Span::styled(format!("{} {p}/{t} · {} {}", s.w.partial, t - p, s.w.missing), Style::new().fg(WARNING))));
             }
@@ -374,11 +452,21 @@ pub fn render(f: &mut Frame, s: &State) {
 
     f.render_widget(Paragraph::new(Line::from(Span::styled(s.w.keys, Style::new().fg(MUTED)))), rows[3]);
 
-    if let Some((_, name, install)) = &s.confirm {
-        let r = centered(area, 50, 5);
+    if let Some((id, name, install)) = &s.confirm {
+        // A command app shows exactly what will run as root before the user says yes.
+        let script = s.apps.iter().find(|a| &a.id == id).and_then(|a| a.command.as_ref()).map(|c| if *install { c.0.clone() } else { c.1.clone() });
+        let extra: Vec<Line> = script.iter().flat_map(|sc| sc.lines().take(8).map(|l| Line::from(Span::styled(format!("  {l}"), Style::new().fg(MUTED)))).collect::<Vec<_>>()).collect();
+        let r = centered(area, if extra.is_empty() { 50 } else { 76 }, 5 + extra.len() as u16 + u16::from(!extra.is_empty()));
         f.render_widget(Clear, r);
-        let verb = if *install { s.w.confirm_install } else { s.w.confirm_remove };
-        let p = Paragraph::new(vec![Line::from(format!("{verb} {name} ?")), Line::from(Span::styled(s.w.yes_no, Style::new().fg(MUTED)))]).block(Block::default().borders(Borders::ALL).border_style(Style::new().fg(if *install { BRICK } else { DANGER })));
+        let updating = *install && s.apps.iter().any(|a| &a.id == id && a.update.is_some());
+        let verb = if updating { s.w.confirm_update } else if *install { s.w.confirm_install } else { s.w.confirm_remove };
+        let mut lines = vec![Line::from(format!("{verb} {name} ?"))];
+        if !extra.is_empty() {
+            lines.push(Line::from(Span::styled(format!("{}:", s.w.command), Style::new().fg(MUTED))));
+            lines.extend(extra);
+        }
+        lines.push(Line::from(Span::styled(s.w.yes_no, Style::new().fg(MUTED))));
+        let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).border_style(Style::new().fg(if *install { BRICK } else { DANGER })));
         f.render_widget(p, r);
     }
 }

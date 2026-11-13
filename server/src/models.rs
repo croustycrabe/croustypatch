@@ -73,6 +73,10 @@ pub struct Host {
     pub last_seen_at: Option<Ts>,
     pub last_inventory_at: Option<Ts>,
     pub enrolled_at: Ts,
+    pub modules: Value,
+    /// Latest resource reading (cpu_pct, mem_*, swap_*, load_*, uptime_secs, disks) and when it was taken.
+    pub metrics: Value,
+    pub metrics_at: Option<Ts>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]
@@ -84,6 +88,8 @@ pub struct HostPackage {
     pub candidate: Option<String>,
     pub is_security: bool,
     pub cves: Value,
+    /// Containers: image, project, service, state, health, started_at.
+    pub meta: Value,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]
@@ -100,6 +106,7 @@ pub struct EnrollmentToken {
     pub revoked: bool,
     pub created_by: String,
     pub created_at: Ts,
+    pub modules: Option<Value>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]
@@ -151,6 +158,8 @@ pub struct Task {
     pub soak_until: Option<Ts>,
     pub created_at: Ts,
     pub updated_at: Ts,
+    /// An automatic patch must not start after this moment (the end of its patch day).
+    pub deadline_at: Option<Ts>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Clone, Debug)]

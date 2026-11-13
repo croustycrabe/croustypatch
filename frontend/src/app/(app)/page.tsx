@@ -1,8 +1,9 @@
 'use client';
-import { ArrowDown, ArrowRight, ArrowUp, CheckCircle, Eye, EyeSlash, SlidersHorizontal } from '@phosphor-icons/react';
+import { ArrowCounterClockwise, ArrowDown, ArrowRight, ArrowUp, CheckCircle, Eye, EyeSlash, SlidersHorizontal } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 import { AddAgentButton } from '@/components/AddAgent';
+import { Meter } from '@/components/Metrics';
 import { Button, Card, Chip, Empty, Notice, PageHeader, Spinner, StatCard, StatusDot, Tag, TaskStatusLabel, HOST_DOT, HOST_TONE } from '@/components/ui';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -11,23 +12,52 @@ import { useI18n } from '@/lib/i18n';
 import type { MessageKey } from '@/lib/messages';
 import type { Dashboard, HostStatus, Layout } from '@/lib/types';
 
-const IDS = ['fleet', 'os', 'packages', 'vulns', 'activity', 'portal'] as const;
-type WidgetId = (typeof IDS)[number];
-type Size = 'sm' | 'md' | 'lg';
+type Size = 'xs' | 'sm' | 'md' | 'lg';
 type Widget = { id: string; visible: boolean; size: Size };
-const TITLES: Record<WidgetId, MessageKey> = { fleet: 'w.fleet', os: 'w.os', packages: 'w.packages', vulns: 'w.vulns', activity: 'w.activity', portal: 'w.portal' };
-const DEFAULT_SIZE: Record<WidgetId, Size> = { fleet: 'md', os: 'md', packages: 'md', vulns: 'md', activity: 'lg', portal: 'md' };
+type Def = { kind: 'stat' | 'panel'; title: MessageKey; size: Size; visible: boolean };
+
+/** Everything that can be on the dashboard, in the order a new dashboard shows it. `visible` is the default. */
+const CATALOG: Record<string, Def> = {
+  stat_hosts: { kind: 'stat', title: 'dash.cards.hosts', size: 'xs', visible: true },
+  stat_needing: { kind: 'stat', title: 'dash.cards.needing', size: 'xs', visible: true },
+  stat_security: { kind: 'stat', title: 'dash.cards.security', size: 'xs', visible: true },
+  stat_outdated: { kind: 'stat', title: 'dash.cards.outdated', size: 'xs', visible: true },
+  stat_attention: { kind: 'stat', title: 'dash.cards.attention', size: 'xs', visible: true },
+  stat_uncovered: { kind: 'stat', title: 'dash.cards.uncovered', size: 'xs', visible: true },
+  stat_reboot: { kind: 'stat', title: 'dash.cards.reboot', size: 'xs', visible: false },
+  stat_approvals: { kind: 'stat', title: 'dash.cards.approvals', size: 'xs', visible: false },
+  stat_patched_week: { kind: 'stat', title: 'dash.cards.patched_week', size: 'xs', visible: false },
+  stat_failed_week: { kind: 'stat', title: 'dash.cards.failed_week', size: 'xs', visible: false },
+  fleet: { kind: 'panel', title: 'w.fleet', size: 'md', visible: true },
+  updates: { kind: 'panel', title: 'w.updates', size: 'md', visible: true },
+  patching: { kind: 'panel', title: 'w.patching', size: 'md', visible: true },
+  resources: { kind: 'panel', title: 'w.resources', size: 'md', visible: true },
+  packages: { kind: 'panel', title: 'w.packages', size: 'md', visible: true },
+  vulns: { kind: 'panel', title: 'w.vulns', size: 'md', visible: true },
+  os: { kind: 'panel', title: 'w.os', size: 'md', visible: true },
+  activity: { kind: 'panel', title: 'w.activity', size: 'lg', visible: true },
+  portal: { kind: 'panel', title: 'w.portal', size: 'md', visible: true },
+};
+const IDS = Object.keys(CATALOG);
+const SIZES: Size[] = ['xs', 'sm', 'md', 'lg'];
+const defaults = (): Widget[] => IDS.map((id) => ({ id, visible: CATALOG[id]!.visible, size: CATALOG[id]!.size }));
 
 // Segment colours come from the palette: ink for healthy, brick for trouble, tints in between.
 const BAR: Record<HostStatus, string> = {
   online: 'var(--success)', eco: 'var(--info)', maintenance: 'var(--warning)', offline: 'var(--border-strong)', alert: 'var(--danger)', quarantined: 'var(--danger)', pending: 'var(--surface-active)',
 };
 
-/** Keep only known widgets, in the saved order, and append any widget the saved layout predates. */
+/** Keep only known widgets, in the saved order. A layout saved before the indicator tiles existed gets the five
+ * original ones back at the top (they used to be fixed); anything else it predates is added hidden, so nothing
+ * moves under the user: it is one click away in the customise view. */
 function normalise(saved: Layout | undefined): Widget[] {
-  const known = (saved?.widgets ?? []).filter((w): w is Widget => (IDS as readonly string[]).includes(w.id));
-  const missing = IDS.filter((id) => !known.some((w) => w.id === id)).map((id) => ({ id, visible: true, size: DEFAULT_SIZE[id] }));
-  return [...known, ...missing];
+  const known = (saved?.widgets ?? []).filter((w): w is Widget => w.id in CATALOG).map((w) => ({ ...w, size: (SIZES as string[]).includes(w.size) ? w.size : CATALOG[w.id]!.size }));
+  const hasTiles = known.some((w) => CATALOG[w.id]!.kind === 'stat');
+  const originals = ['stat_hosts', 'stat_needing', 'stat_security', 'stat_outdated', 'stat_attention'];
+  const head = hasTiles || known.length === 0 ? [] : originals.map((id) => ({ id, visible: true, size: 'xs' as Size }));
+  const have = new Set([...head, ...known].map((w) => w.id));
+  const missing = IDS.filter((id) => !have.has(id)).map((id) => ({ id, visible: known.length === 0 ? CATALOG[id]!.visible : false, size: CATALOG[id]!.size }));
+  return [...head, ...known, ...missing];
 }
 
 function ModuleOff() {
@@ -42,10 +72,90 @@ function ModuleOff() {
   );
 }
 
-function WidgetBody({ id, d }: { id: WidgetId; d: Dashboard }) {
-  const { t, tr, ago } = useI18n();
+function Tile({ id, d }: { id: string; d: Dashboard }) {
+  const { t } = useI18n();
+  const label = t(CATALOG[id]!.title);
+  const attentionHosts = (d.fleet.by_status.alert ?? 0) + (d.fleet.by_status.quarantined ?? 0) + (d.fleet.by_status.offline ?? 0);
+  const failedWeek = d.patching.week.failed + d.patching.week.rolled_back + d.patching.week.missed;
+  switch (id) {
+    case 'stat_hosts': return <StatCard value={d.fleet.total} label={label} href="/hosts" />;
+    case 'stat_needing': return <StatCard value={d.fleet.hosts_needing_updates} tone={d.fleet.hosts_needing_updates > 0 ? 'warn' : 'ok'} label={label} href="/hosts?updates=1" />;
+    case 'stat_security': return <StatCard value={d.vulnerabilities.security_updates} label={label} alert={d.vulnerabilities.security_updates > 0} href="/hosts?security=1" />;
+    case 'stat_outdated': return <StatCard value={d.vulnerabilities.outdated_packages} tone={d.vulnerabilities.outdated_packages > 0 ? 'warn' : 'ok'} label={label} href="/packages?updates=1" />;
+    case 'stat_attention': return <StatCard value={attentionHosts} label={label} alert={attentionHosts > 0} href="/hosts?attention=1" />;
+    case 'stat_uncovered': return <StatCard value={d.patching.uncovered_hosts} tone={d.patching.uncovered_hosts > 0 ? 'warn' : 'ok'} label={label} href="/policies" />;
+    case 'stat_reboot': return <StatCard value={d.fleet.reboot_required} tone={d.fleet.reboot_required > 0 ? 'warn' : 'ok'} label={label} href="/hosts?reboot=1" />;
+    case 'stat_approvals': return <StatCard value={d.tasks.awaiting_approval} tone={d.tasks.awaiting_approval > 0 ? 'warn' : 'ok'} label={label} href="/tasks?filter=approval" />;
+    case 'stat_patched_week': return <StatCard value={d.patching.week.succeeded} tone="ok" label={label} href="/tasks" />;
+    case 'stat_failed_week': return <StatCard value={failedWeek} alert={failedWeek > 0} label={label} href="/tasks" />;
+    default: return null;
+  }
+}
+
+function WidgetBody({ id, d }: { id: string; d: Dashboard }) {
+  const { t, tr, ago, date } = useI18n();
   const total = Math.max(d.fleet.total, 1);
   switch (id) {
+    case 'updates': {
+      const needing = d.fleet.hosts_needing_updates;
+      const sec = Math.min(d.vulnerabilities.hosts_with_security_updates, needing);
+      const ok = Math.max(d.fleet.total - needing, 0);
+      const seg = [{ k: 'ok', n: ok, c: 'var(--success)', href: '/hosts' }, { k: 'ordinary', n: needing - sec, c: 'var(--warning)', href: '/hosts?updates=1' }, { k: 'security', n: sec, c: 'var(--danger)', href: '/hosts?security=1' }];
+      return (
+        <div>
+          <div className="fleetbar" role="img" aria-label={seg.map((x) => `${t(`w.updates.${x.k}` as MessageKey)} ${x.n}`).join(', ')}>
+            {seg.map((x) => <span key={x.k} style={{ flex: x.n, background: x.c }} />)}
+          </div>
+          <div className="legend">{seg.map((x) => <Link key={x.k} href={x.href}><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: x.c, marginRight: 6 }} />{t(`w.updates.${x.k}` as MessageKey)} · {x.n}</Link>)}</div>
+        </div>
+      );
+    }
+    case 'resources': {
+      const r = d.resources;
+      if (r.reporting === 0) return <p className="muted">{t('w.resources.none')}</p>;
+      return (
+        <div className="stack" style={{ gap: 10 }}>
+          <Meter label={t('w.resources.avg_cpu')} pct={r.avg_cpu} />
+          <Meter label={t('w.resources.avg_mem')} pct={r.avg_mem} />
+          <p className="label" style={{ margin: '6px 0 0' }}>{t('w.resources.busiest')}</p>
+          <ul className="stack" style={{ listStyle: 'none', margin: 0, padding: 0, gap: 6 }}>
+            {r.busiest.map((h) => (
+              <li key={h.id} className="row" style={{ justifyContent: 'space-between', fontSize: 13, flexWrap: 'nowrap' }}>
+                <Link href={`/host?id=${h.id}`} style={{ fontWeight: 600 }}>{h.hostname}</Link>
+                <span className="row row--tight">
+                  {([['cpu', h.cpu], ['ram', h.mem], ['disk', h.disk]] as const).map(([k, v]) => v == null ? null : <Tag key={k} tone={v >= 90 ? 'danger' : v >= 75 ? 'warn' : 'neutral'}>{t(`w.resources.${k}` as MessageKey)} {Math.round(v)}%</Tag>)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    }
+    case 'patching': {
+      const p = d.patching;
+      return (
+        <div className="stack" style={{ gap: 10 }}>
+          <div className="row row--tight">
+            <Tag tone="ok">{t('w.patching.ok', { n: p.week.succeeded })}</Tag>
+            {p.week.failed > 0 && <Tag tone="danger">{t('w.patching.failed', { n: p.week.failed })}</Tag>}
+            {p.week.rolled_back > 0 && <Tag tone="warn">{t('w.patching.rolled_back', { n: p.week.rolled_back })}</Tag>}
+            {p.week.missed > 0 && <Tag tone="warn">{t('w.patching.missed', { n: p.week.missed })}</Tag>}
+          </div>
+          <p className="label" style={{ margin: '4px 0 0' }}>{t('pol.patchday.next')}</p>
+          {p.next.length === 0 ? <p className="muted" style={{ margin: 0 }}>{t('w.patching.none')}</p> : (
+            <ul className="stack" style={{ listStyle: 'none', margin: 0, padding: 0, gap: 6 }}>
+              {p.next.map((n) => (
+                <li key={n.policy} className="row" style={{ justifyContent: 'space-between', fontSize: 13, flexWrap: 'nowrap' }}>
+                  <span><Link href="/policies" style={{ fontWeight: 600 }}>{n.policy}</Link><span className="sub">{date(n.start, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span></span>
+                  <span className="row row--tight"><Tag tone={n.auto ? 'info' : 'neutral'}>{t(n.auto ? 'w.patching.auto' : 'w.patching.approval')}</Tag><span className="muted">{t('pol.col.hosts', { n: n.hosts })}</span></span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {p.uncovered_hosts > 0 && <Notice kind="error">{t('w.patching.uncovered', { n: p.uncovered_hosts })} <Link href="/policies">{t('nav.policies')}</Link></Notice>}
+        </div>
+      );
+    }
     case 'fleet':
       return (
         <div>
@@ -88,7 +198,6 @@ function WidgetBody({ id, d }: { id: WidgetId; d: Dashboard }) {
         <div className="grid grid--stats">
           <StatCard value={d.vulnerabilities.critical_cves_unpatched} label={t('w.vulns.critical')} alert={d.vulnerabilities.critical_cves_unpatched > 0} href="/vulnerabilities" />
           <StatCard value={d.vulnerabilities.hosts_with_security_updates} label={t('w.vulns.hosts')} />
-          <StatCard value={d.compliance.enabled && d.compliance.score !== null ? `${d.compliance.score}%` : '—'} label={t('w.vulns.score')} />
         </div>
       );
     case 'activity':
@@ -150,6 +259,12 @@ function Dashboard() {
     setOverId(null);
   };
   const patch = (id: string, p: Partial<Widget>) => persist(widgets.map((w) => (w.id === id ? { ...w, ...p } : w)));
+  // A widget that was hidden comes back where it belongs in the layout, which may be far from the list it was shown
+  // from: bring it into view.
+  const reveal = (id: string) => {
+    patch(id, { visible: true });
+    setTimeout(() => document.querySelector(`[data-widget="${id}"]`)?.scrollIntoView({ block: 'center' }), 80);
+  };
 
   const d = dash.data;
   const visible = widgets.filter((w) => w.visible);
@@ -181,14 +296,6 @@ function Dashboard() {
         </Card>
       ) : (
         <div className="stack stack--lg">
-          <div className="grid grid--stats" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(11rem, 1fr))' }}>
-            <StatCard value={d.fleet.total} label={t('dash.cards.hosts')} href="/hosts" />
-            <StatCard value={d.fleet.hosts_needing_updates} tone={d.fleet.hosts_needing_updates > 0 ? 'warn' : 'ok'} label={t('dash.cards.needing')} href="/hosts?updates=1" />
-            <StatCard value={d.vulnerabilities.security_updates} label={t('dash.cards.security')} alert={d.vulnerabilities.security_updates > 0} href="/hosts?security=1" />
-            <StatCard value={d.vulnerabilities.outdated_packages} tone={d.vulnerabilities.outdated_packages > 0 ? 'warn' : 'ok'} label={t('dash.cards.outdated')} href="/packages?updates=1" />
-            <StatCard value={attentionHosts} label={t('dash.cards.attention')} alert={attentionHosts > 0} href="/hosts?attention=1" />
-          </div>
-
           {attention.length > 0 ? (
             <div className="attention" style={{ margin: 0 }}>
               {attention.map((a) => (
@@ -203,41 +310,54 @@ function Dashboard() {
             <div className="allclear"><CheckCircle size={20} weight="bold" className="icon" />{t('attn.clear')}</div>
           )}
 
-          {editing && <p className="muted">{t('dash.drag')}</p>}
+          {editing && (
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <p className="muted" style={{ margin: 0 }}>{t('dash.drag')}</p>
+              <Button small variant="ghost" icon={<ArrowCounterClockwise size={15} weight="bold" />} onClick={() => persist(defaults())}>{t('dash.reset')}</Button>
+            </div>
+          )}
           <div className="widgets">
-            {visible.map((w) => (
-              <div
-                key={w.id}
-                className={`widget widget--${w.size} ${overId === w.id ? 'widget--over' : ''} ${dragId === w.id ? 'widget--dragging' : ''}`}
-                draggable={editing}
-                onDragStart={() => setDragId(w.id)}
-                onDragOver={(e) => { if (editing) { e.preventDefault(); setOverId(w.id); } }}
-                onDragLeave={() => setOverId((o) => (o === w.id ? null : o))}
-                onDrop={(e) => { e.preventDefault(); drop(w.id); }}
-                onDragEnd={() => { setDragId(null); setOverId(null); }}
-              >
-                <Card
-                  title={t(TITLES[w.id as WidgetId])}
-                  actions={editing && (
-                    <>
-                      {(['sm', 'md', 'lg'] as const).map((s) => <Chip key={s} active={w.size === s} aria-label={`${t('dash.size')} ${t(`dash.size.${s}`)}`} onClick={() => patch(w.id, { size: s })}>{t(`dash.size.${s}`)}</Chip>)}
-                      <Button small variant="ghost" aria-label={t('dash.up')} icon={<ArrowUp size={15} weight="bold" />} onClick={() => move(w.id, -1)} />
-                      <Button small variant="ghost" aria-label={t('dash.down')} icon={<ArrowDown size={15} weight="bold" />} onClick={() => move(w.id, 1)} />
-                      <Button small variant="ghost" aria-label={t('dash.hide')} icon={<EyeSlash size={15} weight="bold" />} onClick={() => patch(w.id, { visible: false })} />
-                    </>
-                  )}
-                  flush={w.id === 'activity'}
+            {visible.map((w) => {
+              const def = CATALOG[w.id]!;
+              const controls = (
+                <>
+                  {(['xs', 'sm', 'md', 'lg'] as const).filter((s) => def.kind === 'panel' ? s !== 'xs' : s !== 'lg').map((s) => <Chip key={s} active={w.size === s} aria-label={`${t('dash.size')} ${t(`dash.size.${s}`)}`} onClick={() => patch(w.id, { size: s })}>{t(`dash.size.${s}`)}</Chip>)}
+                  <Button small variant="ghost" aria-label={t('dash.up')} icon={<ArrowUp size={15} weight="bold" />} onClick={() => move(w.id, -1)} />
+                  <Button small variant="ghost" aria-label={t('dash.down')} icon={<ArrowDown size={15} weight="bold" />} onClick={() => move(w.id, 1)} />
+                  <Button small variant="ghost" aria-label={t('dash.hide')} icon={<EyeSlash size={15} weight="bold" />} onClick={() => patch(w.id, { visible: false })} />
+                </>
+              );
+              return (
+                <div
+                  key={w.id}
+                  className={`widget widget--${w.size} ${overId === w.id ? 'widget--over' : ''} ${dragId === w.id ? 'widget--dragging' : ''}`}
+                  data-widget={w.id}
+                  draggable={editing}
+                  onDragStart={() => setDragId(w.id)}
+                  onDragOver={(e) => { if (editing) { e.preventDefault(); setOverId(w.id); } }}
+                  onDragLeave={() => setOverId((o) => (o === w.id ? null : o))}
+                  onDrop={(e) => { e.preventDefault(); drop(w.id); }}
+                  onDragEnd={() => { setDragId(null); setOverId(null); }}
                 >
-                  <WidgetBody id={w.id as WidgetId} d={d} />
-                </Card>
-              </div>
-            ))}
+                  {def.kind === 'stat' ? (
+                    <>
+                      <Tile id={w.id} d={d} />
+                      {editing && <div className="widget__bar">{controls}</div>}
+                    </>
+                  ) : (
+                    <Card title={t(def.title)} actions={editing && controls} flush={w.id === 'activity'}>
+                      <WidgetBody id={w.id} d={d} />
+                    </Card>
+                  )}
+                </div>
+              );
+            })}
           </div>
           {editing && hidden.length > 0 && (
             <div className="stack">
               <h2 className="panel__title">{t('dash.hidden')}</h2>
               <div className="row">
-                {hidden.map((w) => <Button key={w.id} icon={<Eye size={16} weight="bold" />} onClick={() => patch(w.id, { visible: true })}>{t('dash.show')} · {t(TITLES[w.id as WidgetId])}</Button>)}
+                {hidden.map((w) => <Button key={w.id} icon={<Eye size={16} weight="bold" />} onClick={() => reveal(w.id)}>{t('dash.show')} · {t(CATALOG[w.id]!.title)}</Button>)}
               </div>
             </div>
           )}
