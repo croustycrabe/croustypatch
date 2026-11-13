@@ -22,7 +22,12 @@ on its own if it is not.
   only, enrolment with one-time tokens and per-agent RSA identities, server-signed commands.
 - **Operations**: roles and RBAC, a hash-chained audit log, e-mail and webhook notifications, scheduled reports,
   optional AI second opinion on risk (bring your own model), an MCP server, an offline (air-gapped) mode.
-- **Supported hosts**: Linux with `apt` (Debian, Ubuntu) and `pacman` (Arch). See the roadmap for what comes next.
+- **Supported hosts**: Linux with `apt` (Debian, Ubuntu) and `pacman` (Arch).
+
+## Roadmap
+
+Next: a native UI for the app center, more Linux distributions (the Red Hat family with `dnf`, Fedora and others),
+ARM64 builds alongside amd64, and bringing FreeBSD back.
 
 ## Quickstart
 
