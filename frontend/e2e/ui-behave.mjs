@@ -115,7 +115,7 @@ check('the wizard offers the modules for the new host', await p.locator('dialog[
 await p.check('dialog[open] fieldset:has-text("Modules") label:has-text("Docker") input');
 await p.click('dialog[open] button:has-text("Générer la commande")'); await p.waitForSelector('dialog[open] pre.cmd');
 const cmd = await p.locator('dialog[open] pre.cmd').first().textContent();
-check('the Linux command is a curl one-liner for this server', /^curl -fsSL https:\/\/localhost:8443\/api\/v1\/agent\/install\.sh \| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\S+ sh$/.test(cmd), cmd.slice(0, 90));
+check('the Linux command is a curl one-liner for this server', new RegExp(`^curl -fsSL ${BASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/api/v1/agent/install\\.sh \\| sudo env CROUSTYPATCH_ENROLL_TOKEN=cpt_\\S+ sh$`).test(cmd), cmd.slice(0, 90));
 const token = cmd.match(/cpt_[A-Za-z0-9_-]+/)[0];
 await p.click('dialog[open] [role=tab]:has-text("FreeBSD")'); check('the FreeBSD tab uses fetch(1)', (await p.locator('dialog[open] pre.cmd').first().textContent()).startsWith('fetch -qo - '));
 await p.click('dialog[open] [role=tab]:has-text("Manuel")'); check('the manual tab shows download + checksum + enrol steps', (await p.locator('dialog[open] pre.cmd').first().textContent()).includes('sha256'));
@@ -612,6 +612,32 @@ await p.click('button.chip:has-text("Serveur")'); await p.waitForTimeout(800);
 check('the server\'s own messages can be shown alone', (await p.locator('.tbl tbody tr').count()) >= 1 && (await p.locator('.tbl tbody tr:has-text("Tâches")').count()) === 0);
 await p.click('button.chip:has-text("Tâches")'); await p.selectOption('select', 'error'); await p.waitForTimeout(800);
 check('and filtered to errors', (await p.locator('.tbl tbody tr').count()) === 0 || (await p.locator('.tbl tbody tr:not(:has-text("erreur"))').count()) === 0);
+
+// ---- Docker migration console
+{
+  const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
+  const h = sql("select id from hosts order by enrolled_at limit 1");
+  sql(`update hosts set status='online', modules = modules || '{"docker": true}' where id='${h}'`);
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-pg'`);
+  const meta = JSON.stringify({ image: 'postgres:17-alpine', project: 'zz', service: 'db', compose: { dir: '/opt/stacks/zz', files: ['/opt/stacks/zz/compose.yaml'] }, latest: { tag: '18-alpine', major: true, same_major: null, apply: { mode: 'manual', reason: 'base de données' } } }).replace(/'/g, "''");
+  sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:zz-pg','docker','postgres:17-alpine @aaaa',null,'${meta}')`);
+  await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tr:has-text("zz-pg")');
+  await p.click('.tbl tr:has-text("zz-pg") button:has-text("Console de migration")'); await p.waitForSelector('dialog[open] select');
+  check('the console offers the PostgreSQL template for a database', (await p.locator('dialog[open] select option:has-text("Migrate PostgreSQL to 18-alpine")').count()) === 1);
+  check('there is no AI button without a provider', (await p.locator('dialog[open] button:has-text("Faire avec l’IA")').count()) === 0);
+  await p.click('dialog[open] button:has-text("Charger ces lignes")');
+  check('loading it fills the editor, backup first', (await p.locator('dialog[open] textarea').count()) === 9 && (await p.locator('dialog[open] textarea').nth(1).inputValue()).includes('pg_dumpall'));
+  await p.fill('dialog[open] input[placeholder="18-alpine"]', '19-alpine');
+  await p.waitForSelector('dialog[open] select option:has-text("19-alpine")', { state: 'attached', timeout: 8000 }).then(() => check('another tag rebuilds the templates', true), () => check('another tag rebuilds the templates', false));
+  await p.locator('dialog[open] textarea').nth(0).fill('echo edited by a person');
+  await p.click('dialog[open] button:has-text("Lancer 9 étape(s)")'); await p.waitForSelector('button:has-text("Confirmer")');
+  await p.click('button:has-text("Confirmer")');
+  await p.waitForSelector('dialog[open] .logbox:has-text("dry-run")', { timeout: 45000 }).then(() => check('the run is followed in the window, step by step', true), () => check('the run is followed in the window, step by step', false));
+  const first = sql(`select details->'steps'->0->>'command' from audit_log where action='docker.shell_requested' order by seq desc limit 1`);
+  check('the exact commands, as edited, are in the audit log', first === 'echo edited by a person', first);
+  await p.keyboard.press('Escape');
+  sql(`delete from host_packages where host_id='${h}' and name='docker:zz-pg'`);
+}
 
 // ---- language + logout
 await p.goto(`${BASE}/`); await p.waitForSelector('.stat'); await p.click('.topbar .lang button:has-text("en")'); await p.waitForTimeout(300);
