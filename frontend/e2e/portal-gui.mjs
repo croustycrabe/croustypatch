@@ -114,6 +114,30 @@ await p.fill('#q', 'vlc');
 check('search filters by name', (await p.locator('.card').count()) === 1);
 await p.fill('#q', '');
 
+// filters: installed, needs an update, not installed (counted with the category and the search), and the sort
+const names = () => p.locator('.card .card__name').allTextContents();
+const count = (f) => p.locator(`[data-filter=${f}] .chip__count`).textContent();
+check('the filters show how many apps each one gives', (await count('all')) === '5' && (await count('installed')) === '2' && (await count('updates')) === '1' && (await count('available')) === '3');
+await p.click('[data-filter=installed]');
+check('Installed shows what is on the machine, partly installed included', JSON.stringify((await names()).sort()) === JSON.stringify(['Git', 'Outils de compilation']));
+await p.click('[data-filter=updates]');
+check('Needs update shows only the apps with a newer version', JSON.stringify(await names()) === JSON.stringify(['Git']));
+await p.click('[data-filter=available]');
+check('Not installed shows what is missing', (await p.locator('.card').count()) === 3 && !(await names()).includes('Git'));
+await p.click('.cat:has-text("Système")');
+check('a filter combines with the category and the counts follow', (await count('available')) === '1' && (await count('installed')) === '0');
+await p.click('.cat:has-text("Toutes")');
+await p.click('[data-filter=installed]');
+await p.fill('#q', 'vlc');
+check('and with the search: nothing installed matches, and the message names the filter', (await p.locator('.card').count()) === 0 && (await p.locator('#empty').textContent()).includes('ne correspond'));
+await p.fill('#q', '');
+await p.click('[data-filter=all]');
+check('by name, the apps are in alphabetical order', JSON.stringify(await names()) === JSON.stringify([...(await names())].sort((x, y) => x.localeCompare(y))));
+await p.click('#sort');
+const byStatus = await names();
+check('by status, updates come first, then installed, then the rest', byStatus[0] === 'Git' && byStatus[1] === 'Outils de compilation' && byStatus.length === 5);
+await p.click('#sort');
+
 // a command app shows exactly what will run, and the path checked for this account
 await p.click('[data-app="Outil interne"] button:has-text("Installer")');
 await p.waitForSelector('#confirm[open]');

@@ -23,6 +23,7 @@ const FR = {
   confirm_upd: 'Mettre à jour {n} paquet(s) ?', upd_body: 'L’agent les installe avec un point de restauration et revient en arrière en cas de problème. L’ordinateur peut demander un redémarrage ensuite.',
   upd_running: 'Mise à jour du système', ok_upd: 'Mises à jour installées', fail_upd: 'La mise à jour a échoué : {m}', upd_sent: 'Mise à jour demandée ({n} paquet(s)).',
   check_started: 'Recherche de mises à jour lancée…', check_done: 'Recherche terminée : {n} mise(s) à jour disponible(s).', upd_unavailable: 'Les mises à jour ne sont pas disponibles sur cet ordinateur ({e}).',
+  filter: 'Filtrer', f_all: 'Toutes', f_installed: 'Installées', f_updates: 'À mettre à jour', f_available: 'Non installées', sort: 'Trier', sort_name: 'Nom', sort_status: 'État', empty_filter: 'Aucune application dans ce filtre.',
   theme_system: 'Thème : celui du système', theme_light: 'Thème : clair', theme_dark: 'Thème : sombre', lang_title: 'Langue : français (cliquer pour passer à l’anglais)',
 };
 const EN = {
@@ -46,6 +47,7 @@ const EN = {
   confirm_upd: 'Update {n} package(s)?', upd_body: 'The agent installs them with a restore point and rolls back if something goes wrong. The computer may ask for a restart afterwards.',
   upd_running: 'Updating the system', ok_upd: 'Updates installed', fail_upd: 'The update failed: {m}', upd_sent: 'Update requested ({n} package(s)).',
   check_started: 'Looking for updates…', check_done: 'Check finished: {n} update(s) available.', upd_unavailable: 'Updates are not available on this computer ({e}).',
+  filter: 'Filter', f_all: 'All', f_installed: 'Installed', f_updates: 'Needs update', f_available: 'Not installed', sort: 'Sort', sort_name: 'Name', sort_status: 'Status', empty_filter: 'No application in this filter.',
   theme_system: 'Theme: follow the system', theme_light: 'Theme: light', theme_dark: 'Theme: dark', lang_title: 'Language: English (click for French)',
 };
 
@@ -102,13 +104,22 @@ const THEME_ICON = { system: 'auto', light: 'sun', dark: 'moon' };
 const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
 
 // ---- state
-const S = { host: '', apps: [], cat: '', q: '', loaded: false, error: '', seen: new Map(), notes: [], busy: false, view: 'apps', upd: null, updOff: new Set(), updSeen: new Map(), updLoaded: false, checking: null };
+const S = { host: '', apps: [], cat: '', q: '', filter: 'all', sort: 'name', loaded: false, error: '', seen: new Map(), notes: [], busy: false, view: 'apps', upd: null, updOff: new Set(), updSeen: new Map(), updLoaded: false, checking: null };
 
 function presence(a) {
   const l = a.local;
   if (l && l.total > 0) return l.present === l.total ? 'present' : l.present > 0 ? 'partial' : 'absent';
   return a.installed ? 'present' : 'absent';
 }
+
+/** An app that is on the machine and whose source has a newer version. */
+const needsUpdate = (a) => presence(a) === 'present' && !!a.local?.update;
+// Installed means present or partly there. Each filter is counted with the category and search already applied.
+const FILTERS = { all: () => true, installed: (a) => presence(a) !== 'absent', updates: needsUpdate, available: (a) => presence(a) === 'absent' };
+/** Sorting by status: updates first, then installed, partly installed, not installed; by name within each. */
+const rank = (a) => (needsUpdate(a) ? 0 : ({ present: 1, partial: 2, absent: 3 })[presence(a)]);
+const byName = (x, y) => x.name.localeCompare(y.name);
+const sorters = { name: byName, status: (x, y) => rank(x) - rank(y) || byName(x, y) };
 
 function note(tone, text) {
   S.notes.unshift({ tone, text, at: new Date() });
@@ -274,12 +285,16 @@ function render() {
 
   // apps
   const q = S.q.trim().toLowerCase();
-  const shown = S.apps.filter((a) => (!S.cat || a.category === S.cat) && (!q || `${a.name} ${a.description} ${(a.packages ?? []).join(' ')}`.toLowerCase().includes(q)));
+  const narrowed = S.apps.filter((a) => (!S.cat || a.category === S.cat) && (!q || `${a.name} ${a.description} ${(a.packages ?? []).join(' ')}`.toLowerCase().includes(q)));
+  const shown = narrowed.filter(FILTERS[S.filter]).sort(sorters[S.sort]);
+  const fbtn = (f) => el('button', { class: 'chip', type: 'button', 'data-filter': f, 'aria-pressed': String(S.filter === f), onclick: () => { S.filter = f; render(); } }, el('span', {}, t(`f_${f}`)), el('span', { class: 'chip__count' }, narrowed.filter(FILTERS[f]).length));
+  $('filters').replaceChildren(el('span', { class: 'muted' }, t('filter')), ...Object.keys(FILTERS).map(fbtn),
+    el('span', { class: 'filters__sort' }, el('span', { class: 'muted' }, t('sort')), el('button', { class: 'chip', type: 'button', id: 'sort', onclick: () => { S.sort = S.sort === 'name' ? 'status' : 'name'; render(); } }, t(`sort_${S.sort}`))));
   const locked = S.apps.some((a) => a.pending); // one operation at a time per machine
   $('grid').replaceChildren(...shown.map((a) => card(a, locked)));
   const empty = $('empty');
   empty.hidden = !S.loaded || shown.length > 0;
-  empty.textContent = S.apps.length ? t('no_match') : t('empty');
+  empty.textContent = !S.apps.length ? t('empty') : S.filter !== 'all' && !q && !S.cat ? t('empty_filter') : t('no_match');
 
   // progress of the running operation: an app install or a system update
   const run = S.apps.find((a) => a.pending);

@@ -28,6 +28,7 @@ function Store() {
   const hosts = useApi<HostSummary[]>('/hosts');
   const [host, setHost] = useState('');
   const [cat, setCat] = useState('');
+  const [filter, setFilter] = useState<'all' | 'installed' | 'updates' | 'available'>('all');
   const view = useApi<{ apps: HostApp[] }>(host ? `/portal/hosts/${host}` : null, { poll: 4000 });
   const act = useAction();
   useEffect(() => { if (!host && hosts.data?.length) setHost((hosts.data.find((h) => h.status === 'online' && h.connected) ?? hosts.data.find((h) => h.status === 'online') ?? hosts.data[0]!).id); }, [hosts.data, host]);
@@ -38,7 +39,10 @@ function Store() {
   });
   const apps = view.data?.apps ?? [];
   const cats = [...new Set(apps.map((a) => a.category).filter(Boolean))];
-  const shown = apps.filter((a) => !cat || a.category === cat);
+  const inCat = apps.filter((a) => !cat || a.category === cat);
+  const matches = { all: () => true, installed: (a: HostApp) => a.installed, updates: (a: HostApp) => a.installed && !!a.update, available: (a: HostApp) => !a.installed };
+  const count = (f: keyof typeof matches) => inCat.filter(matches[f]).length;
+  const shown = inCat.filter(matches[filter]);
   return (
     <div className="stack">
       <div className="row">
@@ -48,6 +52,9 @@ function Store() {
             {hosts.data?.map((h) => <option key={h.id} value={h.id}>{h.display_name || h.hostname}</option>)}
           </Select>)}</Field>
       </div>
+      {apps.length > 0 && <div className="chips" role="group" aria-label={t('portal.filter')}>
+        {(['all', 'installed', 'updates', 'available'] as const).map((f) => <Chip key={f} active={filter === f} onClick={() => setFilter(f)}>{t(`portal.filter.${f}`)} ({count(f)})</Chip>)}
+      </div>}
       {cats.length > 1 && <div className="chips"><Chip active={!cat} onClick={() => setCat('')}>{t('portal.all')}</Chip>{cats.map((c) => <Chip key={c} active={cat === c} onClick={() => setCat(c)}>{c}</Chip>)}</div>}
       {view.error && <Notice kind="error">{view.error.message.includes('switched off') ? t('portal.off') : view.error.message}</Notice>}
       {act.error && <Notice kind="error">{act.error}</Notice>}
