@@ -1,0 +1,65 @@
+# Continuous integration: Rust (clippy, tests against a PostgreSQL service container) and the web UI (types, build).
+# Third-party actions are pinned to full commit SHAs (the version is in the comment).
+# cargo fmt is not checked: the code base is not formatted with rustfmt's defaults. Clippy warnings are reported
+# but do not fail the build (the code base has some today); errors do.
+name: ci
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: croustypatch
+          POSTGRES_PASSWORD: croustypatch-dev
+          POSTGRES_DB: croustypatch
+        # The tests' default address (server/tests/support/mod.rs): 127.0.0.1:5433.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U croustypatch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Rust toolchain (stable, with clippy)
+        run: rustup toolchain install stable --profile minimal --component clippy --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Types
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
