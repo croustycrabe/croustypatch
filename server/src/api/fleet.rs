@@ -131,10 +131,8 @@ pub struct HostPatch {
     tags: Option<Vec<String>>,
     heartbeat_secs: Option<i32>,
     group_ids: Option<Vec<Uuid>>,
-    /// Optional modules for this host: any subset of docker, helper_script, openscap, portal, eco.
+    /// Optional modules for this host: any subset of docker, helper_script, portal, eco.
     modules: Option<serde_json::Value>,
-    /// Audit profile of this host: '' (fleet default), an XCCDF profile id or `custom:<uuid>`.
-    compliance_profile: Option<String>,
 }
 
 pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::Path<Uuid>, body: web::Json<HostPatch>) -> ApiResult<HttpResponse> {
@@ -167,9 +165,6 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
     if let Some(m) = &b.modules {
         crate::modules::validate(m)?;
     }
-    if b.compliance_profile.as_deref().is_some_and(|p| !crate::compliance::valid_profile_ref(p)) {
-        return Err(ApiError::bad("compliance_profile must be empty, an XCCDF profile id or a custom profile"));
-    }
     let modules_changed = b.modules.is_some();
     let out: Host = state
         .db(move |c| {
@@ -186,13 +181,6 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                     ring: Option<i32>,
                     tags: Option<serde_json::Value>,
                     heartbeat_secs: Option<i32>,
-                    compliance_profile: Option<String>,
-                }
-                if let Some(cp) = b.compliance_profile.as_deref().and_then(|p| p.strip_prefix(crate::compliance::CUSTOM_PREFIX)) {
-                    let known: i64 = crate::schema::compliance_profiles::table.filter(crate::schema::compliance_profiles::id.eq(Uuid::parse_str(cp).unwrap_or_default())).count().get_result(c)?;
-                    if known == 0 {
-                        return Err(ApiError::bad("unknown custom audit profile"));
-                    }
                 }
                 let p = P {
                     display_name: b.display_name.clone().map(|s| s.trim().to_string()),
@@ -204,9 +192,8 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                     ring: b.ring,
                     tags: b.tags.as_ref().map(|t| json!(t)),
                     heartbeat_secs: b.heartbeat_secs,
-                    compliance_profile: b.compliance_profile.clone(),
                 };
-                let any = p.compliance_profile.is_some() || p.display_name.is_some() || p.environment.is_some() || p.criticality.is_some() || p.asset_type.is_some() || p.internet_exposed.is_some() || p.has_staging.is_some() || p.ring.is_some() || p.tags.is_some() || p.heartbeat_secs.is_some();
+                let any = p.display_name.is_some() || p.environment.is_some() || p.criticality.is_some() || p.asset_type.is_some() || p.internet_exposed.is_some() || p.has_staging.is_some() || p.ring.is_some() || p.tags.is_some() || p.heartbeat_secs.is_some();
                 if any {
                     let n = diesel::update(hosts::table.find(id)).set(&p).execute(c)?;
                     if n == 0 {
@@ -235,7 +222,7 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                 }
                 audit::record(c, Event::new(&user.username, "host.updated").target("host", &id.to_string()).host(id).details(json!({
                     "environment": b.environment, "criticality": b.criticality, "internet_exposed": b.internet_exposed,
-                    "has_staging": b.has_staging, "ring": b.ring, "groups": b.group_ids, "compliance_profile": b.compliance_profile
+                    "has_staging": b.has_staging, "ring": b.ring, "groups": b.group_ids
                 })).ip(&user.ip))?;
                 Ok(hosts::table.find(id).select(Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?)
             })

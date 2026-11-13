@@ -10,7 +10,6 @@ import { useAction, useApi } from '@/lib/hooks';
 import { useI18n } from '@/lib/i18n';
 import { useToast } from '@/lib/toast';
 import type { MessageKey } from '@/lib/messages';
-import { HostCompliance } from '@/components/Compliance';
 import { Pager, usePageSize } from '@/components/Pager';
 import { UpdateMenu, type Scope } from '@/components/UpdateMenu';
 import { DockerList } from '@/components/DockerList';
@@ -18,13 +17,13 @@ import { HostResources, useSize } from '@/components/Metrics';
 import { Occurrences, safeZone, useWindowText } from '@/components/PatchSchedule';
 import type { Host, HostGroup, HostModules, HostPackage, PatchingExplain, Task } from '@/lib/types';
 
-const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'portal_updates', 'eco'];
+const HOST_MODULES: (keyof HostModules)[] = ['docker', 'helper_script', 'portal', 'portal_updates', 'eco'];
 /** Module name -> what the agent reports in its facts when the host has it. */
-const DETECTED: Partial<Record<keyof HostModules, string>> = { docker: 'docker', helper_script: 'helper-script', openscap: 'openscap' };
+const DETECTED: Partial<Record<keyof HostModules, string>> = { docker: 'docker', helper_script: 'helper-script' };
 
 interface Detail { host: Host; group_ids: string[]; packages: HostPackage[]; tasks: Task[] }
 type Draft = { display_name: string; environment: string; criticality: string; asset_type: string; internet_exposed: boolean; has_staging: boolean; ring: number; tags: string; group_ids: string[] };
-type TabId = 'overview' | 'packages' | 'docker' | 'history' | 'compliance' | 'settings';
+type TabId = 'overview' | 'packages' | 'docker' | 'history' | 'settings';
 
 const draftOf = (d: Detail): Draft => ({ display_name: d.host.display_name ?? '', environment: d.host.environment, criticality: d.host.criticality, asset_type: d.host.asset_type, internet_exposed: d.host.internet_exposed, has_staging: d.host.has_staging, ring: d.host.ring, tags: d.host.tags.join(', '), group_ids: d.group_ids });
 
@@ -84,7 +83,7 @@ function HostDetail() {
   const server = useApi<{ version: string }>('/server-info');
 
   const initialTab = (params.get('tab') as TabId | null) ?? 'overview';
-  const [tab, setTab] = useState<TabId>(['overview', 'packages', 'docker', 'history', 'compliance', 'settings'].includes(initialTab) ? initialTab : 'overview');
+  const [tab, setTab] = useState<TabId>(['overview', 'packages', 'docker', 'history', 'settings'].includes(initialTab) ? initialTab : 'overview');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [updatesOnly, setUpdatesOnly] = useState(true);
@@ -211,7 +210,6 @@ function HostDetail() {
         { id: 'packages', label: t('host.tab.packages'), count: pending.length || undefined },
         ...(host.modules?.docker ? [{ id: 'docker' as const, label: t('host.tab.docker'), count: packages.filter((p) => p.source === 'docker').length || undefined }] : []),
         { id: 'history', label: t('host.tab.history'), count: tasks.length || undefined },
-        { id: 'compliance', label: t('host.tab.compliance') },
         { id: 'settings', label: t('host.tab.settings') },
       ]} />
 
@@ -298,7 +296,6 @@ function HostDetail() {
         </Table>
       )}
 
-      {tab === 'compliance' && <HostCompliance hostId={id} modules={(facts.modules as string[] | undefined) ?? []} canScan={can('tasks:create') && !quarantined} onScan={() => void doTask(`/hosts/${id}/compliance-scan`, {})} />}
       {tab === 'settings' && (
         <div className="stack stack--lg">
         <Card title={t('host.modules')}>

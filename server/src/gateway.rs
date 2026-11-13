@@ -460,7 +460,6 @@ pub async fn handle_messages(state: &web::Data<AppState>, host_id: Uuid, msgs: V
                     store_task_update(c, host_id, &u, now)?;
                     touch(c, host_id, None, now)
                 }
-                AgentMessage::Compliance { task_id, report } => crate::compliance::store(c, host_id, task_id, &report),
             })
             .await;
         if let Err(e) = res {
@@ -518,14 +517,6 @@ pub fn claim_due_commands(c: &mut PgConnection, state: &AppState, host_id: Uuid)
                 let e = exec.clone().unwrap_or_default();
                 let field = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 CommandAction::UpdateAgent { platform: field("platform"), sha256: field("sha256"), version: field("version"), gui_sha256: e.get("gui_sha256").and_then(|v| v.as_str()).map(str::to_owned) }
-            }
-            Some(TaskKind::Compliance) => {
-                let e = exec.unwrap_or_default();
-                CommandAction::ComplianceScan {
-                    profile: e.get("profile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    tailoring: e.get("tailoring").and_then(|t| serde_json::from_value(t.clone()).ok()),
-                    auto_install: e.get("auto_install").and_then(|v| v.as_bool()).unwrap_or(true),
-                }
             }
             Some(TaskKind::Reboot) => {
                 let e = exec.unwrap_or_default();

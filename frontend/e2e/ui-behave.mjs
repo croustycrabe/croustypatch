@@ -131,7 +131,7 @@ check('and offers to open the new host', await p.locator('dialog[open] a:has-tex
   const href = await p.locator('dialog[open] a:has-text("Ouvrir l’hôte")').getAttribute('href');
   const hid = new URL(href, BASE).searchParams.get('id');
   const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
-  check('the modules chosen in the wizard are switched on for the new host', m?.docker === true && m?.openscap === false, JSON.stringify(m));
+  check('the modules chosen in the wizard are switched on for the new host', m?.docker === true, JSON.stringify(m));
 }
 agent.kill();
 await p.keyboard.press('Escape');
@@ -279,26 +279,20 @@ await p.waitForSelector('code.cs-inline-code'); const tok = (await p.locator('co
   check('an MCP client authenticates with the token and reads the fleet', r?.result?.isError === false && typeof r.result.structuredContent.pending_updates === 'number', JSON.stringify(r).slice(0, 120));
 }
 
-// ---- compliance tab: an audit can be requested
+// ---- host page: settings and modules
 await p.goto(`${BASE}/hosts/`); await p.waitForSelector('.tbl'); await p.click('.tbl tr:has(.status.tone-ok) .cell-host a >> nth=0'); await p.waitForSelector('.tabs');
 await p.waitForSelector('.panel:has-text("Correctifs automatiques")', { timeout: 8000 }).then(() => check('the host page says why a host is, or is not, patched automatically', true), () => check('the host page says why a host is, or is not, patched automatically', false));
 await p.waitForSelector('.panel:has-text("Ressources") [role=meter]', { timeout: 40000 }).then(() => check('the host page shows live CPU, memory and disk use reported by the agent', true), () => check('the host page shows live CPU, memory and disk use reported by the agent', false));
 check('and the hardware: processor and memory', (await p.locator('.panel:has-text("Système")').first().textContent()).includes('Processeur'));
 check('the agent card shows the agent is up to date', await p.locator('.kv .tag:has-text("à jour")').count() === 1);
 await p.click('[role=tab]:has-text("Réglages")'); await p.waitForSelector('[role=switch]');
-check('the host settings list the modules, with the self-service updates of the app center', await p.locator('[role=switch]').count() === 6);
-await p.click('[role=switch]:has-text("OpenSCAP")'); await p.waitForSelector('.toast');
+check('the host settings list the modules, with the self-service updates of the app center', await p.locator('[role=switch]').count() === 5);
+await p.click('[role=switch]:has-text("Proxmox Helper Scripts")'); await p.waitForSelector('.toast');
 {
   const hid = new URL(p.url()).searchParams.get('id');
   const m = await p.evaluate(async (id) => (await (await fetch(`/api/v1/hosts/${id}`)).json()).host.modules, hid);
-  check('a module is switched on for this host only', m?.openscap === true, JSON.stringify(m));
+  check('a module is switched on for this host only', m?.helper_script === true, JSON.stringify(m));
 }
-await p.click('[role=tab]:has-text("Conformité")'); await p.waitForSelector('button:has-text("Lancer un audit"), .empty');
-check('the compliance tab explains how to start when there is no report', (await p.locator('.empty').textContent()).includes('openscap'));
-await p.click('button:has-text("Lancer un audit")'); await p.waitForTimeout(1500);
-await p.click('[role=tab]:has-text("Historique")'); await p.waitForTimeout(600);
-check('a compliance task is created and answered by the agent', await p.locator('.tbl tr:has-text("conformité")').count() >= 1);
-
 // ---- app center: catalog, then self-service install through the agent
 {
   // the app center is switched on per host
@@ -356,11 +350,11 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await sys.context().close();
 }
 
-// ---- 0.7: Docker menu, audit profiles, app icons
+// ---- 0.7: Docker menu, app icons
 {
   const sql = (q) => execFileSync('docker', ['exec', 'croustypatch-pg', 'psql', '-U', 'croustypatch', '-d', 'cp_e2e', '-qAt', '-c', q], { encoding: 'utf8' }).trim();
   const h = sql("select id from hosts order by enrolled_at limit 1");
-  sql(`update hosts set modules = modules || '{"docker": true, "openscap": true}' where id='${h}'`);
+  sql(`update hosts set modules = modules || '{"docker": true}' where id='${h}'`);
   sql(`delete from host_packages where host_id='${h}' and source='docker'`);
   sql(`insert into host_packages (host_id,name,source,version,candidate,meta) values ('${h}','docker:site-web','docker','nginx:1.27 @aaaa','nginx:1.27 @bbbb','{"image":"nginx:1.27","project":"site","service":"web","state":"running","health":"healthy","latest":{"tag":"1.29.0","major":false,"same_major":null}}'), ('${h}','docker:site-db','docker','postgres:17 @cccc',null,'{"image":"postgres:17","project":"site","service":"db","state":"running"}')`);
 
@@ -381,68 +375,6 @@ check('a compliance task is created and answered by the agent', await p.locator(
   await p.click('button.chip:has-text("Mises à jour suggérées")'); await p.fill('input[type=search]', '');
   await p.goto(`${BASE}/host/?id=${h}&tab=docker`); await p.waitForSelector('.tbl tbody tr');
   check('each host has its own Docker tab', (await p.locator('.tbl tbody tr').count()) === 2);
-
-  // audit profiles
-  sql(`update hosts set facts = jsonb_set(facts, '{openscap}', '{"version":"1.4.2","datastream":"/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml","profiles":[{"id":"xccdf_org.ssgproject.content_profile_standard","title":"Profil standard"},{"id":"xccdf_org.ssgproject.content_profile_cis","title":"CIS niveau 1"}]}') where id='${h}'`);
-  sql(`delete from compliance_reports where host_id='${h}'`);
-  sql(`insert into compliance_reports (host_id,profile,datastream,passed,failed,not_applicable,other,score,failed_rules,results_sha256,collected_at) values ('${h}','xccdf_org.ssgproject.content_profile_standard','ds',40,2,3,0,95.2,'[{"rule_id":"xccdf_org.ssgproject.content_rule_package_aide_installed","severity":"low"},{"rule_id":"xccdf_org.ssgproject.content_rule_sysctl_kernel_randomize_va_space","severity":"high"}]','abc',now())`);
-  await p.goto(`${BASE}/`); await p.waitForSelector('.sidebar');
-  await p.click('.sidebar a.navitem:has-text("Conformité")'); await p.waitForSelector('.stat:has-text("Score de la flotte")');
-  check('the Compliance page shows the fleet score and the latest audit of each host', (await p.locator('.stat:has-text("Score de la flotte")').textContent()).includes('95.2') && (await p.locator('.tbl tbody tr').first().textContent()).includes('95.2'));
-  await p.click('button:has-text("Nouveau profil")'); await p.waitForSelector('dialog[open]');
-  await p.fill('dialog[open] input >> nth=0', 'Postes de travail');
-  await p.selectOption('dialog[open] select', { label: 'CIS niveau 1' });
-  await p.waitForSelector('dialog[open] button.chip');
-  check('the editor offers the rules that fail on the fleet', (await p.locator('dialog[open] button.chip:has-text("sysctl_kernel_randomize_va_space")').count()) === 1 && (await p.locator('dialog[open] button.chip:has-text("package_aide_installed")').count()) === 1);
-  await p.click('dialog[open] button.chip:has-text("sysctl_kernel_randomize_va_space")');
-  check('a rule is switched off with one click', (await p.locator('dialog[open] .chip--rule').count()) === 1 && (await p.locator('dialog[open] button.chip:has-text("sysctl_kernel_randomize_va_space")').count()) === 0);
-  await p.fill('dialog[open] input[placeholder="package_aide_installed"]', 'package_aide_installed'); await p.click('dialog[open] button:has-text("Ajouter")');
-  check('or typed by its short name', (await p.locator('dialog[open] .chip--rule').count()) === 2);
-  await p.fill('dialog[open] input[placeholder="package_aide_installed"]', 'pas valide'); await p.click('dialog[open] button:has-text("Ajouter")');
-  check('an invalid rule name is refused', (await p.locator('dialog[open] .chip--rule').count()) === 2 && (await p.locator('dialog[open] [role=alert], dialog[open] .field__hint:has-text("Lettres")').count()) >= 1);
-  await p.fill('dialog[open] input[placeholder="package_aide_installed"]', '');
-  await p.click('dialog[open] button[type=submit]'); await p.waitForSelector('.tbl tr:has-text("Postes de travail")');
-  check('the custom profile is saved with its rules', (await p.locator('.tbl tr:has-text("Postes de travail")').textContent()).includes('2'));
-  await p.click('.tbl tr:has-text("Postes de travail") button:has-text("Modifier")'); await p.waitForSelector('dialog[open] .chip--rule');
-  await p.click('dialog[open] .chip--rule button >> nth=0');
-  check('a rule can be switched back on', (await p.locator('dialog[open] .chip--rule').count()) === 1);
-  await p.click('dialog[open] button[type=submit]'); await p.waitForTimeout(700);
-  const custom = (await p.evaluate(async () => (await (await fetch('/api/v1/compliance/profiles')).json()).custom))[0];
-  check('and the change is kept', custom.name === 'Postes de travail' && custom.disabled_rules.length === 1 && custom.base_profile.endsWith('_profile_cis'));
-
-  // the host picks it, and the audit goes out with the tailoring
-  await p.goto(`${BASE}/host/?id=${h}&tab=compliance`); await p.waitForSelector('text=OpenSCAP 1.4.2');
-  check('the host tab says OpenSCAP is installed, with its version and profiles', (await p.locator('text=2 profils disponibles').count()) === 1);
-  await p.selectOption('select', { label: 'Postes de travail' }); await p.waitForSelector('.toast');
-  const own = sql(`select compliance_profile from hosts where id='${h}'`);
-  check('the audit profile is chosen per host', own === `custom:${custom.id}`, own);
-  await p.click('button:has-text("Lancer un audit")'); await p.waitForTimeout(1200);
-  const tail = sql(`select exec->'tailoring'->>'name' || '|' || jsonb_array_length(exec->'tailoring'->'disabled_rules') || '|' || (exec->>'auto_install') from tasks where host_id='${h}' and kind='compliance' order by created_at desc limit 1`);
-  check('the audit is sent with the custom profile and the permission to install what is missing', tail === 'Postes de travail|1|true', tail);
-  await p.goto(`${BASE}/compliance/`); await p.waitForSelector('.tbl tr:has-text("Postes de travail")');
-  await p.click('.tbl tr:has-text("Postes de travail") button:has-text("Supprimer")'); await p.waitForSelector('dialog[open]'); await p.click('dialog[open] button:has-text("Confirmer")');
-  await p.waitForSelector('.alert--error', { timeout: 5000 }).then(() => check('a profile that hosts use cannot be deleted', true), () => check('a profile that hosts use cannot be deleted', false));
-  sql(`update hosts set compliance_profile='' where id='${h}'`);
-  await p.goto(`${BASE}/compliance/`); await p.waitForSelector('.tbl tr:has-text("Postes de travail")');
-  await p.click('.tbl tr:has-text("Postes de travail") button:has-text("Supprimer")'); await p.waitForSelector('dialog[open]'); await p.click('dialog[open] button:has-text("Confirmer")');
-  await p.waitForSelector('.tbl tr:has-text("Postes de travail")', { state: 'detached', timeout: 5000 }).then(() => check('once nobody uses it, the profile can be deleted', true), () => check('once nobody uses it, the profile can be deleted', false));
-
-  // 0.8: planned audits of the fleet
-  await p.selectOption('fieldset:has-text("Audits planifiés") select >> nth=0', 'weekly');
-  await p.selectOption('fieldset:has-text("Audits planifiés") select >> nth=1', '6');
-  await p.fill('fieldset:has-text("Audits planifiés") input[type=time]', '04:30');
-  await p.fill('fieldset:has-text("Audits planifiés") input[placeholder="Europe/Paris"]', 'Europe/Paris');
-  await p.click('button:has-text("Enregistrer")'); await p.waitForSelector('text=Prochain audit planifié', { timeout: 5000 }).catch(() => {});
-  const plan = sql(`select value->'schedule'->>'frequency' || '|' || (value->'schedule'->>'weekday') || '|' || (value->'schedule'->>'at') || '|' || (value->'schedule'->>'timezone') from settings where key='compliance'`);
-  check('planned audits are saved with their moment and time zone', plan === 'weekly|6|04:30|Europe/Paris', plan);
-  check('and the page shows the next planned audit', (await p.locator('text=Prochain audit planifié').count()) === 1);
-  sql(`update settings set value = jsonb_set(value, '{schedule,frequency}', '"off"') where key='compliance'`);
-
-  // 0.8: newer Ubuntu with the previous release's content, and the profile recommended for the machine
-  sql(`update hosts set facts = jsonb_set(facts, '{openscap}', '{"version":"1.4.3","datastream":"/usr/share/xml/scap/ssg/content/ssg-ubuntu2404-ds.xml","profiles":[{"id":"xccdf_org.ssgproject.content_profile_cis_level1_server","title":"CIS Ubuntu 24.04 niveau 1 serveur"},{"id":"xccdf_org.ssgproject.content_profile_stig","title":"STIG"}],"recommended":"xccdf_org.ssgproject.content_profile_cis_level1_server","adapted":"noble → resolute"}') where id='${h}'`);
-  await p.goto(`${BASE}/host/?id=${h}&tab=compliance`); await p.waitForSelector('text=OpenSCAP 1.4.3');
-  check('the host tab says the previous release\'s content is pointed at this one', (await p.locator('text=noble → resolute').count()) === 1);
-  check('and which profile is used when none is chosen, marked recommended', (await p.locator('text=CIS Ubuntu 24.04 niveau 1 serveur (recommandé pour cette machine)').count()) === 1 && (await p.locator('option:has-text("· recommandé")').count()) === 1);
 
   // app icons
   await p.goto(`${BASE}/portal/`); await p.click('[role=tab]:has-text("Suggestions")'); await p.waitForSelector('.appcard:has-text("Firefox")');

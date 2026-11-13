@@ -34,13 +34,6 @@ RUN cargo build --release --locked \
  && cp icons/256x256.png /out/croustypatch-portal-gui.png \
  && echo "runtime libraries:" && ldd target/release/croustypatch-portal-gui | awk '{print "  " $1}'
 
-# SCAP Security Guide content (OpenSCAP) handed to the agents: Debian and Ubuntu datastreams of a pinned release.
-FROM python:3.13-slim-bookworm AS scap
-ARG SSG_VERSION=0.1.82
-ARG SSG_SHA256=765e84bdce7f9055f9b9c2dd0ee2b713d4255f8eec94eac6d35ea4973c28919c
-COPY docker/scap-content.py /scap-content.py
-RUN python3 /scap-content.py "$SSG_VERSION" "$SSG_SHA256" /out
-
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
@@ -53,11 +46,9 @@ COPY --from=build /src/target/release/croustypatch-server /usr/local/bin/crousty
 COPY --from=build /out/ /usr/share/croustypatch/agents/
 COPY --from=gui /out/ /usr/share/croustypatch/agents/
 COPY --from=web /web/out /usr/share/croustypatch/web
-COPY --from=scap /out/ /usr/share/croustypatch/scap-content/
 ENV CROUSTYPATCH_STATIC_DIR=/usr/share/croustypatch/web \
     CROUSTYPATCH_DATA_DIR=/var/lib/croustypatch \
     CROUSTYPATCH_AGENT_DIR=/usr/share/croustypatch/agents,/var/lib/croustypatch/agents \
-    CROUSTYPATCH_SCAP_DIR=/usr/share/croustypatch/scap-content \
     CROUSTYPATCH_LISTEN=0.0.0.0:8443
 USER croustypatch
 EXPOSE 8443

@@ -225,23 +225,17 @@ pub async fn delete_role(state: web::Data<AppState>, user: AuthUser, path: web::
 
 /// Settings whose value is encrypted at rest and never returned in clear.
 const SECRET_KEYS: &[&str] = &["ai"];
-const KNOWN_KEYS: &[&str] = &["modules", "ai", "connectivity", "agent", "compliance", "isolation"];
+const KNOWN_KEYS: &[&str] = &["modules", "ai", "connectivity", "agent", "isolation"];
 
 pub fn default_setting(key: &str) -> Value {
     match key {
-        "modules" => json!({ "docker": false, "helper_script": false, "openscap": false, "portal": false, "portal_updates": false, "notifications": false, "eco": true }),
+        "modules" => json!({ "docker": false, "helper_script": false, "portal": false, "portal_updates": false, "notifications": false, "eco": true }),
         "ai" => json!({ "enabled": false, "provider": "openai_compatible", "base_url": "", "model": "", "api_key": "" }),
         "connectivity" => json!({ "mode": "connected" }),
         "agent" => json!({ "heartbeat_secs": 60 }),
-        "compliance" => json!({ "threshold": crate::compliance::DEFAULT_THRESHOLD, "profile": "", "auto_install": true, "schedule": { "frequency": "off", "weekday": 6, "day_of_month": 1, "at": "03:00", "timezone": "UTC" } }),
         "isolation" => serde_json::to_value(croustypatch_common::protocol::IsolationSettings::default()).unwrap_or_default(),
         _ => json!({}),
     }
-}
-
-/// A setting that is never encrypted, as saved (None when it was never saved).
-pub fn load_setting_plain(c: &mut PgConnection, key: &str) -> Option<Value> {
-    settings::table.find(key).filter(settings::encrypted.eq(false)).select(settings::value).first(c).optional().ok().flatten()
 }
 
 /// Load a setting (decrypting if needed), falling back to its default.
@@ -249,16 +243,6 @@ pub fn load_setting(c: &mut PgConnection, state: &AppState, key: &str) -> ApiRes
     let row: Option<(Value, bool)> = settings::table.find(key).select((settings::value, settings::encrypted)).first(c).optional()?;
     match row {
         None => Ok(default_setting(key)),
-        // A setting saved by an older version lacks the keys added since: they read as their default, which is also
-        // what the code that uses them assumes.
-        Some((mut v, false)) if key == "compliance" => {
-            if let (Some(o), Some(d)) = (v.as_object_mut(), default_setting(key).as_object()) {
-                for (k, dv) in d {
-                    o.entry(k.clone()).or_insert_with(|| dv.clone());
-                }
-            }
-            Ok(v)
-        }
         Some((v, false)) => Ok(v),
         Some((v, true)) => {
             let ct = v.get("ct").and_then(|x| x.as_str()).ok_or_else(|| ApiError::internal("malformed encrypted setting"))?;
@@ -355,20 +339,6 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
             }
         }
         "connectivity" => super::one_of("mode", v.get("mode").and_then(|m| m.as_str()).unwrap_or(""), &["connected", "air_gapped"])?,
-        "compliance" => {
-            let t = v.get("threshold").and_then(|h| h.as_f64()).unwrap_or(-1.0);
-            if !(0.0..=100.0).contains(&t) {
-                return Err(ApiError::bad("threshold must be 0..=100"));
-            }
-            let p = v.get("profile").and_then(|h| h.as_str()).unwrap_or("");
-            if !crate::compliance::valid_profile_ref(p) {
-                return Err(ApiError::bad("profile must be an XCCDF profile id or a custom profile"));
-            }
-            if v.get("auto_install").is_some_and(|a| !a.is_boolean()) {
-                return Err(ApiError::bad("auto_install must be true or false"));
-            }
-            crate::compliance::validate_schedule(v.get("schedule")).map_err(ApiError::bad)?;
-        }
         "isolation" => {
             let iso: croustypatch_common::protocol::IsolationSettings = serde_json::from_value(v.clone()).map_err(|_| ApiError::bad("isolation needs keep_ssh (bool), ssh_port (1-65535) and ssh_sources (list)"))?;
             if iso.ssh_port == 0 || iso.ssh_sources.len() > 50 {

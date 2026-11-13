@@ -10,7 +10,7 @@ arrows) and brought back to the default layout (*Personnaliser*). The layout is 
 | tiles (XS by default) | |
 |---|---|
 | machines, needing updates, security updates, outdated packages, needing attention, **machines with no policy** | shown by default |
-| reboots required, awaiting approval, compliance score, patches applied (7 days), failures and missed patch days (7 days) | hidden by default |
+| reboots required, awaiting approval, patches applied (7 days), failures and missed patch days (7 days) | hidden by default |
 
 Panels: fleet status, **update status**, **patching** (next patch days with their policy and the number of machines, what happened this week,
 and a warning for machines no policy covers), **fleet resources**, packages most behind, vulnerabilities, systems, activity, app center.
@@ -25,7 +25,7 @@ A layout saved before the tiles existed keeps its panels and gets the five origi
   center after its title.
 - **Topbar** with the current section, the **⌘K / Ctrl+K command palette** (pages, hosts, actions) and the language toggle.
 - **Pages:** Dashboard · Hosts · Packages · Docker · Groups · App center · Tasks · Policies · Waivers · Vulnerabilities ·
-  Compliance · Audit · Logs · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
+  Audit · Logs · Agent tokens · Accounts and roles · Settings. Entries and actions are shown only if the signed-in role allows them.
 - **Panels:** forms and details that should not hide the page open as a slide-over (policy editor, task detail,
   package hosts, Add agent). Confirmations are small centred dialogs. Feedback is a toast; errors tied to a form stay inline.
 - **Hosts** (as in PatchMon): searchable, filterable by status and group, sortable, with bulk patch and scan; a host

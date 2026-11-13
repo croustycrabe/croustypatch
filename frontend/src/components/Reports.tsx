@@ -11,7 +11,7 @@ import type { HostGroup } from '@/lib/types';
 import { browserZone } from './PatchSchedule';
 import { Button, Check, ConfirmDialog, Dialog, Drawer, Empty, Field, GroupTag, Chip, Notice, Select, Spinner, Table, Tag, TextArea, TextInput } from './ui';
 
-interface Sections { summary: boolean; pending: boolean; history: boolean; history_mode: 'count' | 'days'; history_value: number; failures: boolean; reboots: boolean; compliance: boolean; patch_days: boolean; docker: boolean }
+interface Sections { summary: boolean; pending: boolean; history: boolean; history_mode: 'count' | 'days'; history_value: number; failures: boolean; reboots: boolean; patch_days: boolean; docker: boolean }
 interface ReportRow {
   id: string; name: string; enabled: boolean; frequency: 'daily' | 'weekly' | 'monthly'; weekday: number; day_of_month: number; send_at: string; timezone: string; language: 'fr' | 'en';
   sections: Sections; group_ids: string[]; emails: string[]; channel_ids: string[]; skip_if_empty: boolean;
@@ -21,8 +21,8 @@ interface ChannelLite { id: string; name: string; kind: string; enabled: boolean
 interface Run { at: string; trigger: string; status: 'sent' | 'failed' | 'skipped'; error: string; recipients: string[]; title: string }
 type Form = Omit<ReportRow, 'id' | 'last_run_at' | 'last_status' | 'last_error' | 'next_run' | 'emails'> & { id?: string; emails: string };
 
-const SECTION_KEYS: (keyof Sections)[] = ['summary', 'pending', 'history', 'failures', 'reboots', 'compliance', 'patch_days', 'docker'];
-const defaultSections = (): Sections => ({ summary: true, pending: true, history: true, history_mode: 'count', history_value: 10, failures: true, reboots: true, compliance: false, patch_days: true, docker: false });
+const SECTION_KEYS: (keyof Sections)[] = ['summary', 'pending', 'history', 'failures', 'reboots', 'patch_days', 'docker'];
+const defaultSections = (): Sections => ({ summary: true, pending: true, history: true, history_mode: 'count', history_value: 10, failures: true, reboots: true, patch_days: true, docker: false });
 const blank = (lang: 'fr' | 'en'): Form => ({ name: '', enabled: true, frequency: 'weekly', weekday: 0, day_of_month: 1, send_at: '08:00', timezone: browserZone(), language: lang, sections: defaultSections(), group_ids: [], emails: '', channel_ids: [], skip_if_empty: false });
 const emails = (s: string) => s.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
 const TONE = { sent: 'ok', failed: 'danger', skipped: 'neutral' } as const;

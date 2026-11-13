@@ -86,11 +86,6 @@ pub struct Config {
     #[arg(long, env = "CROUSTYPATCH_AGENT_DIR", value_delimiter = ',', default_value = "./data/agents")]
     pub agent_dir: Vec<PathBuf>,
 
-    /// SCAP Security Guide datastreams handed to the agents for their audits, with their `index.json` (the image
-    /// bundles a pinned release; empty or missing: agents use their distribution's content).
-    #[arg(long, env = "CROUSTYPATCH_SCAP_DIR", default_value = "./data/scap-content")]
-    pub scap_dir: PathBuf,
-
     /// Allowed browser origin for the UI during development (e.g. http://localhost:3000).
     #[arg(long, env = "CROUSTYPATCH_CORS_ORIGIN")]
     pub cors_origin: Option<String>,

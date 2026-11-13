@@ -26,7 +26,6 @@ const CATALOG: Record<string, Def> = {
   stat_uncovered: { kind: 'stat', title: 'dash.cards.uncovered', size: 'xs', visible: true },
   stat_reboot: { kind: 'stat', title: 'dash.cards.reboot', size: 'xs', visible: false },
   stat_approvals: { kind: 'stat', title: 'dash.cards.approvals', size: 'xs', visible: false },
-  stat_compliance: { kind: 'stat', title: 'dash.cards.compliance', size: 'xs', visible: false },
   stat_patched_week: { kind: 'stat', title: 'dash.cards.patched_week', size: 'xs', visible: false },
   stat_failed_week: { kind: 'stat', title: 'dash.cards.failed_week', size: 'xs', visible: false },
   fleet: { kind: 'panel', title: 'w.fleet', size: 'md', visible: true },
@@ -87,7 +86,6 @@ function Tile({ id, d }: { id: string; d: Dashboard }) {
     case 'stat_uncovered': return <StatCard value={d.patching.uncovered_hosts} tone={d.patching.uncovered_hosts > 0 ? 'warn' : 'ok'} label={label} href="/policies" />;
     case 'stat_reboot': return <StatCard value={d.fleet.reboot_required} tone={d.fleet.reboot_required > 0 ? 'warn' : 'ok'} label={label} href="/hosts?reboot=1" />;
     case 'stat_approvals': return <StatCard value={d.tasks.awaiting_approval} tone={d.tasks.awaiting_approval > 0 ? 'warn' : 'ok'} label={label} href="/tasks?filter=approval" />;
-    case 'stat_compliance': return <StatCard value={d.compliance.enabled && d.compliance.score !== null ? `${d.compliance.score}%` : '—'} label={label} />;
     case 'stat_patched_week': return <StatCard value={d.patching.week.succeeded} tone="ok" label={label} href="/tasks" />;
     case 'stat_failed_week': return <StatCard value={failedWeek} alert={failedWeek > 0} label={label} href="/tasks" />;
     default: return null;
@@ -200,7 +198,6 @@ function WidgetBody({ id, d }: { id: string; d: Dashboard }) {
         <div className="grid grid--stats">
           <StatCard value={d.vulnerabilities.critical_cves_unpatched} label={t('w.vulns.critical')} alert={d.vulnerabilities.critical_cves_unpatched > 0} href="/vulnerabilities" />
           <StatCard value={d.vulnerabilities.hosts_with_security_updates} label={t('w.vulns.hosts')} />
-          <StatCard value={d.compliance.enabled && d.compliance.score !== null ? `${d.compliance.score}%` : '—'} label={t('w.vulns.score')} />
         </div>
       );
     case 'activity':

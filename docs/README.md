@@ -33,7 +33,7 @@ Done and verified end to end:
 - Customisable dashboard; bilingual UI (French default, English).
 
 Not built yet (milestone 2): AI provider and MCP, reboot module, notifications (email/SMS/webhooks),
-Docker and Proxmox helper-script modules, OpenSCAP compliance, application portal, full eco-mode,
+Docker and Proxmox helper-script modules, application portal, full eco-mode,
 OIDC/SSO and group mapping, Let's Encrypt, Wazuh ingestion/export, dnf/yum. The settings page lists
 these modules as "soon"; their switches are stored but have no effect yet.
 
@@ -41,5 +41,5 @@ Phase two:
 
 - [notifications.md](notifications.md): notification channels and rules, the reboot module.
 - [ai.md](ai.md): AI-assisted risk, the MCP server and personal API tokens.
-- [modules.md](modules.md): Docker, Proxmox helper scripts, OpenSCAP, the app center.
+- [modules.md](modules.md): Docker, Proxmox helper scripts, the app center.
 - [ui.md](ui.md): the CroustyLab Software design system, light and dark themes.

@@ -1,5 +1,5 @@
-//! Optional modules: image references, registry auth challenge, container inventory, OpenSCAP results, helper scripts.
-use croustypatch_agent::modules::{docker, helper_scripts, openscap, registry};
+//! Optional modules: image references, registry auth challenge, container inventory, helper scripts.
+use croustypatch_agent::modules::{docker, helper_scripts, registry};
 use serde_json::json;
 
 #[test]
@@ -38,41 +38,6 @@ fn containers_become_packages_with_an_update_when_the_registry_moved() {
     assert!(croustypatch_common::model::is_valid_package_name(&newer.name));
     let manual = docker::container_from_inspect(&json!({ "Name": "/x", "Image": "sha256:1", "Config": { "Image": "x", "Labels": {} } }), vec![]).unwrap();
     assert!(manual.compose.is_none(), "containers started by hand are reported, not recreated");
-}
-
-#[test]
-fn openscap_results_are_summarised() {
-    let xml = r#"<TestResult>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_a" severity="high" time="t"><result>pass</result></rule-result>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_b" severity="high"><result>fail</result><ident>x</ident></rule-result>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_c" severity="low"><result>fail</result></rule-result>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_d" severity="medium"><result>notapplicable</result></rule-result>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_e" severity="medium"><result>pass</result></rule-result>
-      <rule-result idref="xccdf_org.ssgproject.content_rule_f" severity="medium"><result>notchecked</result></rule-result>
-    </TestResult>"#;
-    let (pass, fail, na, other, failed) = openscap::summarize(xml);
-    assert_eq!((pass, fail, na, other), (2, 2, 1, 1));
-    assert_eq!(failed[0].rule_id, "xccdf_org.ssgproject.content_rule_b");
-    assert_eq!(failed[0].severity, "high");
-    assert_eq!(openscap::score(pass, fail), 50.0);
-    assert_eq!(openscap::score(0, 0), 0.0);
-
-    let dir = tempfile::tempdir().unwrap();
-    for f in ["ssg-debian12-ds.xml", "ssg-ubuntu2404-ds.xml", "other.xml"] {
-        std::fs::write(dir.path().join(f), "x").unwrap();
-    }
-    assert!(openscap::find_datastream(dir.path(), "ubuntu2404").unwrap().ends_with("ssg-ubuntu2404-ds.xml"));
-    assert!(openscap::find_datastream(dir.path(), "arch").unwrap().ends_with("ssg-debian12-ds.xml"), "falls back to any SSG datastream");
-
-    // A release without content of its own gets the newest one of its distribution, not the first file in the directory.
-    let dir = tempfile::tempdir().unwrap();
-    for f in ["ssg-debian11-ds.xml", "ssg-debian12-ds.xml", "ssg-ubuntu2204-ds.xml", "ssg-ubuntu2404-ds.xml"] {
-        std::fs::write(dir.path().join(f), "x").unwrap();
-    }
-    assert!(openscap::find_datastream(dir.path(), "debian13").unwrap().ends_with("ssg-debian12-ds.xml"));
-    assert!(openscap::find_datastream(dir.path(), "ubuntu26").unwrap().ends_with("ssg-ubuntu2404-ds.xml"));
-    assert!(openscap::find_datastream(dir.path(), "ubuntu22").unwrap().ends_with("ssg-ubuntu2204-ds.xml"));
-    assert!(openscap::find_datastream(dir.path(), "").is_some());
 }
 
 #[test]
@@ -129,64 +94,6 @@ fn container_mounts_are_read_from_docker_inspect() {
     // restore points saved by older agents (no mounts) still load
     let old: docker::Container = serde_json::from_value(json!({ "name": "x", "image_ref": "a", "image_id": "b", "repo_digests": [], "compose": null })).unwrap();
     assert!(old.mounts.is_empty());
-}
-
-#[test]
-fn openscap_profiles_and_version_are_read_from_oscap_output() {
-    use croustypatch_agent::modules::openscap::{parse_profiles, parse_version, valid_id};
-    let out = "xccdf_org.ssgproject.content_profile_anssi_bp28_enhanced:ANSSI-BP-028 (enhanced)\nxccdf_org.ssgproject.content_profile_cis:CIS Debian Linux 12 Benchmark for Level 2: Server\nnot a profile line\n:empty\nxccdf_bad id:x\n";
-    let p = parse_profiles(out);
-    assert_eq!(p.len(), 2, "{p:?}");
-    assert_eq!((p[1].id.as_str(), p[1].title.as_str()), ("xccdf_org.ssgproject.content_profile_cis", "CIS Debian Linux 12 Benchmark for Level 2: Server"), "a colon inside the title is kept");
-    assert_eq!(parse_version("OpenSCAP command line tool (oscap) 1.4.2\nCopyright 2009--2023 Red Hat Inc., Durham, North Carolina.\n"), "1.4.2");
-    assert_eq!(parse_version("garbage"), "");
-    assert!(valid_id("xccdf_org.ssgproject.content_rule_audit_rules-1") && !valid_id("a b") && !valid_id("x;rm") && !valid_id("") && !valid_id(&"a".repeat(301)));
-}
-
-#[test]
-fn a_custom_profile_becomes_an_xccdf_tailoring_file() {
-    use croustypatch_agent::modules::openscap::{tailoring_profile_id, tailoring_xml};
-    use croustypatch_common::protocol::Tailoring;
-    let t = Tailoring { id: "3f2a-9b".into(), name: "Serveurs <prod> & \"co\"".into(), base: "xccdf_org.ssgproject.content_profile_cis".into(), disabled_rules: vec!["xccdf_org.ssgproject.content_rule_a".into(), "xccdf_org.ssgproject.content_rule_b".into()] };
-    assert_eq!(tailoring_profile_id(&t), "xccdf_org.croustypatch_profile_3f2a_9b");
-    let x = tailoring_xml(&t, "/usr/share/xml/scap/ssg/content/ssg-debian13-ds.xml", "2026-11-11T10:00:00");
-    assert!(x.contains("<xccdf-1.2:benchmark href=\"/usr/share/xml/scap/ssg/content/ssg-debian13-ds.xml\"/>"), "{x}");
-    assert!(x.contains("id=\"xccdf_org.croustypatch_profile_3f2a_9b\" extends=\"xccdf_org.ssgproject.content_profile_cis\""), "{x}");
-    assert!(x.contains("<xccdf-1.2:title>Serveurs &lt;prod&gt; &amp; &quot;co&quot;</xccdf-1.2:title>"), "names are escaped: {x}");
-    assert_eq!(x.matches("selected=\"false\"").count(), 2);
-    assert!(x.contains("idref=\"xccdf_org.ssgproject.content_rule_a\"") && x.ends_with("</xccdf-1.2:Tailoring>\n"));
-    if let Ok(path) = std::env::var("TAILORING_OUT") {
-        std::fs::write(path, x).unwrap(); // used by the manual check against a real oscap
-    }
-}
-
-#[test]
-fn what_to_install_depends_on_the_system() {
-    use croustypatch_agent::modules::openscap::{install_hint, packages_for};
-    use croustypatch_common::model::PackageManager::*;
-    assert_eq!(packages_for(Apt, "Debian GNU/Linux").unwrap().0, vec!["openscap-scanner", "ssg-debian"]);
-    assert_eq!(packages_for(Apt, "Ubuntu").unwrap().0, vec!["openscap-scanner", "ssg-debderived"]);
-    assert!(packages_for(Pacman, "Arch Linux").is_none(), "Arch has no SCAP content to install, not even from the AUR: installing the scanner alone would be pointless");
-    assert!(packages_for(Pkg, "FreeBSD").is_none() && packages_for(Dnf, "Fedora").is_none());
-    assert!(install_hint(Apt, "Debian GNU/Linux").contains("ssg-debian") && !install_hint(Apt, "Debian").contains("dnf"), "the hint follows the host's package manager");
-    assert!(install_hint(Pacman, "Arch").contains("no content for Arch Linux"), "the hint says why, not where to look");
-}
-
-#[test]
-fn openscap_is_installed_before_an_audit_only_when_it_is_missing_and_allowed() {
-    use croustypatch_agent::modules::openscap::{install_plan, InstallPlan};
-    use croustypatch_common::model::PackageManager::*;
-    let debian = |have_oscap, have_content, auto| install_plan(have_oscap, have_content, auto, Apt, "Debian GNU/Linux");
-    assert_eq!(debian(true, true, true), InstallPlan::Nothing, "already there");
-    assert_eq!(debian(false, false, false), InstallPlan::Nothing, "the administrator switched automatic installation off: the audit explains what to install");
-    assert_eq!(debian(false, false, true), InstallPlan::Install { packages: vec!["openscap-scanner", "ssg-debian"], note: None });
-    assert_eq!(debian(true, false, true), InstallPlan::Install { packages: vec!["openscap-scanner", "ssg-debian"], note: None }, "scanner without content: the content is installed too");
-    assert!(matches!(install_plan(false, false, true, Apt, "Ubuntu"), InstallPlan::Install { packages, .. } if packages == vec!["openscap-scanner", "ssg-debderived"]));
-    // Arch: nothing is installed (the SCAP Security Guide has no Arch benchmark); the audit then says so
-    assert_eq!(install_plan(false, false, true, Pacman, "Arch Linux"), InstallPlan::Nothing);
-    // nothing to install on a system without packages for it (FreeBSD, the mock backend of the tests)
-    assert_eq!(install_plan(false, false, true, Pkg, "FreeBSD"), InstallPlan::Nothing);
-    assert_eq!(install_plan(false, false, true, Unknown, ""), InstallPlan::Nothing);
 }
 
 fn tags(v: &[&str]) -> Vec<String> {
@@ -339,89 +246,6 @@ fn a_new_major_also_names_the_newest_of_the_running_major() {
     assert_eq!((n.tag.as_str(), n.major, n.same_major), ("v2.6.0", false, None), "nothing more to say when the newest is in the same major");
     assert_eq!(registry::tag_prefix("v3.3.1"), "v");
     assert_eq!(registry::tag_prefix("17-alpine"), "");
-}
-
-#[test]
-fn an_audit_uses_a_profile_the_content_really_has() {
-    use croustypatch_agent::modules::openscap::pick_profile;
-    let p = |s: &str| format!("xccdf_org.ssgproject.content_profile_{s}");
-    // Debian's content has `standard`; Ubuntu's does not (CIS, STIG...), which used to fail with "no such profile"
-    let debian = vec![p("anssi_np_nt28_average"), p("standard")];
-    let ubuntu = vec![p("cis_level2_workstation"), p("cis_level1_server"), p("cis_level1_workstation"), p("stig")];
-    assert_eq!(pick_profile("", &debian, false).unwrap(), p("standard"));
-    assert_eq!(pick_profile("", &debian, true).unwrap(), p("standard"));
-    // the recommended baseline depends on the kind of machine
-    assert_eq!(pick_profile("", &ubuntu, false).unwrap(), p("cis_level1_server"), "a server gets CIS level 1 server");
-    assert_eq!(pick_profile("", &ubuntu, true).unwrap(), p("cis_level1_workstation"), "a laptop or desktop gets CIS level 1 workstation");
-    let rhel = vec![p("cis"), p("cis_server_l1"), p("cis_workstation_l1"), p("ospp")];
-    assert_eq!(pick_profile("", &rhel, false).unwrap(), p("cis_server_l1"));
-    assert_eq!(pick_profile("", &rhel, true).unwrap(), p("cis_workstation_l1"));
-    assert_eq!(pick_profile("", &[p("x_only")], false).unwrap(), p("x_only"), "else the first it has");
-    assert_eq!(pick_profile(&p("stig"), &ubuntu, true).unwrap(), p("stig"), "an explicit choice wins");
-    let e = pick_profile(&p("standard"), &ubuntu, false).unwrap_err();
-    assert!(e.contains("does not exist") && e.contains("cis_level1_server") && e.contains("stig"), "an explicit choice that does not exist names the ones that do: {e}");
-    // when the content could not be listed the request is trusted
-    assert_eq!(pick_profile("", &[], false).unwrap(), p("standard"));
-    assert_eq!(pick_profile("custom_thing", &[], false).unwrap(), "custom_thing");
-}
-
-#[test]
-fn content_for_the_previous_ubuntu_is_pointed_at_this_release() {
-    use croustypatch_agent::modules::openscap::{adapt_codename, content_codenames, content_release, parse_codename};
-    use std::path::Path;
-    // what the 24.04 benchmark of ssg 0.1.79 carries twice (its OVAL and its CPE OVAL): every rule is "not applicable" on 26.04 otherwise
-    let ds = "<x><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern></x><y><ind:pattern operation=\"pattern match\">^DISTRIB_CODENAME=noble$</ind:pattern><z>DISTRIB_CODENAME=other words</z></y>";
-    assert_eq!(content_codenames(ds), vec!["noble".to_string()]);
-    let p2404 = Path::new("/c/ssg-ubuntu2404-ds.xml");
-    assert_eq!(content_release(p2404, ds).as_deref(), Some("noble"));
-    let adapted = adapt_codename(ds, "noble", "resolute").expect("adapted");
-    assert_eq!(adapted.matches("^DISTRIB_CODENAME=resolute$").count(), 2);
-    assert!(!adapted.contains("noble"));
-    assert_eq!(adapted.len(), ds.len() + 2 * ("resolute".len() - "noble".len()), "nothing else changes");
-    assert!(adapt_codename(ds, "noble", "noble").is_none(), "already the right release");
-    assert!(adapt_codename(ds, "noble", "").is_none(), "unknown release: used as is");
-    assert!(adapt_codename("<debian content/>", "bookworm", "trixie").is_none(), "content without that check is used as is");
-    // ssg 0.1.82: the shared platform checks name jammy, noble and resolute; only the benchmark's own release (noble,
-    // from the file name) is pointed at the host's
-    let recent = "^DISTRIB_CODENAME=jammy$ ^DISTRIB_CODENAME=noble$ ^DISTRIB_CODENAME=resolute$";
-    assert_eq!(content_codenames(recent).len(), 3);
-    assert_eq!(content_release(p2404, recent).as_deref(), Some("noble"), "the file name says which release it is for");
-    assert_eq!(adapt_codename(recent, "noble", "resolute").unwrap(), "^DISTRIB_CODENAME=jammy$ ^DISTRIB_CODENAME=resolute$ ^DISTRIB_CODENAME=resolute$");
-    assert_eq!(content_release(Path::new("/c/ssg-custom-ds.xml"), recent), None, "several releases and no name: no guess");
-    // the release comes from lsb-release, else os-release, and must be a plain word
-    let lsb = "DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=26.04\nDISTRIB_CODENAME=resolute\nDISTRIB_DESCRIPTION=\"Ubuntu 26.04.1 LTS\"\n";
-    assert_eq!(parse_codename(lsb, ""), "resolute");
-    assert_eq!(parse_codename("", "NAME=\"Ubuntu\"\nVERSION_CODENAME=questing\n"), "questing");
-    assert_eq!(parse_codename("DISTRIB_CODENAME=no$pe\n", "VERSION_CODENAME=\"trixie\""), "trixie");
-    assert_eq!(parse_codename("", ""), "");
-}
-
-#[test]
-fn the_servers_content_comes_first_and_placeholders_are_skipped() {
-    use croustypatch_agent::modules::openscap::{best_server_file, candidates, has_profiles, install_plan, InstallPlan};
-    use croustypatch_common::model::PackageManager::Apt;
-    let server = tempfile::tempdir().unwrap();
-    let pkg = tempfile::tempdir().unwrap();
-    let real = "<ds><Profile id=\"xccdf_org.ssgproject.content_profile_cis_level1_server\"/></ds>";
-    std::fs::write(server.path().join("ssg-ubuntu2404-ds.xml"), real).unwrap();
-    std::fs::write(server.path().join("ssg-ubuntu2604-ds.xml"), "<ds>2 rules, no profile</ds>").unwrap();
-    std::fs::write(pkg.path().join("ssg-ubuntu2404-ds.xml"), real).unwrap();
-    std::fs::write(pkg.path().join("ssg-ubuntu2204-ds.xml"), real).unwrap();
-    let dirs = vec![server.path().to_path_buf(), pkg.path().to_path_buf()];
-    let c = candidates(&dirs, "ubuntu26");
-    assert!(c[0].ends_with("ssg-ubuntu2604-ds.xml"), "the exact release is tried first…");
-    assert!(!has_profiles(&c[0]), "…but a datastream without a profile is a placeholder");
-    let chosen = c.iter().find(|p| has_profiles(p)).unwrap();
-    assert!(chosen.starts_with(server.path()) && chosen.ends_with("ssg-ubuntu2404-ds.xml"), "the server's 24.04 before the package's: {chosen:?}");
-    // what to download from the server's index
-    let names: Vec<String> = ["ssg-debian12-ds.xml", "ssg-debian13-ds.xml", "ssg-ubuntu2204-ds.xml", "ssg-ubuntu2404-ds.xml"].iter().map(|s| s.to_string()).collect();
-    assert_eq!(best_server_file(&names, "ubuntu26").as_deref(), Some("ssg-ubuntu2404-ds.xml"));
-    assert_eq!(best_server_file(&names, "ubuntu22").as_deref(), Some("ssg-ubuntu2204-ds.xml"));
-    assert_eq!(best_server_file(&names, "debian13").as_deref(), Some("ssg-debian13-ds.xml"));
-    assert_eq!(best_server_file(&names, "arch"), None, "nothing for another distribution");
-    assert_eq!(best_server_file(&names, ""), None);
-    // with the server's content there, only the scanner is installed
-    assert_eq!(install_plan(false, true, true, Apt, "Ubuntu"), InstallPlan::Install { packages: vec!["openscap-scanner"], note: None });
 }
 
 #[test]

@@ -9,7 +9,7 @@ import type { MessageKey } from '@/lib/messages';
 import { useToast } from '@/lib/toast';
 import type { Modules, Settings as SettingsT } from '@/lib/types';
 
-const MODULES: (keyof Modules)[] = ['docker', 'helper_script', 'openscap', 'portal', 'notifications', 'eco'];
+const MODULES: (keyof Modules)[] = ['docker', 'helper_script', 'portal', 'notifications', 'eco'];
 
 function Settings() {
   const { t } = useI18n();
@@ -53,13 +53,6 @@ function Settings() {
             ))}
           </div>
         </Card>
-
-        {s.compliance && (
-          <Card title={t('settings.compliance')}>
-            <p className="muted" style={{ marginTop: 0 }}>{t('settings.compliance.moved')}</p>
-            <LinkButton href="/compliance">{t('comp.open')}</LinkButton>
-          </Card>
-        )}
 
         <Card title={t('settings.ai')} actions={<SaveBtn k="ai" />}>
           <div className="form-grid">

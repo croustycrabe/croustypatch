@@ -15,7 +15,7 @@ interface Platform { id: string; os: string; arch: string; available: boolean }
 interface Created { token: string; details: { expires_at: string } }
 interface Form { comm_mode: 'pull' | 'push'; group_id: string; environment: string; label: string; hours: number; max_uses: number; dry_run: boolean; modules: Omit<HostModules, 'portal_updates'>; updates: UpdatesChoice }
 
-const MODULE_KEYS: (keyof Omit<HostModules, 'portal_updates'>)[] = ['docker', 'helper_script', 'openscap', 'portal', 'eco'];
+const MODULE_KEYS: (keyof Omit<HostModules, 'portal_updates'>)[] = ['docker', 'helper_script', 'portal', 'eco'];
 type UpdatesChoice = 'auto' | 'yes' | 'no';
 
 const Ctx = createContext<{ open: () => void } | null>(null);
@@ -95,7 +95,7 @@ function Wizard({ onClose }: { onClose: () => void }) {
   // Pre-filled with the server's defaults for new hosts (Settings > Modules).
   const [f, setF] = useState<Form>(() => ({
     comm_mode: 'pull', group_id: '', environment: 'production', label: '', hours: 24, max_uses: 1, dry_run: false, updates: 'auto',
-    modules: { docker: !!defaults?.docker, helper_script: !!defaults?.helper_script, openscap: !!defaults?.openscap, portal: !!defaults?.portal, eco: defaults?.eco ?? true },
+    modules: { docker: !!defaults?.docker, helper_script: !!defaults?.helper_script, portal: !!defaults?.portal, eco: defaults?.eco ?? true },
   }));
   const [created, setCreated] = useState<{ token: string; expires_at: string; startedAt: number } | null>(null);
   const [tab, setTab] = useState<'linux' | 'freebsd' | 'manual'>('linux');
