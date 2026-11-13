@@ -96,7 +96,7 @@ str_enum!(
 );
 
 str_enum!(
-    PackageManager { Apt => "apt", Pacman => "pacman", Pkg => "pkg", Dnf => "dnf", Unknown => "unknown" }
+    PackageManager { Apt => "apt", Pacman => "pacman", Dnf => "dnf", Unknown => "unknown" }
 );
 
 /// Health probe the agent runs after a patch (soak window).
@@ -121,7 +121,7 @@ pub fn is_valid_package_name(s: &str) -> bool {
 }
 
 /// Keys of an app-center recipe map: one per package manager, or `*` for every system.
-pub const RECIPE_KEYS: &[&str] = &["apt", "pacman", "pkg", "dnf", "*"];
+pub const RECIPE_KEYS: &[&str] = &["apt", "pacman", "dnf", "*"];
 
 /// The recipe for a host: its package manager's entry, else the `*` entry.
 pub fn pick_recipe<'a>(recipes: &'a serde_json::Value, package_manager: &str) -> Option<&'a serde_json::Value> {

@@ -36,9 +36,9 @@ change `CROUSTYPATCH_IMAGE` in `.env`, and `docker compose up -d` (migrations ru
 
 ## Agents served by "Add agent"
 
-The image contains the Linux agent. A FreeBSD agent must be built on FreeBSD; drop it into the persisted volume:
+The image contains the Linux agent. Another build (for example aarch64) can be dropped into the persisted volume:
 
-    docker cp croustypatch-agent-freebsd-amd64 croustypatch-server-1:/var/lib/croustypatch/agents/
+    docker cp croustypatch-agent-linux-aarch64 croustypatch-server-1:/var/lib/croustypatch/agents/
 
 The wizard shows which platforms are available. The installer URL is generated from the address the browser used,
 so the reverse proxy must pass `Host`/`X-Forwarded-Host` and `X-Forwarded-Proto`.

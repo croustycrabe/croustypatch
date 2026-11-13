@@ -11,7 +11,7 @@
   - **Security & Secrets**: Native Rust cryptography (`aes-gcm`), secure memory purging (`minicon`), Argon2id for password hashing[cite: 3, 4].
   - **Protocols**: TLS 1.3, JWT, Custom RSA agent keys, HMAC-SHA256 webhooks, OIDC/SSO, and Model Context Protocol (MCP)[cite: 3, 4].
 - **Frontend**: React / Next.js (Modular UI with RBAC, customizable dashboards, and App Portal)[cite: 2, 3, 4, 7].
-- **Agent**: Lightweight, root-privileged multi-distribution agent (Linux/FreeBSD) with modular plug-and-play features (Docker, Proxmox Helper Scripts, OpenSCAP, Eco Mode, Pull WebSocket tunnel)[cite: 7, 8].
+- **Agent**: Lightweight, root-privileged multi-distribution agent (Linux) with modular plug-and-play features (Docker, Proxmox Helper Scripts, OpenSCAP, Eco Mode, Pull WebSocket tunnel)[cite: 7, 8].
 
 
 ## 📂 Project Structure (Expected)

@@ -22,13 +22,6 @@ fn nft_ruleset_only_allows_server() {
     assert!(!r4.contains("ip6"));
 }
 
-#[test]
-fn pf_rules_block_by_default() {
-    let r = pf_rules(&["192.0.2.10".parse().unwrap()], &closed());
-    assert!(r.starts_with("block drop all"));
-    assert!(r.contains("to { 192.0.2.10 }"));
-}
-
 #[tokio::test]
 async fn refuses_quarantine_without_server_address() {
     let r = Runner { dry_run: true };
@@ -58,7 +51,6 @@ fn ssh_stays_reachable_during_isolation_by_default() {
     assert!(r.contains("tcp dport 22 accept"), "{r}");
     let input = r.split("chain output").next().unwrap();
     assert!(input.contains("tcp dport 22"), "inbound only: replies leave through the established rule");
-    assert!(pf_rules(&server, &IsolationSettings::default()).contains("pass in quick proto tcp from any to any port 22 keep state"));
     assert!(describe(&server, &IsolationSettings::default()).contains("inbound SSH (port 22)"));
 }
 
@@ -70,7 +62,6 @@ fn ssh_can_be_limited_to_admin_networks() {
     assert!(r.contains("ip saddr { 10.0.10.0/24, 10.0.15.10/32 } tcp dport 2222 accept"), "{r}");
     assert!(r.contains("ip6 saddr { 2001:db8::/32 } tcp dport 2222 accept"), "{r}");
     assert!(!r.contains("    tcp dport 2222 accept"), "never open to everyone when sources are given");
-    assert!(pf_rules(&server, &iso).contains("from { 10.0.10.0/24, 10.0.15.10/32, 2001:db8::/32 } to any port 2222"));
     // malformed sources never reach the firewall, and a list with nothing valid keeps SSH closed
     let bad = IsolationSettings { keep_ssh: true, ssh_port: 22, ssh_sources: vec!["10.0.0.0/24; flush ruleset".into(), "x".into()] };
     let r = nft_ruleset(&server, &bad);

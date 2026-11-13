@@ -98,7 +98,7 @@ function Wizard({ onClose }: { onClose: () => void }) {
     modules: { docker: !!defaults?.docker, helper_script: !!defaults?.helper_script, portal: !!defaults?.portal, eco: defaults?.eco ?? true },
   }));
   const [created, setCreated] = useState<{ token: string; expires_at: string; startedAt: number } | null>(null);
-  const [tab, setTab] = useState<'linux' | 'freebsd' | 'manual'>('linux');
+  const [tab, setTab] = useState<'linux' | 'manual'>('linux');
 
   const groups = useApi<HostGroup[]>(can('groups:read') ? '/groups' : null);
   const platforms = useApi<Platform[]>('/agent/platforms');
@@ -211,14 +211,13 @@ function Wizard({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <>
-          <Tabs tabs={[{ id: 'linux', label: t('agent.tab.linux') }, { id: 'freebsd', label: t('agent.tab.freebsd') }, { id: 'manual', label: t('agent.tab.manual') }]} value={tab} onChange={setTab} />
+          <Tabs tabs={[{ id: 'linux', label: t('agent.tab.linux') }, { id: 'manual', label: t('agent.tab.manual') }]} value={tab} onChange={setTab} />
           {tab === 'linux' && (
             <div className="stack">
               <CommandBox label={t('agent.run_linux')} text={`curl -fsSL ${script} | sudo env ${vars} sh`} />
               <CommandBox label="wget" text={`wget -qO- ${script} | sudo env ${vars} sh`} />
             </div>
           )}
-          {tab === 'freebsd' && <CommandBox label={t('agent.run_freebsd')} text={`fetch -qo - ${script} | env ${vars} sh`} />}
           {tab === 'manual' && (
             <div className="stack">
               <p className="muted">{t('agent.manual.intro')}</p>

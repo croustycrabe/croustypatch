@@ -12,7 +12,7 @@
 #   CROUSTYPATCH_PORTAL_GUI=1|0   install the desktop app center or not (default: on laptops and workstations)
 #
 # Steps: download the agent for this platform, verify its SHA-256, install it, enrol with the token, and
-# register a service (systemd on Linux, rc.d on FreeBSD). Running it again upgrades the binary and keeps the
+# register a service (systemd). Running it again upgrades the binary and keeps the
 # existing enrolment.
 set -eu
 
@@ -32,7 +32,6 @@ ARCH="$(uname -m)"
 case "$OS-$ARCH" in
   Linux-x86_64|Linux-amd64)   PLAT=linux-x86_64 ;;
   Linux-aarch64|Linux-arm64)  PLAT=linux-aarch64 ;;
-  FreeBSD-amd64|FreeBSD-x86_64) PLAT=freebsd-amd64 ;;
   *) die "unsupported platform: $OS $ARCH" ;;
 esac
 
@@ -41,26 +40,18 @@ dl() { # dl URL DEST
     curl -fsSL ${CROUSTYPATCH_CA_FILE:+--cacert "$CROUSTYPATCH_CA_FILE"} -o "$2" "$1"
   elif command -v wget >/dev/null 2>&1; then
     wget -q ${CROUSTYPATCH_CA_FILE:+--ca-certificate="$CROUSTYPATCH_CA_FILE"} -O "$2" "$1"
-  elif command -v fetch >/dev/null 2>&1; then
-    fetch -q ${CROUSTYPATCH_CA_FILE:+--ca-cert="$CROUSTYPATCH_CA_FILE"} -o "$2" "$1"
   else
-    die "need curl, wget or fetch"
+    die "need curl or wget"
   fi
 }
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  elif command -v sha256 >/dev/null 2>&1; then sha256 -q "$1"
-  else die "need sha256sum or sha256 to verify the download"; fi
+  else die "need sha256sum to verify the download"; fi
 }
 
-if [ "$OS" = FreeBSD ]; then
-  CONF=/usr/local/etc/croustypatch/agent.toml
-  STATE=/var/db/croustypatch
-else
-  CONF=/etc/croustypatch/agent.toml
-  STATE=/var/lib/croustypatch
-fi
+CONF=/etc/croustypatch/agent.toml
+STATE=/var/lib/croustypatch
 # An enrolled host upgrades without a token; a new (or forced) enrolment needs one. Checked before anything is touched.
 if [ "${CROUSTYPATCH_FORCE:-0}" = 1 ] || [ ! -f "$STATE/identity.json" ]; then
   [ -n "$TOKEN" ] || die "CROUSTYPATCH_ENROLL_TOKEN is not set (create one in the web UI: Hosts > Add agent)"
@@ -213,28 +204,6 @@ UNIT
   systemctl enable croustypatch-agent >/dev/null 2>&1 || true
   systemctl restart croustypatch-agent
   say "service started: systemctl status croustypatch-agent"
-elif [ "$OS" = FreeBSD ]; then
-  mkdir -p /usr/local/etc/rc.d
-  cat > /usr/local/etc/rc.d/croustypatch_agent <<'RC'
-#!/bin/sh
-# PROVIDE: croustypatch_agent
-# REQUIRE: NETWORKING DAEMON
-# KEYWORD: shutdown
-. /etc/rc.subr
-name="croustypatch_agent"
-rcvar="croustypatch_agent_enable"
-pidfile="/var/run/${name}.pid"
-command="/usr/sbin/daemon"
-command_args="-r -P ${pidfile} -u root -t croustypatch-agent /usr/local/bin/croustypatch-agent --config /usr/local/etc/croustypatch/agent.toml --state-dir /var/db/croustypatch run"
-load_rc_config $name
-: ${croustypatch_agent_enable:="NO"}
-run_rc_command "$1"
-RC
-  chmod 555 /usr/local/etc/rc.d/croustypatch_agent
-  sysrc croustypatch_agent_enable=YES >/dev/null
-  service croustypatch_agent restart >/dev/null 2>&1 || service croustypatch_agent start
-  say "service started: service croustypatch_agent status"
-  say "to allow network isolation add this line to /etc/pf.conf and enable pf:  anchor \"croustypatch_quarantine\""
 else
   say "no supported service manager found; start the agent with: $BIN --config $CONF --state-dir $STATE run"
 fi

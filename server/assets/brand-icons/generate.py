@@ -21,7 +21,7 @@ libreoffice onlyoffice gimp inkscape krita blender darktable obsstudio kdenlive 
 filezilla qbittorrent transmission
 discord telegram signal element slack zoom teams
 steam lutris wine
-ubuntu debian archlinux fedora linuxmint opensuse alpinelinux nixos freebsd linux proxmox truenas
+ubuntu debian archlinux fedora linuxmint opensuse alpinelinux nixos linux proxmox truenas
 nginx apache traefikproxy caddy haproxy grafana prometheus elastic kibana zabbix
 home-assistant homeassistant pihole adguard jellyfin plex immich vaultwarden portainer
 kde gnome xfce zedindustries

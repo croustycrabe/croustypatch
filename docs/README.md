@@ -5,7 +5,7 @@ CroustyPatch is a patch-management and automated-remediation platform (Croustyla
 | Part | Where | What it does |
 |---|---|---|
 | Server | `server/` (Rust, Actix, Diesel, PostgreSQL) | REST API, WebSocket gateway, policy engine, scheduler, audit log; also serves the web UI |
-| Agent | `agent/` (Rust) | Runs as root on Linux and FreeBSD hosts: inventory, patching, rollback, quarantine |
+| Agent | `agent/` (Rust) | Runs as root on Linux hosts: inventory, patching, rollback, quarantine |
 | Web UI | `frontend/` (Next.js, static export) | Dashboard, hosts, policies, approvals, waivers, audit, accounts |
 | Shared | `common/` | Wire protocol, signed commands, JWT, crypto primitives |
 
@@ -23,7 +23,7 @@ Done and verified end to end:
 
 - Enrolment with one-time tokens; per-agent RSA identity; TLS 1.3 only; certificate pinning for private PKI.
 - Two communication modes: persistent WebSocket tunnel (pull) and periodic HTTPS telemetry (push).
-- Inventory and pending updates for apt, pacman and FreeBSD `pkg`.
+- Inventory and pending updates for apt and pacman.
 - Policy engine: deterministic rule language, contextual and stability risk, `AUTO_DEPLOY` / `REQUIRE_APPROVAL` / `BLOCK`, maintenance windows, rings, waivers with dual approval.
 - Remediation pipeline: server-signed command, restore point, apply, soak with health probes, automatic rollback, and the double-failure protocol (network quarantine and frozen evidence).
 - Hash-chained, append-only audit log with verification.

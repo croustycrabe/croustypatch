@@ -384,11 +384,11 @@ async fn the_editors_are_added_from_the_suggestions_only_by_someone_who_may_writ
     let (_, sugg) = call(&app, TestRequest::get().uri("/api/v1/portal/suggestions").cookie(ck.clone())).await;
     assert!(sugg.as_array().unwrap().iter().filter(|s| s["name"] == "Zed" || s["name"] == "Visual Studio Code").all(|s| s["in_catalog"] == json!(true)));
 
-    // each system sees what it can install: Debian runs the command, Arch installs the package, FreeBSD is not offered either
-    let (deb, arch, bsd) = {
+    // each system sees what it can install: Debian runs the command, Arch installs the package, Fedora (no recipe yet) is not offered either
+    let (deb, arch, fedora) = {
         let mut c = db.conn();
         let mk = |c: &mut PgConnection, n: &str, pm: &str| diesel::insert_into(hosts::table).values((hosts::hostname.eq(n), hosts::public_key_pem.eq("pem"), hosts::status.eq("online"), hosts::package_manager.eq(pm), hosts::modules.eq(json!({"portal": true})), hosts::facts.eq(json!({"capabilities": croustypatch_common::protocol::capability::ALL})))).returning(hosts::id).get_result::<Uuid>(c).unwrap();
-        (mk(&mut c, "deb", "apt"), mk(&mut c, "arch", "pacman"), mk(&mut c, "bsd", "pkg"))
+        (mk(&mut c, "deb", "apt"), mk(&mut c, "arch", "pacman"), mk(&mut c, "fedora", "dnf"))
     };
     let view = |h: Uuid| TestRequest::get().uri(&format!("/api/v1/portal/hosts/{h}")).cookie(ck.clone());
     let app_of = |v: &Value, n: &str| v["apps"].as_array().unwrap().iter().find(|a| a["name"] == n).cloned();
@@ -403,8 +403,8 @@ async fn the_editors_are_added_from_the_suggestions_only_by_someone_who_may_writ
     assert_eq!(app_of(&v, "Code - OSS").unwrap()["packages"], json!(["code"]), "the open-source build is the repository package");
     let (_, v) = call(&app, view(deb)).await;
     assert!(app_of(&v, "Code - OSS").is_none(), "and is not offered on Debian");
-    let (_, v) = call(&app, view(bsd)).await;
-    assert!(app_of(&v, "Zed").is_none() && app_of(&v, "Visual Studio Code").is_none(), "no recipe for pkg: not offered");
+    let (_, v) = call(&app, view(fedora)).await;
+    assert!(app_of(&v, "Zed").is_none() && app_of(&v, "Visual Studio Code").is_none(), "no recipe for dnf: not offered");
 }
 
 // ------------------------------------------------------------------ apply the suggested Docker version

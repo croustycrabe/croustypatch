@@ -24,9 +24,9 @@ async fn apps_follow_each_system_and_commands_need_their_own_permission() {
     let db = support::TestDb::new();
     let app = app(&db).await;
     let ck = admin(&app).await;
-    let (debian, arch, freebsd) = {
+    let (debian, arch, fedora) = {
         let mut c = db.conn();
-        (add_host(&mut c, "deb", "apt", capability::ALL), add_host(&mut c, "arch", "pacman", &[]), add_host(&mut c, "bsd", "pkg", capability::ALL))
+        (add_host(&mut c, "deb", "apt", capability::ALL), add_host(&mut c, "arch", "pacman", &[]), add_host(&mut c, "fedora", "dnf", capability::ALL))
     };
     let post = |ck: &Cookie<'static>, b: Value| TestRequest::post().uri("/api/v1/portal/apps").cookie(ck.clone()).set_json(b);
 
@@ -80,8 +80,8 @@ async fn apps_follow_each_system_and_commands_need_their_own_permission() {
     assert_eq!(app_named(&v, "Internal tool")["kind"], json!("command"));
     let (_, v) = call(&app, view(arch)).await;
     assert_eq!(app_named(&v, "fd")["packages"], json!(["fd"]));
-    let (_, v) = call(&app, view(freebsd)).await;
-    assert_eq!(names(&v), vec!["Internal tool"], "no pkg recipe for fd: not offered on FreeBSD");
+    let (_, v) = call(&app, view(fedora)).await;
+    assert_eq!(names(&v), vec!["Internal tool"], "no dnf recipe for fd: not offered on Fedora");
 
     // command apps need an agent that runs them
     let req = |h: Uuid, a: &Value| TestRequest::post().uri("/api/v1/portal/install").cookie(ck.clone()).set_json(json!({"host_id": h, "app_id": a["id"], "action": "INSTALL"}));

@@ -113,7 +113,7 @@ fn only_known_builds_can_be_downloaded() {
     assert_eq!(artifact_file("linux-x86_64").as_deref(), Some("croustypatch-agent-linux-x86_64"));
     assert_eq!(artifact_file("portal-gui-linux-x86_64").as_deref(), Some("croustypatch-portal-gui-linux-x86_64"));
     assert_eq!(artifact_file("portal-gui-icon.png").as_deref(), Some("croustypatch-portal-gui.png"));
-    for bad in ["portal-gui-freebsd-amd64", "portal-gui-../../etc/passwd", "../server.key", "portal-gui-", "croustypatch-agent-linux-x86_64"] {
+    for bad in ["portal-gui-windows-x86_64", "portal-gui-../../etc/passwd", "../server.key", "portal-gui-", "croustypatch-agent-linux-x86_64"] {
         assert_eq!(artifact_file(bad), None, "{bad}");
     }
 }

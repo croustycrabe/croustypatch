@@ -69,7 +69,6 @@ async fn agent_binaries_are_listed_served_and_checksummed_without_exposing_other
     assert_eq!(by_id("linux-x86_64")["available"], json!(true));
     assert_eq!(by_id("linux-x86_64")["sha256"], json!(sha256_hex(&binary)));
     assert_eq!(by_id("linux-x86_64")["size"], json!(binary.len()));
-    assert_eq!(by_id("freebsd-amd64")["available"], json!(false));
     assert_eq!(by_id("linux-aarch64")["sha256"], json!(null));
 
     let resp = test::call_service(&app, TestRequest::get().uri("/api/v1/agent/download/linux-x86_64").to_request()).await;
@@ -83,8 +82,8 @@ async fn agent_binaries_are_listed_served_and_checksummed_without_exposing_other
 
     // a known platform with no binary, an unknown one, and attempts to leave the directory
     for uri in [
-        "/api/v1/agent/download/freebsd-amd64",
-        "/api/v1/agent/download/freebsd-amd64.sha256",
+        "/api/v1/agent/download/linux-aarch64",
+        "/api/v1/agent/download/linux-aarch64.sha256",
         "/api/v1/agent/download/windows-x86_64",
         "/api/v1/agent/download/secret.txt",
         "/api/v1/agent/download/..%2Fsecret.txt",

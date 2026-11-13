@@ -2,7 +2,7 @@
 //!
 //! The signed order names the platform build and its SHA-256. The agent downloads it from its own server, checks
 //! the hash, makes sure the new binary starts and reports the expected version, swaps it in place atomically and
-//! exits with `EXIT_RESTART`; the service manager (systemd `Restart=always` or `on-failure`, FreeBSD `daemon -r`)
+//! exits with `EXIT_RESTART`; the service manager (systemd `Restart=always` or `on-failure`)
 //! starts the new one, which closes the task. A failure at any step leaves the running binary untouched.
 use crate::config::{write_private, Config};
 use crate::net;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
 
-const PLATFORMS: &[&str] = &["linux-x86_64", "linux-aarch64", "freebsd-amd64"];
+const PLATFORMS: &[&str] = &["linux-x86_64", "linux-aarch64"];
 const MAX_SIZE: usize = 200 * 1024 * 1024;
 /// Non-zero on purpose (EX_TEMPFAIL): restarted by `Restart=always` and by `Restart=on-failure` units alike.
 pub const EXIT_RESTART: i32 = 75;

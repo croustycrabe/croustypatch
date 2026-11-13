@@ -319,7 +319,6 @@ pub fn agent_build_for(state: &AppState, facts: &serde_json::Value) -> ApiResult
     let platform = match (os, arch) {
         ("linux", "x86_64" | "amd64") => "linux-x86_64",
         ("linux", "aarch64" | "arm64") => "linux-aarch64",
-        ("freebsd", "amd64" | "x86_64") => "freebsd-amd64",
         _ => return Err(ApiError::Conflict(format!("no agent build for {os} {arch}"))),
     };
     let path = super::agent_dist::binary_path(state, platform);
