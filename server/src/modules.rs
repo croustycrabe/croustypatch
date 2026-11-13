@@ -69,7 +69,7 @@ pub fn settings_for(c: &mut PgConnection, host_id: Uuid) -> ApiResult<Option<Age
     } else {
         vec![]
     };
-    Ok(Some(AgentSettings { modules: parse(&modules), isolation, offline, watch_aur }))
+    Ok(Some(AgentSettings { modules: parse(&modules), isolation, offline, watch_aur, registries: vec![] }))
 }
 
 /// The AUR packages an app's recipes name as where their latest version is published (`command.latest.aur`).
@@ -85,7 +85,8 @@ pub async fn push_settings(state: &web::Data<AppState>, host_id: Uuid) {
     if !state.hub.connected_hosts().contains(&host_id) {
         return;
     }
-    if let Ok(Some(s)) = state.db(move |c| settings_for(c, host_id)).await {
+    let st = state.clone();
+    if let Ok(Some(s)) = state.db(move |c| crate::docker_registry::agent_settings(c, &st, host_id)).await {
         state.hub.send(host_id, ServerMessage::Settings(s));
     }
 }

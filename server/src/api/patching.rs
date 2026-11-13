@@ -275,6 +275,10 @@ pub struct NewTasks {
     /// Confirms a major version change (`3.x` to `4.x`, a database's next major): refused without it.
     #[serde(default)]
     allow_major: bool,
+    /// With `to_latest`: pull the new version from this configured registry (Settings > Docker registries) and write
+    /// that registry into the compose file, so the container keeps using it. Empty: the image's own registry.
+    #[serde(default)]
+    registry_id: Option<String>,
 }
 
 /// Which pending updates a manual request takes. System updates and container images are separate tasks whatever
@@ -417,6 +421,15 @@ async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewT
     let ids: Vec<(Uuid, Uuid)> = state
         .db(move |c| {
             let mut created = vec![];
+            // offline without a local registry the Docker features are off; a chosen registry must be usable offline
+            crate::docker_registry::require_local_when_offline(c).map_err(|e| ApiError::Conflict(e.to_string()))?;
+            let registry = match b.registry_id.as_deref().filter(|id| !id.is_empty()) {
+                Some(id) => Some(crate::docker_registry::load(c).into_iter().find(|r| r.id == id).ok_or_else(|| ApiError::bad("unknown registry"))?),
+                None => None,
+            };
+            if registry.as_ref().is_some_and(|r| r.kind != "local") && crate::docker_registry::offline(c) {
+                return Err(ApiError::bad("offline mode: only a local registry can be used"));
+            }
             for host_id in b.host_ids {
                 let r = c.transaction::<_, ApiError, _>(|c| {
                     let host: crate::models::Host = hosts::table.find(host_id).select(crate::models::Host::as_select()).first(c).map_err(|_| ApiError::NotFound("host"))?;
@@ -447,6 +460,11 @@ async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewT
                         }
                         let tag = latest["tag"].as_str().unwrap_or_default();
                         let new_ref = retag_ref(&image, tag).ok_or_else(|| ApiError::Conflict(format!("{name}: {tag} is not a tag that can be applied to {image}")))?;
+                        // moving to a configured registry: the same image and tag, held there
+                        let new_ref = match &registry {
+                            Some(r) => crate::docker_registry::image_on(r, &new_ref).ok_or_else(|| ApiError::Conflict(format!("{name}: {image} cannot be taken from {}", r.name)))?,
+                            None => new_ref,
+                        };
                         let major = latest.get("major").and_then(|m| m.as_bool()).unwrap_or(false);
                         if major && croustypatch_common::model::is_database_image(&image) {
                             return Err(ApiError::Conflict(format!("{name}: {}", croustypatch_common::model::DATABASE_MAJOR_REASON)));
@@ -476,7 +494,7 @@ async fn create_retag_tasks(state: &web::Data<AppState>, user: AuthUser, b: NewT
                         .returning(tasks::id)
                         .get_result(c)?;
                     diesel::insert_into(task_events::table).values((task_events::task_id.eq(id), task_events::status.eq("queued"), task_events::message.eq(format!("requested by {}", user.username)))).execute(c)?;
-                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": "docker", "scope": "docker", "retag": retag, "allow_major": b.allow_major})).ip(&user.ip))?;
+                    audit::record(c, Event::new(&user.username, "task.patch_requested").target("task", &id.to_string()).host(host_id).details(json!({"packages": batch.len(), "kind": "docker", "scope": "docker", "retag": retag, "allow_major": b.allow_major, "registry": registry.as_ref().map(|r| r.name.clone())})).ip(&user.ip))?;
                     Ok(id)
                 });
                 created.push(r.map(|id| (host_id, id)));

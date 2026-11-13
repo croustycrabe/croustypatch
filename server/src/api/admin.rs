@@ -300,6 +300,8 @@ pub async fn put_setting(state: web::Data<AppState>, user: AuthUser, path: web::
     let st = state.clone();
     state
         .db(move |c| {
+            // offline mode and the Docker module need a local registry (Settings > Docker registries)
+            crate::docker_registry::check_setting_change(c, &key, &value)?;
             // An empty api_key in an update means "keep the stored one".
             if key == "ai" {
                 let kept = value.get("api_key").and_then(|k| k.as_str()).is_none_or(str::is_empty);

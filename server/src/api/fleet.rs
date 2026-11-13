@@ -208,6 +208,10 @@ pub async fn update_host(state: web::Data<AppState>, user: AuthUser, path: web::
                         merged[k] = v.clone();
                     }
                     if merged != cur {
+                        // switching the Docker module on needs a local registry when the installation is offline
+                        if merged.get("docker").and_then(|d| d.as_bool()) == Some(true) && cur.get("docker").and_then(|d| d.as_bool()) != Some(true) {
+                            crate::docker_registry::require_local_when_offline(c)?;
+                        }
                         diesel::update(hosts::table.find(id)).set(hosts::modules.eq(&merged)).execute(c)?;
                         audit::record(c, Event::new(&user.username, "host.modules_changed").target("host", &id.to_string()).host(id).details(json!({ "before": cur, "after": merged })).ip(&user.ip))?;
                         cur = merged;

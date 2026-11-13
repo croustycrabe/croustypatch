@@ -12,6 +12,10 @@ pub struct ImageRef {
     pub tag: String,
     /// Pinned by digest: never "updated".
     pub digest: Option<String>,
+    /// Plain HTTP (a configured registry on the local network without TLS).
+    pub insecure: bool,
+    /// The login of a configured registry; otherwise what `docker login` recorded for the host is used.
+    pub auth: Option<(String, String)>,
 }
 
 pub fn parse(reference: &str) -> Result<ImageRef> {
@@ -34,7 +38,7 @@ pub fn parse(reference: &str) -> Result<ImageRef> {
     };
     let repository = if registry == "docker.io" && !repo.contains('/') { format!("library/{repo}") } else { repo };
     let registry = if registry == "docker.io" { "registry-1.docker.io".to_string() } else { registry };
-    Ok(ImageRef { registry, repository, tag, digest })
+    Ok(ImageRef { registry, repository, tag, digest, insecure: false, auth: None })
 }
 
 const ACCEPT: &str = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json";
@@ -52,10 +56,14 @@ pub fn bearer_challenge(h: &str) -> Option<(String, Vec<(String, String)>)> {
     Some((realm?, params))
 }
 
-/// `https://host`, except for a registry on this machine (`localhost`, `127.0.0.1`), which commonly speaks plain HTTP.
-fn base_url(registry: &str) -> String {
+/// `https://host`, except for a registry on this machine (`localhost`, `127.0.0.1`) or one configured as plain HTTP.
+fn base_url_with(registry: &str, insecure: bool) -> String {
     let host = registry.rsplit_once(':').map(|(h, _)| h).unwrap_or(registry);
-    if matches!(host, "localhost" | "127.0.0.1") { format!("http://{registry}") } else { format!("https://{registry}") }
+    if insecure || matches!(host, "localhost" | "127.0.0.1") { format!("http://{registry}") } else { format!("https://{registry}") }
+}
+
+fn base_url(image: &ImageRef) -> String {
+    base_url_with(&image.registry, image.insecure)
 }
 
 /// The user and password `docker login` stored for a registry, from the `auths` of a Docker config file. Credential
@@ -95,8 +103,8 @@ struct Session {
 }
 
 impl Session {
-    fn for_registry(registry: &str) -> Result<Self> {
-        let credentials = (!registry.is_empty()).then(|| docker_config_text().and_then(|c| credentials_from_config(&c, registry))).flatten();
+    fn for_image(image: &ImageRef) -> Result<Self> {
+        let credentials = image.auth.clone().or_else(|| docker_config_text().and_then(|c| credentials_from_config(&c, &image.registry)));
         Ok(Self { http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).user_agent(concat!("croustypatch-agent/", env!("CARGO_PKG_VERSION"))).build()?, token: Default::default(), credentials })
     }
 
@@ -150,8 +158,8 @@ impl Session {
 /// Current digest of `image` in its registry (the manifest list digest for multi-arch images, which is what
 /// `RepoDigests` records after a pull).
 pub async fn remote_digest(image: &ImageRef) -> Result<String> {
-    let url = format!("{}/v2/{}/manifests/{}", base_url(&image.registry), image.repository, image.tag);
-    let r = Session::for_registry(&image.registry)?.send(reqwest::Method::HEAD, &url, &image.repository, Some(ACCEPT)).await?;
+    let url = format!("{}/v2/{}/manifests/{}", base_url(image), image.repository, image.tag);
+    let r = Session::for_image(image)?.send(reqwest::Method::HEAD, &url, &image.repository, Some(ACCEPT)).await?;
     if !r.status().is_success() {
         bail!("registry answered {} for {}:{}", r.status(), image.repository, image.tag);
     }
@@ -175,7 +183,11 @@ pub struct Listing {
 /// The `rel="next"` target of a `Link` header, as an absolute URL on the registry itself (a link to another host is
 /// ignored: the agent only talks to the registry the image comes from).
 pub fn next_link(header: &str, registry: &str) -> Option<String> {
-    let base = base_url(registry);
+    next_link_with(header, registry, false)
+}
+
+pub fn next_link_with(header: &str, registry: &str, insecure: bool) -> Option<String> {
+    let base = base_url_with(registry, insecure);
     header.split(',').find(|p| p.contains("rel=\"next\"") || p.contains("rel=next")).and_then(|p| {
         let target = p.split(';').next()?.trim().trim_start_matches('<').trim_end_matches('>');
         if target.starts_with('/') && !target.starts_with("//") {
@@ -207,14 +219,14 @@ pub async fn list_tags_checked(image: &ImageRef) -> Result<Listing> {
     let mut complete = false;
     let mut failure: Option<anyhow::Error> = None;
     let read = async {
-        let s = Session::for_registry(&image.registry)?;
-        let mut url = format!("{}/v2/{}/tags/list?n=1000", base_url(&image.registry), image.repository);
+        let s = Session::for_image(image)?;
+        let mut url = format!("{}/v2/{}/tags/list?n=1000", base_url(image), image.repository);
         for _ in 0..MAX_TAG_PAGES {
             let r = s.send(reqwest::Method::GET, &url, &image.repository, None).await?;
             if !r.status().is_success() {
                 bail!("registry answered {} listing the tags of {}", r.status(), image.repository);
             }
-            let next = r.headers().get("link").and_then(|v| v.to_str().ok()).and_then(|h| next_link(h, &image.registry));
+            let next = r.headers().get("link").and_then(|v| v.to_str().ok()).and_then(|h| next_link_with(h, &image.registry, image.insecure));
             let body: serde_json::Value = r.json().await?;
             let page: Vec<&str> = body.get("tags").and_then(|t| t.as_array()).into_iter().flatten().filter_map(|t| t.as_str()).collect();
             let done = page.last().is_some_and(|t| past_prefix(t, &prefix)) && page.windows(2).all(|w| w[0] <= w[1]);
@@ -450,8 +462,8 @@ where
 
 /// [`probe_newer`] against the image's registry: does `<repository>:<tag>` have a manifest?
 pub async fn probe_registry(image: &ImageRef) -> Result<Option<Newer>> {
-    let s = Session::for_registry(&image.registry)?;
-    let base = base_url(&image.registry);
+    let s = Session::for_image(image)?;
+    let base = base_url(image);
     probe_newer(&image.tag, |tag| {
         let (s, url, repo) = (&s, format!("{base}/v2/{}/manifests/{tag}", image.repository), image.repository.clone());
         async move {
@@ -469,4 +481,51 @@ pub async fn probe_registry(image: &ImageRef) -> Result<Option<Newer>> {
 /// Percent-encode a query component (RFC 3986 unreserved characters stay).
 pub fn pct(s: &str) -> String {
     s.bytes().map(|b| if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+// ----------------------------------------------------------------------------------- configured registries
+
+/// The registries the administrator configured (Settings > Docker registries) and whether the installation is
+/// offline: where an image is looked up, and with which login.
+#[derive(Debug, Clone, Default)]
+pub struct Registries {
+    pub profiles: Vec<croustypatch_common::protocol::RegistryProfile>,
+    pub offline: bool,
+}
+
+/// Docker Hub has three names; configured registries and image references use `docker.io`.
+fn upstream(host: &str) -> String {
+    let h = host.trim().to_ascii_lowercase();
+    if matches!(h.as_str(), "docker.io" | "index.docker.io" | "registry-1.docker.io") { "docker.io".into() } else { h }
+}
+
+impl Registries {
+    /// The places to look `img` up, in order: a registry that mirrors the image's own (a local pull-through cache
+    /// first), the image's own registry when it is a configured one, then the image's own registry directly. Offline,
+    /// only local registries count: an image that none of them holds has no place to be looked up.
+    pub fn targets(&self, img: &ImageRef) -> Vec<ImageRef> {
+        let usable = |p: &&croustypatch_common::protocol::RegistryProfile| !self.offline || p.kind == "local";
+        let on = |p: &croustypatch_common::protocol::RegistryProfile, repository: String| ImageRef {
+            registry: p.host.clone(),
+            repository,
+            tag: img.tag.clone(),
+            digest: None,
+            insecure: p.insecure,
+            auth: (!p.username.is_empty()).then(|| (p.username.clone(), p.password.clone())),
+        };
+        let mut out: Vec<ImageRef> = vec![];
+        let from = upstream(&img.registry);
+        for p in self.profiles.iter().filter(usable) {
+            if !p.host.eq_ignore_ascii_case(&img.registry) && p.mirror_of.iter().any(|m| upstream(m) == from) {
+                out.push(on(p, format!("{}{}", p.path_prefix, img.repository)));
+            }
+        }
+        if let Some(p) = self.profiles.iter().filter(usable).find(|p| p.host.eq_ignore_ascii_case(&img.registry)) {
+            out.push(on(p, img.repository.clone()));
+        }
+        if !self.offline && !out.iter().any(|t| t.registry.eq_ignore_ascii_case(&img.registry)) {
+            out.push(img.clone());
+        }
+        out
+    }
 }

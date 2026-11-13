@@ -152,6 +152,79 @@ container that fails to restart never rolls a system update back, and a running 
 a system patch (and the other way round). The planner, the manual *Update* buttons and the policy preview all split
 a batch this way; each kind waits only for its own open task. Agents need no change: both kinds run the same routine.
 
+### Why a container has no suggestion (0.10)
+
+Each container carries what its registry checks found (`meta.check`: `digest` and `tags`), and the Docker page shows it
+when there is no suggestion instead of a bare "up to date": *check failed* with the registry's answer (a private image
+needs a `docker login` made on the host by root, whose `~/.docker/config.json` the agent reads; credential helpers are
+not run), *floating tag* (`latest`, `release`: only the digest is followed), *pinned by digest*, or *offline*. The
+possible values of `tags`: `listed` (every tag read), `probed`, `not_version`, `pinned`, `offline`, `error: …`.
+
+Newer versions are found by listing the repository's tags. Some repositories cannot be listed: GHCR lists tags in no
+order and `immich-machine-learning` has a tag per commit and per hardware variant (more than 100 pages of 1000), `envoy`
+takes more than a minute. Up to 0.9 such a list was cut short and cached for 6 hours as "nothing newer" (immich-machine-learning
+v3.3.1 showed no v3.4.1). Since 0.10, when the list is incomplete the agent follows the versions one by one: it asks the
+registry (a `HEAD` on the manifest) whether `v3.3.2`, `v3.4.0`, `v4.0.0`… exist (each number raised by 1 to 3, the
+following ones set to 0 or left as they were), takes the highest that does and starts again from it, at most 90 requests
+and 12 rounds per image. Tags ending in `-sha-<hash>` (`supabase/studio`) are compared by their version. A manual scan
+(*Scan now*) clears the agent's 6-hour cache; a failed lookup is retried after 20 minutes. Checked live on the real
+images: `immich-machine-learning:v3.3.1` gives `v3.4.1`, `envoy:v1.39.1` gives `v1.40.2`, `supabase/studio:2026.10.12-sha-3699278`
+gives `2026.11.13-sha-64fad1a`.
+
+### Migration console (0.10)
+
+When a new tag is not enough (a database's next major: the new image cannot open the old data directory, which is why
+those are never applied automatically), the **Migration console** button of a container with a suggested version opens
+a window with **prebuilt command lines** for its kind of software, editable, run on the host from the page.
+
+- **Templates** (`GET /api/v1/docker/migration?host_id=&container=&to=`): PostgreSQL (and its variants: PostGIS,
+  pgvector, VectorChord, Timescale), MySQL/MariaDB, MongoDB, Redis/Valkey, anything else (backup of the data directories,
+  new image, logs) and a read-only *Look first*. Each starts with a **backup** to `/var/backups/croustypatch`, moves
+  the old data directory aside as `<dir>.pre-upgrade` and keeps a copy of the compose file as `<file>.pre-upgrade`:
+  nothing is deleted, and the rollback lines put both back. Without a compose file the agent can read, a database
+  template comes in two parts around the change of image, which the person makes in the tool that manages the stack.
+  Tested on a real Docker daemon: PostgreSQL 16 to 17 with its data, then the rollback.
+- **Running** (`POST /api/v1/docker/shell`): the steps run one after the other as root with `sh -c` (capability
+  `docker_shell`, agents 0.10+, an older one gets a 409), stop at the first one that fails, and the log (each step's
+  output, head and tail when long) follows in the window; a heartbeat every minute keeps a long dump from looking like a
+  dead agent. One migration at a time per host; the task is visible on the Tasks page. Up to 20 steps of 8000 characters.
+- **Permission:** running needs `docker:shell`, which only `super_admin` has by default (the built-in `admin` role does
+  not: it has `hosts:*` but nothing in this namespace); everyone who can read hosts sees the templates and can copy
+  them. The **exact commands are in the audit log** (`docker.shell_requested`), as sent.
+- **Do with AI** (`POST /api/v1/docker/migration-plan`, `docker:shell`): when an AI provider is configured (Settings > AI),
+  the provider receives the container, service and project names, the image and the tags, the compose file paths and the
+  baseline template (never environment values or file contents) and returns a plan, which is validated (valid JSON,
+  at most 12 steps, one-line titles) and shown with its summary, its risks and a tag on every step that deletes files or
+  Docker data, drops data, writes to a disk, downloads or restarts something. It is a draft: it fills the same editable
+  list, a person reads it, and only then runs it (the confirmation says it comes from the AI). The request is audited
+  (`docker.migration_plan_requested`) without its content.
+
+### Registries: local or distant (0.10)
+
+*Settings > Docker registries* (`GET`/`PUT /api/v1/docker/registries`, `settings:write`) lists the registries the agents
+use. A registry has a name, a **kind** (`local`: on your network, works offline; `distant`: Docker Hub, GHCR, a private
+one), an address (`registry.lan:5000`), the registries it **mirrors** (`docker.io`, `ghcr.io`: a pull-through cache or
+a Harbor proxy project), a path prefix (`dockerhub-proxy/`), a login and a plain-HTTP flag for a registry without TLS.
+Passwords are stored encrypted (like the AI key), never returned, and an empty password keeps the stored one. Agents
+with the Docker module on receive the list with their settings.
+
+- **Lookups:** an image is looked up in a configured registry that mirrors its own (the local cache first), then in its
+  own registry (with that registry's login when it is configured, else what `docker login` recorded), so the
+  digest and the versions are those of the copy an update would pull. A cache that holds Docker Hub official images
+  keeps their `library/` path (`harbor.lan/dockerhub-proxy/library/postgres`).
+- **Taking an update from a registry:** the *Apply* dialog has a **Registry** choice (`registry_id` on `POST /tasks` with
+  `to_latest`): the new version is pulled from that registry and its address is written into the compose file, so the
+  container keeps using it ("the same image and tag, held there": `ghcr.io/x/y:v1.1.0` becomes
+  `registry.lan:5000/mirror/x/y:v1.1.0`). Before the pull the agent runs `docker login` for a registry that has a user
+  name (the login lands in root's Docker config); a refusal changes nothing. The Docker daemon's own mirror setting
+  (`registry-mirrors`) is not touched.
+- **Offline (air-gapped) mode:** only `local` registries are used and sent to agents, and a local registry is
+  **mandatory** for the Docker features (newer-image detection, container updates, new versions). Without one they
+  cannot be switched on, and the server says so with a 400 that names the fix: switching the Docker module on (for the
+  fleet in *Settings > Modules* or for one host), choosing offline mode while the Docker module is on, removing the last
+  local registry, and `POST /tasks` for a new version (409). The Docker page and the registries card show a notice
+  with the same explanation, and a container whose registry no local registry relays says so in its check.
+
 ## Proxmox VE helper scripts
 
 Applications installed by the community helper scripts leave `/opt/<app>_version.txt`; they are reported as

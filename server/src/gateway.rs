@@ -584,7 +584,7 @@ pub async fn telemetry(state: web::Data<AppState>, agent: AgentAuth, body: web::
         .db(move |c| {
             let cmds = claim_due_commands(c, &st, host_id)?;
             let hb: i32 = hosts::table.find(host_id).select(hosts::heartbeat_secs).first(c)?;
-            Ok((cmds, hb, crate::modules::settings_for(c, host_id)?))
+            Ok((cmds, hb, crate::docker_registry::agent_settings(c, &st, host_id)?))
         })
         .await?;
     Ok(HttpResponse::Ok().json(TelemetryResponse { commands, heartbeat_secs: hb.max(10) as u64, settings }))

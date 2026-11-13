@@ -373,3 +373,11 @@ export interface MigrationInfo {
 }
 /** POST /docker/migration-plan: a draft written by the AI provider, to be read before anything runs. */
 export interface MigrationPlan { summary: string; risks: string[]; steps: (ShellStep & { warnings: string[] })[]; source: 'ai'; model: string }
+
+/** GET /docker/registries (passwords are never returned). */
+export interface DockerRegistries {
+  registries: { id: string; name: string; kind: 'local' | 'distant'; host: string; mirror_of: string[]; path_prefix: string; username: string; password_set: boolean; insecure: boolean }[];
+  offline: boolean; docker_enabled: boolean; has_local: boolean;
+  /** Offline without a local registry: the Docker features are not available. */
+  blocked: boolean; problem: string | null;
+}
