@@ -44,9 +44,7 @@ comes from the agent's own signed identity (a host only ever acts on itself), th
 peer credentials, the app center and the host's **Updates from the app center** switch must be on, the host must not
 be pending or quarantined, one patch or rollback at a time, and every name must be a pending *system* update of that
 machine. Everything is audited (`portal.update_requested`, task requested by `local:<user>@<host>`). Uploaded app
-icons are checked by content, size-limited and only shown through `<img>`. The agent installs OpenSCAP packages
-only from the fixed lists in `modules/openscap.rs`, and custom audit profiles are validated (identifiers only
-letters, digits and `_ . -`) before they reach a command line or the XML tailoring file.
+icons are checked by content, size-limited and only shown through `<img>`.
 
 ## Applying a Docker version (0.7.4)
 

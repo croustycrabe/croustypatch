@@ -128,7 +128,6 @@ impl Agent {
     }
 
     pub async fn collect_inventory(&self) -> Result<Inventory> {
-        crate::modules::openscap::set_state_dir(&self.cfg.state_dir);
         let facts = crate::facts::collect(&self.cfg.server_url, self.backend.kind(), crate::modules::detected()).await;
         let mut packages = self.backend.inventory(&self.runner).await?;
         // The mock backend simulates a whole system: never mix the real host's modules into it.
@@ -220,7 +219,6 @@ async fn execute(agent: &Agent, p: CommandPayload) {
         CommandAction::Quarantine => isolate::quarantine(&agent.runner, &agent.server_ips(), &agent.isolation(), &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "host isolated from the network", &log, vec![], false)),
         CommandAction::Release => isolate::release(&agent.runner, &log).await.map(|_| agent.update(id, TaskStatus::Succeeded, "network isolation lifted", &log, vec![], false)),
         CommandAction::Reboot { delay_minutes, message } => crate::reboot::start(agent, id, delay_minutes, &message, &log).await,
-        CommandAction::ComplianceScan { profile, tailoring, auto_install } => compliance(agent, id, &profile, tailoring.as_ref(), auto_install, &log).await,
         CommandAction::App { install, command: Some(cmd), user, .. } => app_command(agent, id, install, &cmd, user.as_deref(), &log).await,
         CommandAction::App { install, packages, command: None, .. } => app(agent, id, install, &packages, &log).await,
         CommandAction::UpdateAgent { platform, sha256, version, gui_sha256 } => crate::selfupdate::start(agent, id, &platform, &sha256, &version, gui_sha256.as_deref(), &log).await,
@@ -268,78 +266,6 @@ async fn app_command(agent: &Agent, id: Uuid, install: bool, cmd: &AppCommand, u
     let inv = agent.send_inventory().await?;
     agent.update(id, TaskStatus::Succeeded, summary, log, vec![], inv.reboot_required);
     Ok(())
-}
-
-async fn compliance(agent: &Agent, id: Uuid, profile: &str, tailoring: Option<&Tailoring>, auto_install: bool, log: &TaskLog) -> Result<()> {
-    use crate::modules::openscap;
-    let facts = crate::facts::collect(&agent.cfg.server_url, agent.backend.kind(), vec![]).await;
-    let kind = agent.backend.kind();
-    let hint = format!("{}{}", facts.distro.to_ascii_lowercase().split_whitespace().next().unwrap_or(""), facts.os_version.split('.').next().unwrap_or(""));
-    // OpenSCAP or its content missing: install them first (visible in this task's log), unless the administrator turned that off.
-    openscap::set_state_dir(&agent.cfg.state_dir);
-    sync_scap_content(agent, &hint, log).await;
-    let have_content = openscap::has_content(&hint);
-    if let openscap::InstallPlan::Install { packages, note } = openscap::install_plan(openscap::available(), have_content, auto_install, kind, &facts.distro) {
-        agent.update(id, TaskStatus::Running, format!("installing OpenSCAP ({})", packages.join(", ")), log, vec![], false);
-        agent.backend.refresh(&agent.runner, log).await;
-        let names: Vec<String> = packages.iter().map(|s| s.to_string()).collect();
-        agent.backend.install(&agent.runner, &names, log).await?;
-        if let Some(n) = note {
-            log.line(format!("note: {n}"));
-        }
-        let _ = agent.send_inventory().await;
-    }
-    agent.update(id, TaskStatus::Running, "compliance scan running (low priority)", log, vec![], false);
-    let target = openscap::Target { hint: &hint, kind, distro: &facts.distro, workstation: facts.is_laptop || facts.is_desktop };
-    let report = openscap::scan(&agent.runner, &agent.cfg.state_dir, profile, tailoring, &target, log).await?;
-    let msg = if report.passed + report.failed == 0 {
-        format!("compliance: no rule applies to this system ({} not applicable): the SCAP content does not cover this release", report.not_applicable)
-    } else {
-        format!("compliance {:.1}% ({} passed, {} failed)", report.score, report.passed, report.failed)
-    };
-    let _ = agent.out.send(AgentMessage::Compliance { task_id: id, report });
-    agent.update(id, TaskStatus::Succeeded, msg, log, vec![], false);
-    Ok(())
-}
-
-/// Take the server's SCAP content for this system when it has some (a recent SCAP Security Guide release bundled with
-/// the server, 0.9+): downloaded once, checked against the SHA-256 of the server's index, kept in the state directory.
-/// Quiet when the server has none: the distribution's package is used.
-async fn sync_scap_content(agent: &Agent, hint: &str, log: &TaskLog) {
-    let sha = |b: &[u8]| croustypatch_common::crypto::sha256_hex(b);
-    let get = |path: String| async move {
-        let ips = agent.server_ips.lock().unwrap().clone();
-        let client = crate::net::http_client_pinned(&agent.cfg, &ips)?;
-        let r = client.get(crate::net::api_url(&agent.cfg, &path)).bearer_auth(agent.identity.jwt()?).send().await?;
-        if !r.status().is_success() {
-            anyhow::bail!("the server answered {}", r.status());
-        }
-        Ok::<_, anyhow::Error>(r.bytes().await?)
-    };
-    let Ok(body) = get("/agent/scap-content".into()).await else { return };
-    let Ok(index) = serde_json::from_slice::<serde_json::Value>(&body) else { return };
-    let files = index.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
-    let names: Vec<String> = files.iter().filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(str::to_owned)).collect();
-    let Some(name) = crate::modules::openscap::best_server_file(&names, hint) else { return };
-    let want = files.iter().find(|f| f.get("name").and_then(|n| n.as_str()) == Some(name.as_str())).and_then(|f| f.get("sha256")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-    let version = index.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-    let dir = crate::modules::openscap::server_dir(&agent.cfg.state_dir);
-    let target = dir.join(&name);
-    if std::fs::read(&target).is_ok_and(|b| sha(&b) == want) {
-        log.line(format!("SCAP content from the server: {name} (SCAP Security Guide {version})"));
-        return;
-    }
-    match get(format!("/agent/scap-content/{name}")).await {
-        Ok(bytes) if sha(&bytes) == want => {
-            let tmp = dir.join(format!(".{name}.part"));
-            let ok = std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, &target).is_ok();
-            if ok {
-                log.line(format!("SCAP content downloaded from the server: {name} (SCAP Security Guide {version}, {} KiB)", bytes.len() / 1024));
-            }
-        }
-        Ok(_) => log.line(format!("the server's copy of {name} does not match its checksum: not used")),
-        Err(e) => log.line(format!("could not download the server's SCAP content ({e}): using the distribution's")),
-    }
 }
 
 async fn scan(agent: &Agent, id: Uuid, log: &TaskLog) -> Result<()> {

@@ -3,7 +3,6 @@
 pub mod aur;
 pub mod docker;
 pub mod helper_scripts;
-pub mod openscap;
 pub mod registry;
 pub mod retag;
 
@@ -12,9 +11,6 @@ pub fn detected() -> Vec<String> {
     let mut m = vec![];
     if docker::available() {
         m.push("docker".to_string());
-    }
-    if openscap::available() {
-        m.push("openscap".to_string());
     }
     if helper_scripts::available() {
         m.push("helper-script".to_string());

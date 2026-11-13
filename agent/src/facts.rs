@@ -124,7 +124,6 @@ pub async fn local_ip(server_url: &str) -> Vec<String> {
 }
 
 pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>) -> HostFacts {
-    let hint = |distro: &str, version: &str| format!("{}{}", distro.to_ascii_lowercase().split_whitespace().next().unwrap_or(""), version.split('.').next().unwrap_or(""));
     let (is_laptop, on_battery) = power_state().await;
     let (os_family, distro, os_version) = if cfg!(target_os = "freebsd") {
         let v = exec::run(&Cmd::new("freebsd-version", &[])).await.ok().map(|o| o.stdout.trim().to_string()).unwrap_or_default();
@@ -146,7 +145,6 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         .unwrap_or_default();
     let hostname = if hostname.is_empty() { exec::run(&Cmd::new("hostname", &[])).await.ok().map(|o| o.stdout.trim().to_string()).unwrap_or_else(|| "unknown".into()) } else { hostname };
     let is_desktop = desktop_detected();
-    let openscap = crate::modules::openscap::info(&hint(&distro, &os_version), is_laptop || is_desktop).await;
     HostFacts {
         hostname,
         os_family,
@@ -165,6 +163,5 @@ pub async fn collect(server_url: &str, pm: PackageManager, modules: Vec<String>)
         modules,
         capabilities: croustypatch_common::protocol::capability::ALL.iter().map(|s| s.to_string()).collect(),
         hardware: crate::sysinfo::hardware(),
-        openscap,
     }
 }

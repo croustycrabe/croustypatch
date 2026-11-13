@@ -170,7 +170,6 @@ pub async fn dashboard(state: web::Data<AppState>, user: AuthUser) -> ApiResult<
                 "tasks": { "awaiting_approval": awaiting, "in_progress": running, "waivers_pending": waivers_open },
                 "activity": recent.into_iter().map(|(id, host_id, hostname, kind, status, message, ts)| json!({"id": id, "host_id": host_id, "hostname": hostname, "kind": kind, "status": status, "message": message, "ts": ts})).collect::<Vec<_>>(),
                 // Optional modules are reported as inactive until they exist and are switched on.
-                "compliance": { "enabled": in_use("openscap"), "score": crate::api::compliance_api::fleet_score(c)? },
                 "portal": { "enabled": in_use("portal"), "installs": null },
                 "resources": { "reporting": fresh.len(), "avg_cpu": avg("cpu_pct"), "avg_mem": avg("mem_pct"), "busiest": busiest.into_iter().take(6).collect::<Vec<_>>() },
                 "patching": {

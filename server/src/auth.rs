@@ -468,7 +468,6 @@ pub fn default_layout() -> Value {
         { "id": "stat_uncovered", "visible": true, "size": "xs" },
         { "id": "stat_reboot", "visible": false, "size": "xs" },
         { "id": "stat_approvals", "visible": false, "size": "xs" },
-        { "id": "stat_compliance", "visible": false, "size": "xs" },
         { "id": "stat_patched_week", "visible": false, "size": "xs" },
         { "id": "stat_failed_week", "visible": false, "size": "xs" },
         { "id": "fleet", "visible": true, "size": "md" },

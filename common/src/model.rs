@@ -51,7 +51,7 @@ impl TaskStatus {
 }
 
 str_enum!(
-    TaskKind { Scan => "scan", Patch => "patch", Rollback => "rollback", Quarantine => "quarantine", Release => "release", Reboot => "reboot", Compliance => "compliance", App => "app", AgentUpdate => "agent_update", Docker => "docker" }
+    TaskKind { Scan => "scan", Patch => "patch", Rollback => "rollback", Quarantine => "quarantine", Release => "release", Reboot => "reboot", App => "app", AgentUpdate => "agent_update", Docker => "docker" }
 );
 
 str_enum!(

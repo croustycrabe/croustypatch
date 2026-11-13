@@ -39,7 +39,6 @@ fn public_host_falls_back_to_authority_for_http2() {
         trusted_proxies: vec!["127.0.0.1".into()],
         static_dir: ".".into(),
         agent_dir: vec![".".into()],
-        scap_dir: "./no-scap-content".into(),
         cors_origin: None,
     };
     // HTTP/2 style: absolute-form URI, no Host header.

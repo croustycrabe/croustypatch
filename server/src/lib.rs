@@ -3,7 +3,6 @@ pub mod ai;
 pub mod api;
 pub mod audit;
 pub mod auth;
-pub mod compliance;
 pub mod config;
 pub mod crypto;
 pub mod db;

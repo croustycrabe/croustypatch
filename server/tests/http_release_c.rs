@@ -1,10 +1,10 @@
-//! Integration (0.7): Docker menu, updates from the app center, OpenSCAP audit profiles, app icons.
+//! Integration (0.7): Docker menu, updates from the app center, app icons.
 mod support;
 
 use actix_web::cookie::Cookie;
 use actix_web::test::TestRequest;
 use croustypatch_server::api::portal::create_update_request;
-use croustypatch_server::schema::{audit_log, compliance_reports, host_packages, hosts, tasks};
+use croustypatch_server::schema::{audit_log, host_packages, hosts, tasks};
 use diesel::prelude::*;
 use serde_json::{json, Value};
 use support::http::{admin, app, call, login, session};
@@ -37,10 +37,6 @@ where
     let first = session(&login(app, name, "temporary-pass-12").await);
     call(app, TestRequest::post().uri("/api/v1/auth/password").cookie(first).set_json(json!({"current_password": "temporary-pass-12", "new_password": "a-new-password-123"}))).await;
     session(&login(app, name, "a-new-password-123").await)
-}
-
-fn finish_tasks(db: &support::TestDb, kind: &str) {
-    diesel::update(tasks::table.filter(tasks::kind.eq(kind))).set(tasks::status.eq("succeeded")).execute(&mut db.conn()).unwrap();
 }
 
 // ------------------------------------------------------------------------------------------ Docker menu
@@ -167,177 +163,6 @@ async fn people_start_their_own_updates_from_the_app_center_without_an_approval_
     assert_eq!(n, 0);
 }
 
-// ---------------------------------------------------------------------------------- OpenSCAP audit profiles
-
-const STD: &str = "xccdf_org.ssgproject.content_profile_standard";
-const CIS: &str = "xccdf_org.ssgproject.content_profile_cis";
-const RULE_A: &str = "xccdf_org.ssgproject.content_rule_package_aide_installed";
-const RULE_B: &str = "xccdf_org.ssgproject.content_rule_sysctl_kernel_randomize_va_space";
-
-#[actix_web::test]
-async fn audit_profiles_are_custom_per_host_and_sent_to_the_agent_as_a_tailoring() {
-    let db = support::TestDb::new();
-    let app = app(&db).await;
-    let ck = admin(&app).await;
-    let facts = json!({"openscap": {"version": "1.4.2", "datastream": "/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml", "profiles": [{"id": STD, "title": "Standard System Security Profile"}, {"id": CIS, "title": "CIS Benchmark"}]}});
-    let (host, bare) = {
-        let mut c = db.conn();
-        (add_host(&mut c, "srv-1", json!({"openscap": true}), facts), add_host(&mut c, "srv-2", json!({"openscap": true}), json!({})))
-    };
-    let post = |b: Value| TestRequest::post().uri("/api/v1/compliance/profiles").cookie(ck.clone()).set_json(b);
-
-    for bad in [
-        json!({"name": "", "base_profile": CIS}),
-        json!({"name": "x", "base_profile": "profile_cis"}),
-        json!({"name": "x", "base_profile": "xccdf_a b"}),
-        json!({"name": "x", "base_profile": CIS, "disabled_rules": ["not_an_xccdf_id"]}),
-        json!({"name": "x", "base_profile": CIS, "disabled_rules": ["xccdf_x;rm -rf /"]}),
-        json!({"name": "x".repeat(81), "base_profile": CIS}),
-    ] {
-        let (st, b) = call(&app, post(bad.clone())).await;
-        assert_eq!(st, 400, "{bad} -> {b}");
-    }
-    let (st, p) = call(&app, post(json!({"name": "Serveurs", "description": "sans AIDE", "base_profile": CIS, "disabled_rules": [RULE_B, RULE_A, RULE_A]}))).await;
-    assert_eq!(st, 201, "{p}");
-    assert_eq!(p["disabled_rules"], json!([RULE_A, RULE_B]), "sorted, without duplicates");
-    assert_eq!(p["used_by"], json!(0));
-    let pid = p["id"].as_str().unwrap().to_string();
-    let (st, _) = call(&app, post(json!({"name": "SERVEURS", "base_profile": CIS}))).await;
-    assert_eq!(st, 409, "names are unique, whatever the case");
-
-    // read-only users look, administrators change
-    let auditor = user_with_role(&app, &ck, "audit1", "auditor").await;
-    let (st, list) = call(&app, TestRequest::get().uri("/api/v1/compliance/profiles").cookie(auditor.clone())).await;
-    assert_eq!(st, 200, "{list}");
-    assert_eq!(list["custom"][0]["name"], json!("Serveurs"));
-    assert_eq!(list["hosts_with_openscap"], json!(1), "only the host whose agent found OpenSCAP");
-    let avail: Vec<(&str, i64)> = list["available"].as_array().unwrap().iter().map(|a| (a["id"].as_str().unwrap(), a["hosts"].as_i64().unwrap())).collect();
-    assert_eq!(avail, vec![(CIS, 1), (STD, 1)]);
-    let (st, _) = call(&app, TestRequest::post().uri("/api/v1/compliance/profiles").cookie(auditor.clone()).set_json(json!({"name": "y", "base_profile": CIS}))).await;
-    assert_eq!(st, 403);
-    let (st, _) = call(&app, TestRequest::delete().uri(&format!("/api/v1/compliance/profiles/{pid}")).cookie(auditor)).await;
-    assert_eq!(st, 403);
-
-    // a host's profile: '' (default), a datastream profile, or a custom one that exists
-    let patch = |h: Uuid, v: &str| TestRequest::patch().uri(&format!("/api/v1/hosts/{h}")).cookie(ck.clone()).set_json(json!({"compliance_profile": v}));
-    for bad in ["custom:00000000-0000-0000-0000-000000000000", "custom:nope", "has space", "x;y"] {
-        let (st, b) = call(&app, patch(host, bad)).await;
-        assert_eq!(st, 400, "{bad} -> {b}");
-    }
-    let (st, h) = call(&app, patch(host, &format!("custom:{pid}"))).await;
-    assert_eq!(st, 200, "{h}");
-    assert_eq!(h["compliance_profile"], json!(format!("custom:{pid}")));
-    let (_, comp) = call(&app, TestRequest::get().uri(&format!("/api/v1/hosts/{host}/compliance")).cookie(ck.clone())).await;
-    assert_eq!((comp["profile"].clone(), comp["effective_profile"].clone(), comp["module"].clone(), comp["auto_install"].clone()), (json!(format!("custom:{pid}")), json!(format!("custom:{pid}")), json!(true), json!(true)));
-    assert_eq!(comp["openscap"]["version"], json!("1.4.2"));
-    let (_, nofacts) = call(&app, TestRequest::get().uri(&format!("/api/v1/hosts/{bare}/compliance")).cookie(ck.clone())).await;
-    assert_eq!(nofacts["openscap"], Value::Null, "not installed there");
-
-    // the audit goes out with the tailoring (and the permission to install what is missing)
-    let (st, r) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone())).await;
-    assert_eq!(st, 202, "{r}");
-    let exec: Value = tasks::table.filter(tasks::host_id.eq(host)).filter(tasks::kind.eq("compliance")).select(tasks::exec).first::<Option<Value>>(&mut db.conn()).unwrap().unwrap();
-    assert_eq!(exec["profile"], json!(CIS), "the agent evaluates the base profile of the tailoring");
-    assert_eq!(exec["auto_install"], json!(true));
-    assert_eq!((exec["tailoring"]["name"].clone(), exec["tailoring"]["base"].clone(), exec["tailoring"]["disabled_rules"].clone()), (json!("Serveurs"), json!(CIS), json!([RULE_A, RULE_B])));
-    let state = db.state();
-    actix_web::rt::time::sleep(std::time::Duration::from_secs(2)).await; // a remote test database may run a moment ahead
-    let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, host).unwrap();
-    let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
-    assert_eq!(payload["action"]["tailoring"]["id"], json!(pid), "{payload}");
-    assert_eq!(payload["action"]["tailoring"]["disabled_rules"], json!([RULE_A, RULE_B]));
-    assert_eq!(payload["action"]["auto_install"], json!(true));
-    let (st, _) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone())).await;
-    assert_eq!(st, 409, "one audit at a time");
-    finish_tasks(&db, "compliance");
-
-    // a profile in use is not deleted; once nobody uses it, it can be
-    let (_, list) = call(&app, TestRequest::get().uri("/api/v1/compliance/profiles").cookie(ck.clone())).await;
-    assert_eq!(list["custom"][0]["used_by"], json!(1));
-    let del = || TestRequest::delete().uri(&format!("/api/v1/compliance/profiles/{pid}")).cookie(ck.clone());
-    let (st, b) = call(&app, del()).await;
-    assert_eq!(st, 409, "{b}");
-    // editing keeps the audit trail and the same id
-    let (st, upd) = call(&app, TestRequest::put().uri(&format!("/api/v1/compliance/profiles/{pid}")).cookie(ck.clone()).set_json(json!({"name": "Serveurs prod", "base_profile": STD, "disabled_rules": [RULE_A]}))).await;
-    assert_eq!(st, 200, "{upd}");
-    assert_eq!((upd["id"].clone(), upd["base_profile"].clone(), upd["used_by"].clone()), (json!(pid), json!(STD), json!(1)));
-
-    // an explicit profile in the request wins over the host's own; a plain one carries no tailoring
-    let (st, _) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone()).set_json(json!({"profile": STD}))).await;
-    assert_eq!(st, 202);
-    let exec: Value = tasks::table.filter(tasks::host_id.eq(host)).filter(tasks::kind.eq("compliance")).filter(tasks::status.eq("queued")).select(tasks::exec).first::<Option<Value>>(&mut db.conn()).unwrap().unwrap();
-    assert_eq!((exec["profile"].clone(), exec["tailoring"].clone()), (json!(STD), Value::Null));
-    finish_tasks(&db, "compliance");
-    let (st, _) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{host}/compliance-scan")).cookie(ck.clone()).set_json(json!({"profile": "bad id"}))).await;
-    assert_eq!(st, 400);
-
-    // the fleet default: a custom profile or an XCCDF id; auto-install can be switched off
-    let put = |v: Value| TestRequest::put().uri("/api/v1/settings/compliance").cookie(ck.clone()).set_json(v);
-    let (st, _) = call(&app, put(json!({"threshold": 80, "profile": "custom:not-a-uuid"}))).await;
-    assert_eq!(st, 400);
-    let (st, _) = call(&app, put(json!({"threshold": 80, "profile": "", "auto_install": "yes"}))).await;
-    assert_eq!(st, 400);
-    let (st, b) = call(&app, put(json!({"threshold": 80, "profile": format!("custom:{pid}"), "auto_install": false}))).await;
-    assert!(st.is_success(), "{b}");
-    call(&app, patch(host, "")).await;
-    let (_, list) = call(&app, TestRequest::get().uri("/api/v1/compliance/profiles").cookie(ck.clone())).await;
-    assert_eq!(list["custom"][0]["used_by"], json!(2), "every host without a profile of its own follows the fleet default");
-    let (st, _) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{bare}/compliance-scan")).cookie(ck.clone())).await;
-    assert_eq!(st, 202);
-    let exec: Value = tasks::table.filter(tasks::host_id.eq(bare)).select(tasks::exec).first::<Option<Value>>(&mut db.conn()).unwrap().unwrap();
-    assert_eq!((exec["auto_install"].clone(), exec["tailoring"]["name"].clone(), exec["profile"].clone()), (json!(false), json!("Serveurs prod"), json!(STD)));
-    actix_web::rt::time::sleep(std::time::Duration::from_secs(2)).await;
-    let cmds = croustypatch_server::gateway::claim_due_commands(&mut db.conn(), &state, bare).unwrap();
-    let payload: Value = serde_json::from_str(&cmds[0].payload).unwrap();
-    assert_eq!(payload["action"]["auto_install"], json!(false), "the agent installs nothing when the administrator said no");
-    finish_tasks(&db, "compliance");
-
-    // OpenSCAP off for a host: refused
-    {
-        let mut c = db.conn();
-        diesel::update(hosts::table.find(bare)).set(hosts::modules.eq(json!({"openscap": false}))).execute(&mut c).unwrap();
-    }
-    let (st, _) = call(&app, TestRequest::post().uri(&format!("/api/v1/hosts/{bare}/compliance-scan")).cookie(ck.clone())).await;
-    assert_eq!(st, 409);
-
-    // free the profile, then delete it
-    call(&app, put(json!({"threshold": 80, "profile": "", "auto_install": true}))).await;
-    let (st, b) = call(&app, del()).await;
-    assert_eq!(st, 204, "{b:?}");
-    let (st, _) = call(&app, del()).await;
-    assert_eq!(st, 404);
-    let actions: Vec<String> = audit_log::table.filter(audit_log::action.like("compliance.profile_%")).order(audit_log::seq.asc()).select(audit_log::action).load(&mut db.conn()).unwrap();
-    assert_eq!(actions, vec!["compliance.profile_created", "compliance.profile_updated", "compliance.profile_deleted"]);
-}
-
-#[actix_web::test]
-async fn the_editor_suggests_the_rules_that_fail_on_the_fleet() {
-    let db = support::TestDb::new();
-    let app = app(&db).await;
-    let ck = admin(&app).await;
-    {
-        let mut c = db.conn();
-        let (a, b) = (add_host(&mut c, "a", json!({"openscap": true}), json!({})), add_host(&mut c, "b", json!({"openscap": true}), json!({})));
-        for (h, rules) in [
-            (a, json!([{"rule_id": RULE_A, "severity": "low"}, {"rule_id": RULE_B, "severity": "high"}])),
-            (b, json!([{"rule_id": RULE_A, "severity": "low"}])),
-        ] {
-            diesel::insert_into(compliance_reports::table)
-                .values((compliance_reports::host_id.eq(h), compliance_reports::profile.eq(STD), compliance_reports::passed.eq(5), compliance_reports::failed.eq(2), compliance_reports::not_applicable.eq(0), compliance_reports::other.eq(0), compliance_reports::datastream.eq("ds"), compliance_reports::results_sha256.eq("x"), compliance_reports::failed_rules.eq(rules), compliance_reports::score.eq(50.0), compliance_reports::collected_at.eq(chrono::Utc::now())))
-                .execute(&mut c)
-                .unwrap();
-        }
-        // an older report of host a is not what fails today
-        diesel::insert_into(compliance_reports::table)
-            .values((compliance_reports::host_id.eq(a), compliance_reports::profile.eq(STD), compliance_reports::passed.eq(1), compliance_reports::failed.eq(9), compliance_reports::not_applicable.eq(0), compliance_reports::other.eq(0), compliance_reports::datastream.eq("ds"), compliance_reports::results_sha256.eq("x"), compliance_reports::failed_rules.eq(json!([{"rule_id": "xccdf_org.ssgproject.content_rule_old", "severity": "high"}])), compliance_reports::score.eq(10.0), compliance_reports::collected_at.eq(chrono::Utc::now() - chrono::Duration::days(30)), compliance_reports::created_at.eq(chrono::Utc::now() - chrono::Duration::days(30))))
-            .execute(&mut c)
-            .unwrap();
-    }
-    let (st, r) = call(&app, TestRequest::get().uri("/api/v1/compliance/rules").cookie(ck.clone())).await;
-    assert_eq!(st, 200, "{r}");
-    let rules: Vec<(&str, &str, i64)> = r["rules"].as_array().unwrap().iter().map(|x| (x["rule_id"].as_str().unwrap(), x["severity"].as_str().unwrap(), x["hosts"].as_i64().unwrap())).collect();
-    assert_eq!(rules, vec![(RULE_B, "high", 1), (RULE_A, "low", 2)], "worst first, with how many hosts fail them; only the latest audit of each host counts");
-}
 
 // ------------------------------------------------------------------------------------------- app icons
 
@@ -383,21 +208,6 @@ async fn app_icons_are_generic_logos_or_small_uploaded_images() {
     // read access for the picker follows the settings permission
     let (st, _) = call(&app, TestRequest::get().uri("/api/v1/portal/brand-icons")).await;
     assert_eq!(st, 401);
-}
-
-/// A `compliance` setting saved by 0.6 has no `auto_install`: it reads as on, as the code that uses it assumes.
-#[actix_web::test]
-async fn a_compliance_setting_saved_before_0_7_reads_with_the_new_defaults() {
-    let db = support::TestDb::new();
-    let app = app(&db).await;
-    let ck = admin(&app).await;
-    diesel::sql_query("INSERT INTO settings (key, value) VALUES ('compliance', '{\"threshold\": 85, \"profile\": \"\"}')").execute(&mut db.conn()).unwrap();
-    let (st, s) = call(&app, TestRequest::get().uri("/api/v1/settings").cookie(ck.clone())).await;
-    assert_eq!(st, 200, "{s}");
-    assert_eq!((s["compliance"]["threshold"].clone(), s["compliance"]["auto_install"].clone()), (json!(85), json!(true)), "{s}");
-    // and saving it back without the key is accepted
-    let (st, b) = call(&app, TestRequest::put().uri("/api/v1/settings/compliance").cookie(ck.clone()).set_json(json!({"threshold": 90, "profile": ""}))).await;
-    assert!(st.is_success(), "{b}");
 }
 
 /// Applications added before 0.7 kept a generic icon; the migration gives them the logo of the suggestion they match.
@@ -814,19 +624,4 @@ async fn the_air_gapped_mode_is_sent_to_the_agents() {
     assert!(offline());
     call(&app, TestRequest::put().uri("/api/v1/settings/connectivity").cookie(ck.clone()).set_json(json!({"mode": "connected"}))).await;
     assert!(!offline());
-}
-
-#[test]
-fn a_fleet_default_profile_a_host_lacks_gives_way_to_its_recommended_one() {
-    use croustypatch_server::compliance::fleet_default_for;
-    let cis = "xccdf_org.ssgproject.content_profile_cis_level1_server";
-    let ubuntu = json!({"profiles": [{"id": cis, "title": "CIS"}, {"id": "xccdf_org.ssgproject.content_profile_stig", "title": "STIG"}], "recommended": cis});
-    let debian = json!({"profiles": [{"id": "xccdf_org.ssgproject.content_profile_standard", "title": "Standard"}]});
-    assert_eq!(fleet_default_for(cis, Some(&ubuntu)), cis, "the host has it");
-    assert_eq!(fleet_default_for(cis, Some(&debian)), "", "Debian's content has no CIS for Ubuntu: the agent uses its recommended one");
-    assert_eq!(fleet_default_for(cis, None), cis, "content not known yet: the choice is sent as is");
-    assert_eq!(fleet_default_for(cis, Some(&json!({"profiles": []}))), cis);
-    assert_eq!(fleet_default_for("", Some(&ubuntu)), "", "automatic");
-    let custom = "custom:6a0c3f9e-2f6c-4d55-9a3f-0b1f7d0f2a11";
-    assert_eq!(fleet_default_for(custom, Some(&debian)), custom, "a custom profile is kept (the agent says when its base is missing)");
 }

@@ -30,7 +30,7 @@ pub struct HostFacts {
     pub virtualization: Option<String>,
     pub ip_addresses: Vec<String>,
     pub agent_version: String,
-    /// Optional modules loaded in the agent (docker, openscap, ...).
+    /// Optional modules loaded in the agent (docker, helper scripts, ...).
     #[serde(default)]
     pub modules: Vec<String>,
     /// Protocol features this agent understands (see `capability`); empty on agents before 0.4.
@@ -39,41 +39,6 @@ pub struct HostFacts {
     /// What the machine is made of (empty on agents before 0.6).
     #[serde(default)]
     pub hardware: Hardware,
-    /// OpenSCAP as installed on the machine: version, the content found and the profiles it offers (agents 0.7+).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openscap: Option<OpenScapInfo>,
-}
-
-/// OpenSCAP on a host: what an administrator can choose from when picking its audit profile.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct OpenScapInfo {
-    pub version: String,
-    /// The SCAP Security Guide datastream used (empty when no content is installed).
-    pub datastream: String,
-    pub profiles: Vec<ScapProfile>,
-    /// The profile audits use when nobody chose one: the baseline for this system and kind of machine (CIS level 1
-    /// server or workstation, Debian's standard...). Empty on agents before 0.8.
-    pub recommended: String,
-    /// The content was written for another release and its release checks are pointed at this one ("noble → resolute"
-    /// on Ubuntu 26.04 with the 24.04 benchmark); empty when it is used as is.
-    pub adapted: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScapProfile {
-    pub id: String,
-    pub title: String,
-}
-
-/// A custom audit profile: a profile of the datastream with some rules switched off (tailoring).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Tailoring {
-    pub id: String,
-    pub name: String,
-    /// The datastream profile it extends.
-    pub base: String,
-    pub disabled_rules: Vec<String>,
 }
 
 /// Static description of the machine: CPU, memory and what the firmware says it is. No serial numbers.
@@ -134,7 +99,6 @@ pub mod capability {
 pub struct HostModules {
     pub docker: bool,
     pub helper_script: bool,
-    pub openscap: bool,
     pub portal: bool,
     pub eco: bool,
     /// Users of this machine may start its pending system updates from the app center, without approval.
@@ -142,12 +106,11 @@ pub struct HostModules {
 }
 
 impl HostModules {
-    pub const NAMES: &[&str] = &["docker", "helper_script", "openscap", "portal", "portal_updates", "eco"];
+    pub const NAMES: &[&str] = &["docker", "helper_script", "portal", "portal_updates", "eco"];
     pub fn get(&self, name: &str) -> bool {
         match name {
             "docker" => self.docker,
             "helper_script" | "helper-script" => self.helper_script,
-            "openscap" => self.openscap,
             "portal" => self.portal,
             "portal_updates" => self.portal_updates,
             "eco" => self.eco,
@@ -270,31 +233,6 @@ pub enum AgentMessage {
     Heartbeat(Heartbeat),
     Inventory(Inventory),
     TaskUpdate(TaskUpdate),
-    /// Result of an OpenSCAP evaluation, sent before the task's final update.
-    Compliance { task_id: Uuid, report: ComplianceReport },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FailedRule {
-    pub rule_id: String,
-    pub severity: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComplianceReport {
-    pub profile: String,
-    pub datastream: String,
-    pub passed: u32,
-    pub failed: u32,
-    pub not_applicable: u32,
-    /// Errors, unknown, not checked…
-    pub other: u32,
-    /// passed / (passed + failed), in percent.
-    pub score: f64,
-    pub failed_rules: Vec<FailedRule>,
-    /// SHA-256 of the raw XCCDF result file kept on the host.
-    pub results_sha256: String,
-    pub collected_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,16 +326,6 @@ pub enum CommandAction {
         delay_minutes: u32,
         #[serde(default)]
         message: String,
-    },
-    /// OpenSCAP evaluation with a profile id (empty: the SSG "standard" profile), or with a tailored (custom) profile.
-    /// When OpenSCAP or its content is missing and `auto_install` is on, the agent installs them first.
-    ComplianceScan {
-        #[serde(default)]
-        profile: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tailoring: Option<Tailoring>,
-        #[serde(default = "yes")]
-        auto_install: bool,
     },
     /// App center: install or remove a catalog application, from its packages or (agents with
     /// `capability::APP_COMMAND`) from an admin-written command recipe.

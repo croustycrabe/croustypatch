@@ -105,7 +105,7 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
     let ck = admin(&app).await;
     let (st, _) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({"modules": {"docker": true, "bogus": true}}))).await;
     assert_eq!(st, 400);
-    let (st, tok) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({"modules": {"docker": true, "openscap": true}, "max_uses": 2}))).await;
+    let (st, tok) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({"modules": {"docker": true, "eco": true}, "max_uses": 2}))).await;
     assert_eq!(st, 201, "{tok}");
     let kp = croustypatch_common::crypto::generate_rsa(2048).unwrap();
     let enroll = |name: &str, token: &str| {
@@ -138,7 +138,7 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
     assert_eq!(st, 201, "{r}");
     let id: Uuid = r["agent_id"].as_str().unwrap().parse().unwrap();
     let m: Value = hosts::table.find(id).select(hosts::modules).first(&mut db.conn()).unwrap();
-    assert_eq!(m, json!({"docker": true, "helper_script": false, "openscap": true, "portal": false, "portal_updates": false, "eco": false}), "a server does not get the self-service updates unless the token says so");
+    assert_eq!(m, json!({"docker": true, "helper_script": false, "portal": false, "portal_updates": false, "eco": true}), "a server does not get the self-service updates unless the token says so");
 
     // without a choice on the token: the defaults of the day (eco on unless switched off)
     let (_, tok2) = call(&app, TestRequest::post().uri("/api/v1/enrollment-tokens").cookie(ck.clone()).set_json(json!({}))).await;
@@ -161,7 +161,7 @@ async fn modules_are_set_per_host_from_the_enrolment_token_onwards() {
     assert!(croustypatch_server::modules::settings_for(&mut db.conn(), id).unwrap().is_none(), "an old agent gets nothing it cannot read");
     diesel::update(hosts::table.find(id)).set(hosts::facts.eq(json!({"capabilities": [capability::SETTINGS]}))).execute(&mut db.conn()).unwrap();
     let s = croustypatch_server::modules::settings_for(&mut db.conn(), id).unwrap().unwrap();
-    assert!(s.modules.docker && s.modules.openscap && s.modules.eco && !s.modules.portal);
+    assert!(s.modules.docker && s.modules.eco && !s.modules.portal);
     assert!(s.isolation.keep_ssh && s.isolation.ssh_port == 22 && s.isolation.ssh_sources.is_empty(), "SSH stays reachable by default");
 
     // isolation rules: validated, then carried to the agents with their settings

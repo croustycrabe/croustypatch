@@ -6,7 +6,6 @@ const BIG_JSON: usize = 16 * 1024 * 1024;
 
 pub(crate) mod admin;
 mod ai;
-pub(crate) mod compliance_api;
 mod mcp;
 pub mod agent_dist;
 pub(crate) mod notifications;
@@ -31,8 +30,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/agent/portal/install", web::post().to(portal::agent_request))
             .route("/agent/portal/updates", web::get().to(portal::agent_updates))
             .route("/agent/portal/update", web::post().to(portal::agent_update))
-            .route("/agent/scap-content", web::get().to(agent_dist::scap_index))
-            .route("/agent/scap-content/{name}", web::get().to(agent_dist::scap_file))
             // --- "Add agent": installer script and binaries (public, no secrets)
             .route("/agent/install.sh", web::get().to(agent_dist::install_script))
             .route("/agent/platforms", web::get().to(agent_dist::platforms))
@@ -68,14 +65,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/portal/install", web::post().to(portal::request))
             .route("/portal/suggestions", web::get().to(portal::suggestions))
             .route("/portal/brand-icons", web::get().to(portal::brand_icons))
-            .route("/compliance", web::get().to(compliance_api::fleet))
-            .route("/compliance/profiles", web::get().to(compliance_api::profiles))
-            .route("/compliance/profiles", web::post().to(compliance_api::profile_create))
-            .route("/compliance/profiles/{id}", web::put().to(compliance_api::profile_update))
-            .route("/compliance/profiles/{id}", web::delete().to(compliance_api::profile_delete))
-            .route("/compliance/rules", web::get().to(compliance_api::failing_rules))
-            .route("/hosts/{id}/compliance", web::get().to(compliance_api::host))
-            .route("/hosts/{id}/compliance-scan", web::post().to(compliance_api::scan))
             .route("/mcp", web::post().to(mcp::endpoint))
             .route("/mcp", web::get().to(mcp::no_stream))
             .route("/auth/tokens", web::get().to(mcp::list_tokens))

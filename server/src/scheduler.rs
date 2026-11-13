@@ -32,11 +32,6 @@ pub fn spawn(state: web::Data<AppState>) {
                     Ok(_) => {}
                     Err(e) => tracing::warn!(error = ?e, "planner failed"),
                 }
-                match state.db(|c| crate::compliance::run_planned(c, Utc::now())).await {
-                    Ok(n) if n > 0 => tracing::info!(queued = n, "planned compliance audit started"),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!(error = ?e, "planned compliance audit failed"),
-                }
             }
             for host in state.hub.connected_hosts() {
                 gateway::push_pending(&state, host).await;

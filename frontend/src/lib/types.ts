@@ -39,15 +39,12 @@ export interface Host {
   modules: HostModules;
   metrics?: HostMetrics['current'];
   metrics_at?: string | null;
-  /** Audit profile of this host: '' (fleet default), an XCCDF profile id or `custom:<uuid>`. */
-  compliance_profile?: string;
 }
 
 /** Optional features switched on per host. */
 export interface HostModules {
   docker: boolean;
   helper_script: boolean;
-  openscap: boolean;
   portal: boolean;
   portal_updates: boolean;
   eco: boolean;
@@ -109,7 +106,7 @@ export interface Task {
   id: string;
   host_id: string;
   hostname: string;
-  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'compliance' | 'app' | 'agent_update' | 'docker';
+  kind: 'scan' | 'patch' | 'rollback' | 'quarantine' | 'release' | 'reboot' | 'app' | 'agent_update' | 'docker';
   status: TaskStatus;
   policy_id: string | null;
   parent_task_id: string | null;
@@ -305,7 +302,6 @@ export interface Role {
 export interface Modules {
   docker: boolean;
   helper_script: boolean;
-  openscap: boolean;
   portal: boolean;
   notifications: boolean;
   eco: boolean;
@@ -317,7 +313,6 @@ export interface Dashboard {
   top_outdated: { name: string; hosts: number; security: boolean }[];
   tasks: { awaiting_approval: number; in_progress: number; waivers_pending: number };
   activity: { id: string; host_id: string; hostname: string; kind: string; status: TaskStatus; message: string; ts: string }[];
-  compliance: { enabled: boolean; score: number | null };
   portal: { enabled: boolean; installs: number | null };
   resources: { reporting: number; avg_cpu: number | null; avg_mem: number | null; busiest: { id: string; hostname: string; cpu: number | null; mem: number | null; disk: number | null }[] };
   patching: {
@@ -336,7 +331,6 @@ export interface Settings {
   ai: { enabled: boolean; provider: string; base_url: string; model: string; api_key: string; api_key_set?: boolean };
   connectivity: { mode: 'connected' | 'air_gapped' };
   agent: { heartbeat_secs: number };
-  compliance: { threshold: number; profile: string; auto_install: boolean; schedule?: AuditSchedule };
   /** What stays reachable while a host is isolated, besides the server. */
   isolation: { keep_ssh: boolean; ssh_port: number; ssh_sources: string[] };
 }
@@ -359,18 +353,6 @@ export interface PackageHost {
   cves: string[];
 }
 
-export interface ScapProfile { id: string; title: string }
-/** What the agent found: oscap version, the SCAP content it uses and that content's profiles. */
-/** `recommended`: the profile used when none is chosen (agents 0.8+); `adapted`: "noble → resolute" when the content of another release is pointed at this one. */
-export interface OpenScapInfo { version: string; datastream: string; profiles: ScapProfile[]; recommended?: string; adapted?: string }
-export interface CompReport { id: string; profile: string; passed: number; failed: number; not_applicable: number; score: number; results_sha256: string; collected_at: string; failed_rules?: { rule_id: string; severity: string }[] }
-export interface CompHost { reports: CompReport[]; openscap: OpenScapInfo | null; module: boolean; profile: string; effective_profile: string; auto_install: boolean; package_manager?: string | null }
-export interface CompProfile { id: string; name: string; description: string; base_profile: string; disabled_rules: string[]; used_by: number; created_at: string; updated_at: string }
-export interface CompProfiles { custom: CompProfile[]; available: { id: string; title: string; hosts: number }[]; hosts_with_openscap: number; default: string }
-export interface FailingRule { rule_id: string; severity: string; hosts: number }
-/** Planned audits of the fleet (`frequency` off: none); weekday 0 = Monday. */
-export interface AuditSchedule { frequency: 'off' | 'daily' | 'weekly' | 'monthly'; weekday: number; day_of_month: number; at: string; timezone: string }
-export interface CompFleet { score: number | null; threshold: number; planned_next?: string | null; hosts: (CompReport & { host_id: string; hostname: string | null })[] }
 
 /** A page of rows with the total behind it (`page` is 1-based, as in the API). */
 export interface Paged<T> { items: T[]; total: number; page: number; per_page: number }

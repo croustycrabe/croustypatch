@@ -98,7 +98,6 @@ pub fn test_config() -> Config {
         trusted_proxies: vec!["127.0.0.1".into()],
         static_dir: ".".into(),
         agent_dir: vec![".".into()],
-        scap_dir: "./no-scap-content".into(),
         cors_origin: None,
     }
 }

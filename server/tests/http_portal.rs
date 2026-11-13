@@ -36,7 +36,7 @@ async fn the_app_center_installs_only_catalog_apps_in_scope() {
     let (st, _) = call(&app, view(dev_host)).await;
     assert_eq!(st, 409);
     // the global switch only sets the default for new hosts: each existing host is switched on by itself
-    let (st, _) = call(&app, TestRequest::put().uri("/api/v1/settings/modules").cookie(ck.clone()).set_json(json!({"docker": false, "helper_script": false, "openscap": false, "portal": true, "notifications": true, "eco": true}))).await;
+    let (st, _) = call(&app, TestRequest::put().uri("/api/v1/settings/modules").cookie(ck.clone()).set_json(json!({"docker": false, "helper_script": false, "portal": true, "notifications": true, "eco": true}))).await;
     assert!(st.is_success());
     let (st, _) = call(&app, view(dev_host)).await;
     assert_eq!(st, 409, "existing hosts keep their own switches");

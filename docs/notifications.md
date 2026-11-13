@@ -48,7 +48,7 @@ time zone), where to send it, content, scope.
   default recipient: addresses belong to the reports and rules that use it. (An address stored by an older version stays as
   a last resort.) Other channels (ntfy, Gotify, webhook) receive the text version.
 - **Content**: fleet summary; updates waiting per machine and the packages most behind; **patch history** (the last N patches,
-  or the last N days); failures and missed patch days; reboots required; compliance score; the next patch day of each policy; container
+  or the last N days); failures and missed patch days; reboots required; the next patch day of each policy; container
   images with a newer version. Optionally limited to some host groups.
 - **Skip when empty**: scheduled sends can be skipped when there is nothing to report; *Send now* never is.
 - **Preview** shows the report as it would be sent, formatted or plain. **Send now** sends it at once, optionally only to one address.
