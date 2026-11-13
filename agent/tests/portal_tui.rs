@@ -296,3 +296,28 @@ fn an_app_with_a_newer_version_says_so_and_can_be_updated() {
     assert_eq!(s.on_key(KeyCode::Char('i'), NONE), None);
     assert!(s.confirm.is_none());
 }
+
+#[test]
+fn the_filter_key_narrows_the_list_to_installed_apps_updates_or_what_is_missing() {
+    use croustypatch_agent::tui::Filter;
+    let mut s = State::new(&EN);
+    s.load(&json!({ "host": { "hostname": "h" }, "apps": [
+        { "id": "a", "name": "htop", "category": "Outils", "packages": ["htop"], "installed": true },
+        { "id": "b", "name": "Dev tools", "category": "Outils", "packages": ["git", "make"], "installed": false, "local": { "present": 1, "total": 2 } },
+        { "id": "c", "name": "ncdu", "category": "Outils", "packages": ["ncdu"], "installed": false },
+        { "id": "d", "name": "Code", "category": "Outils", "kind": "command", "installed": true, "local": { "present": 1, "total": 1, "update": true, "latest_version": "2" } },
+    ]}));
+    let names = |s: &State| s.visible().iter().map(|a| a.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["htop", "Dev tools", "ncdu", "Code"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Installed);
+    assert_eq!(names(&s), ["htop", "Dev tools", "Code"], "installed, partly installed included");
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Updates);
+    assert_eq!(names(&s), ["Code"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::Available);
+    assert_eq!(names(&s), ["ncdu"]);
+    s.on_key(KeyCode::Char('f'), NONE);
+    assert_eq!(s.filter, Filter::All);
+}
